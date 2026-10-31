@@ -1,0 +1,11 @@
+# shared golden smoke transcript
+> HEL
+< ok jlpin 2 {cfg} up={int}
+> MOD PC7 lo
+< ok
+> SET PC7=1
+< ok
+> GET PC7
+< ok PC7=1
+> RST
+< ok
