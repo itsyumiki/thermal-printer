@@ -1,0 +1,17 @@
+--- a/apps/spp_and_le/include/app_config.h
++++ b/apps/spp_and_le/include/app_config.h
+@@ -6,11 +6,10 @@
+  */
+ 
+ 
+-#ifdef CONFIG_RELEASE_ENABLE
+-#define LIB_DEBUG    0
+-#else
++/* uart bridge: the board Makefile passes -DCONFIG_RELEASE_ENABLE, which would make LIB_DEBUG 0 and
++ * switch the library log tags (btstack, controller, USB, ...) off. The bridge wants those logs on the
++ * CDC port, so LIB_DEBUG is 1 whatever CONFIG_RELEASE_ENABLE says. */
+ #define LIB_DEBUG    1
+-#endif
+ 
+ #define CONFIG_DEBUG_LIB(x)         (x & LIB_DEBUG)
+ 

@@ -1,0 +1,913 @@
+/*
+ * uart_bridge.c -- shared core of the USB-CDC <-> Bluetooth bridge (see uart_bridge.h).
+ *
+ * BYTE-IDENTICAL in both variants (scripts/check-shared-core.sh verifies it). The apps
+ * copy it over the SDK file apps/spp_and_le/examples/nonconn_24g/ble_24g_deal.c, which is
+ * in the board Makefile's fixed source list but unused here (CONFIG_APP_NONCONN_24G=0).
+ *
+ * Contexts:
+ *   - br_c2b task (prio 2): drains the CDC OUT endpoint into ring A, builds chunks, calls
+ *     bridge_bt_send(). Never touches the CDC write mutex, so a stalled host cannot block it.
+ *   - br_b2c task (prio 1): writes ring B (BT -> PC data) and the log ring to the CDC IN
+ *     endpoint. May block in cdc_write_data() if the host stops reading.
+ *   - BT stack task: bridge_bt_rx(), bridge_peer_*(), bridge_set_chunk(), bridge_tx_ready().
+ *   - Any task or ISR: log_print/printf/puts/putchar/put_buf (overrides) -> log ring.
+ *   - USB OUT interrupt: br_cdc_wakeup(): posts a semaphore, nothing else.
+ */
+#include "app_config.h"
+#include "system/includes.h"
+#include "usb/device/usb_stack.h"
+#include "usb/usb_config.h"
+#include "usb/device/cdc.h"
+#include "uart_bridge.h"
+
+#if !TCFG_USB_SLAVE_CDC_ENABLE
+#error "uart_bridge needs USB CDC: app.conf must set TCFG_PC_ENABLE and USB_DEVICE_CLASS_CONFIG=CDC_CLASS"
+#endif
+
+#define BRIDGE_USB_ID          0          /* USB0 */
+#define BR_EP_SIZE             64         /* MAXP_SIZE_CDC_BULKOUT / BULKIN */
+#define BR_B2C_BURST           64         /* data bytes per CDC write before a log line may go */
+#define BR_B2C_POLL_TICKS      10
+#define BR_REASSERT_TICKS      10
+#define BR_NAME_C2B            "br_c2b"
+#define BR_NAME_B2C            "br_b2c"
+#define BR_TASK_STACK          512        /* u32 units */
+#define BR_PC_BUF              96         /* putchar() line accumulator */
+
+/* ---------------------------------------------------------------------------------- */
+/* state                                                                              */
+/* ---------------------------------------------------------------------------------- */
+typedef struct {
+    u8 *buf;
+    u16 size;
+    volatile u16 wr;
+    volatile u16 rd;
+} br_ring_t;
+
+static u8 br_buf_a[BRIDGE_RING_A_SIZE];
+static u8 br_buf_b[BRIDGE_RING_B_SIZE];
+static u8 br_buf_log[BRIDGE_LOG_RING_SIZE];
+static br_ring_t br_ring_a = { br_buf_a, BRIDGE_RING_A_SIZE, 0, 0 };
+static br_ring_t br_ring_b = { br_buf_b, BRIDGE_RING_B_SIZE, 0, 0 };
+static br_ring_t br_ring_log = { br_buf_log, BRIDGE_LOG_RING_SIZE, 0, 0 };
+
+static u8 br_usb_rx[BR_EP_SIZE] __attribute__((aligned(4)));
+static u8 br_txbuf[BRIDGE_MAX_CHUNK] __attribute__((aligned(4)));
+static u8 br_b2c_tmp[BR_B2C_BURST] __attribute__((aligned(4)));
+static u8 br_linebuf[BRIDGE_LOG_REC_MAX + 8] __attribute__((aligned(4)));
+
+static char br_fmt_task[BRIDGE_LOG_FMT_MAX];
+static char br_fmt_irq[BRIDGE_LOG_FMT_MAX];
+static volatile u8 br_fmt_task_busy;
+static volatile u8 br_fmt_irq_busy;
+
+static char br_pc_buf[BR_PC_BUF];
+static volatile u8 br_pc_busy;
+static u16 br_pc_len;
+static volatile u32 br_pc_last;
+
+static OS_SEM br_sem_c2b;
+static OS_SEM br_sem_b2c;
+static volatile u8 br_init_state;          /* 0 none, 1 in progress, 2 sems exist */
+static volatile u8 br_c2b_wake;
+static volatile u8 br_b2c_wake;
+
+static volatile u8 br_peer;                /* a BT peer is connected and usable */
+static volatile u16 br_chunk = 20;
+static volatile u8 br_flush_req;
+static volatile u8 br_in_write;            /* B2C is inside cdc_write_data() */
+static u8 br_data_mid_line;                /* last data byte written to CDC was not '\n' */
+
+static u32 br_a_last_rx;                   /* jiffies of the last CDC byte */
+static u32 br_a_first;                     /* jiffies when ring A became non-empty */
+static u32 br_last_reassert;
+
+/* counters (bytes unless noted) */
+static volatile u32 br_cnt_c2b;            /* CDC -> BT delivered to the BT stack */
+static volatile u32 br_cnt_b2c;            /* BT -> CDC written to the CDC port */
+static volatile u32 br_cnt_bt_rx;          /* bytes received from BT */
+static volatile u32 br_cnt_cdc_rx;         /* bytes received from CDC */
+static volatile u32 br_drop_nopeer;        /* CDC data with no peer / BT not ready */
+static volatile u32 br_drop_ring_a;        /* ring A full */
+static volatile u32 br_drop_ring_b;        /* ring B full */
+static volatile u32 br_drop_fail;          /* bridge_bt_send() failed */
+static volatile u32 br_drop_cdc;           /* BT data discarded: CDC port closed/failed */
+static volatile u32 br_busy_cnt;           /* BR_TX_BUSY events */
+static volatile u32 br_log_lines;          /* log lines queued */
+static volatile u32 br_log_drop_full;      /* log lines dropped: ring full */
+static volatile u32 br_log_drop_busy;      /* log lines dropped: format buffer in use */
+static volatile u32 br_log_drop_self;      /* log lines dropped: generated by the CDC write */
+static u32 br_log_drop_reported;
+static u32 br_stat_snapshot;
+static u32 br_last_stats;
+
+/* ---------------------------------------------------------------------------------- */
+/* small helpers                                                                      */
+/* ---------------------------------------------------------------------------------- */
+static int br_claim(volatile u8 *flag)
+{
+    int ok;
+    local_irq_disable();
+    ok = !*flag;
+    *flag = 1;
+    local_irq_enable();
+    return ok;
+}
+
+static void br_wake_c2b(void)
+{
+    if (br_init_state == 2 && !br_c2b_wake) {
+        br_c2b_wake = 1;
+        os_sem_post(&br_sem_c2b);
+    }
+}
+
+static void br_wake_b2c(void)
+{
+    if (br_init_state == 2 && !br_b2c_wake) {
+        br_b2c_wake = 1;
+        os_sem_post(&br_sem_b2c);
+    }
+}
+
+static u16 ring_used(const br_ring_t *r)
+{
+    u16 w = r->wr, rd = r->rd;
+    return (w >= rd) ? (u16)(w - rd) : (u16)(r->size - rd + w);
+}
+
+static u16 ring_free(const br_ring_t *r)
+{
+    return (u16)(r->size - 1 - ring_used(r));
+}
+
+static void ring_put_at(br_ring_t *r, u16 pos, const void *src, u16 n)
+{
+    u16 first = r->size - pos;
+    if (n <= first) {
+        memcpy(r->buf + pos, src, n);
+    } else {
+        memcpy(r->buf + pos, src, first);
+        memcpy(r->buf, (const u8 *)src + first, n - first);
+    }
+}
+
+static void ring_get_at(const br_ring_t *r, u16 pos, void *dst, u16 n)
+{
+    u16 first = r->size - pos;
+    if (n <= first) {
+        memcpy(dst, r->buf + pos, n);
+    } else {
+        memcpy(dst, r->buf + pos, first);
+        memcpy((u8 *)dst + first, r->buf, n - first);
+    }
+}
+
+static u16 ring_adv(const br_ring_t *r, u16 pos, u16 n)
+{
+    u32 p = (u32)pos + n;
+    return (u16)(p >= r->size ? p - r->size : p);
+}
+
+/* single producer, single consumer: returns bytes stored (<= n) */
+static u16 ring_write(br_ring_t *r, const u8 *d, u16 n)
+{
+    u16 f = ring_free(r);
+    u16 w = r->wr;
+    if (n > f) {
+        n = f;
+    }
+    if (n) {
+        ring_put_at(r, w, d, n);
+        r->wr = ring_adv(r, w, n);
+    }
+    return n;
+}
+
+static u16 ring_peek(const br_ring_t *r, u8 *out, u16 n)
+{
+    u16 u = ring_used(r);
+    if (n > u) {
+        n = u;
+    }
+    if (n) {
+        ring_get_at(r, r->rd, out, n);
+    }
+    return n;
+}
+
+static void ring_drop(br_ring_t *r, u16 n)
+{
+    r->rd = ring_adv(r, r->rd, n);
+}
+
+static int br_ratelimit(u32 *last, u32 ticks)
+{
+    u32 now = jiffies;
+    if (*last == 0 || (long)(now - *last) >= (long)ticks) {
+        *last = now ? now : 1;
+        return 1;
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------------- */
+/* log capture: strong definitions of the SDK's log entry points                      */
+/* ---------------------------------------------------------------------------------- */
+
+/* A log line from the B2C task, or from an interrupt while B2C is inside the CDC write,
+ * would be caused by the CDC write itself (USB driver traces): drop it, or it feeds back. */
+static int br_self_log(void)
+{
+    const char *a, *b;
+    if (!br_in_write) {
+        return 0;
+    }
+    if (cpu_in_irq()) {
+        return 1;
+    }
+    a = os_current_task();
+    b = BR_NAME_B2C;
+    if (!a) {
+        return 0;
+    }
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+static const char br_prefix[] = BRIDGE_LOG_PREFIX;
+
+/* Queue one finished line (tag and text, no newline) as a record [len][bytes]. Nothing is
+ * built on the caller's stack: the pieces are copied straight into the ring, with IRQs off
+ * only for that copy (<= BRIDGE_LOG_REC_MAX bytes). */
+static void br_log_push(const char *tag, const char *s, u16 n)
+{
+    static const u8 sp = ' ';
+    u16 pl = sizeof(br_prefix) - 1;
+    u16 tl = 0, len, w;
+    const char *t;
+
+    if (tag) {
+        for (t = tag; *t; t++) {
+            tl++;
+        }
+    }
+    if (tl > 16) {
+        tl = 16;
+    }
+    len = pl + (tl ? tl + 1 : 0);
+    if (n > BRIDGE_LOG_REC_MAX - len) {
+        n = BRIDGE_LOG_REC_MAX - len;
+    }
+    len += n;
+
+    local_irq_disable();
+    if (ring_free(&br_ring_log) < (u16)(len + 1)) {
+        br_log_drop_full++;
+    } else {
+        u8 l8 = (u8)len;
+        w = br_ring_log.wr;
+        ring_put_at(&br_ring_log, w, &l8, 1);
+        w = ring_adv(&br_ring_log, w, 1);
+        ring_put_at(&br_ring_log, w, br_prefix, pl);
+        w = ring_adv(&br_ring_log, w, pl);
+        if (tl) {
+            ring_put_at(&br_ring_log, w, tag, tl);
+            w = ring_adv(&br_ring_log, w, tl);
+            ring_put_at(&br_ring_log, w, &sp, 1);
+            w = ring_adv(&br_ring_log, w, 1);
+        }
+        ring_put_at(&br_ring_log, w, s, n);
+        br_ring_log.wr = ring_adv(&br_ring_log, w, n);
+        br_log_lines++;
+    }
+    local_irq_enable();
+}
+
+static void br_log_segment(const char *tag, const char *s, int start, int end)
+{
+    while (end > start && (s[end - 1] == ' ' || s[end - 1] == '\t')) {
+        end--;
+    }
+    if (end > start) {
+        br_log_push(tag, s + start, (u16)(end - start));
+    }
+}
+
+/* Split text into lines, in place: strip ANSI colour escapes and control characters, trim
+ * trailing blanks, skip empty lines, one log record per line. */
+static void br_emit_text(const char *tag, char *s, int n)
+{
+    int i, o = 0, start = 0;
+
+    for (i = 0; i < n; i++) {
+        char c = s[i];
+        if (c == 0x1b) {                                 /* ESC [ ... final byte */
+            i++;
+            if (i < n && s[i] == '[') {
+                i++;
+                while (i < n && !(s[i] >= '@' && s[i] <= '~')) {
+                    i++;
+                }
+            } else {
+                i--;
+            }
+            continue;
+        }
+        if (c == '\n') {
+            br_log_segment(tag, s, start, o);
+            start = o;
+            continue;
+        }
+        if (c == '\r' || ((unsigned char)c < 0x20 && c != '\t')) {
+            continue;
+        }
+        s[o++] = c;
+    }
+    br_log_segment(tag, s, start, o);
+}
+
+/* pick and claim the format buffer of the current context (task or IRQ) */
+static char *br_fmt_claim(volatile u8 **busy)
+{
+    char *buf;
+    if (cpu_in_irq()) {
+        buf = br_fmt_irq;
+        *busy = &br_fmt_irq_busy;
+    } else {
+        buf = br_fmt_task;
+        *busy = &br_fmt_task_busy;
+    }
+    if (!br_claim(*busy)) {
+        br_log_drop_busy++;
+        return 0;
+    }
+    return buf;
+}
+
+static void br_vlog(int level, const char *tag, const char *fmt, __builtin_va_list va)
+{
+    char *buf;
+    volatile u8 *busy;
+    int n;
+
+    if (!BRIDGE_CDC_LOGS || level < BRIDGE_LOG_MIN_LEVEL || !fmt) {
+        return;
+    }
+    if (br_self_log()) {
+        br_log_drop_self++;
+        return;
+    }
+    buf = br_fmt_claim(&busy);
+    if (!buf) {
+        return;
+    }
+    n = vsnprintf(buf, BRIDGE_LOG_FMT_MAX, fmt, va);
+    if (n < 0) {
+        n = 0;
+    }
+    if (n >= BRIDGE_LOG_FMT_MAX) {
+        n = BRIDGE_LOG_FMT_MAX - 1;
+    }
+    br_emit_text(tag, buf, n);
+    *busy = 0;
+    br_wake_b2c();
+}
+
+void bridge_log(const char *fmt, ...)
+{
+    __builtin_va_list va;
+    __builtin_va_start(va, fmt);
+    br_vlog(2, "app:", fmt, va);
+    __builtin_va_end(va);
+}
+
+void log_print(int level, const char *tag, const char *format, ...)
+{
+    __builtin_va_list va;
+    __builtin_va_start(va, format);
+    br_vlog(level, tag, format, va);
+    __builtin_va_end(va);
+}
+
+int printf(const char *format, ...)
+{
+    __builtin_va_list va;
+    __builtin_va_start(va, format);
+    br_vlog(2, 0, format, va);
+    __builtin_va_end(va);
+    return 0;
+}
+
+int puts(const char *out)
+{
+    char *buf;
+    volatile u8 *busy;
+    int n = 0;
+
+    if (!BRIDGE_CDC_LOGS || !out || BRIDGE_LOG_MIN_LEVEL > 2) {
+        return 0;
+    }
+    if (br_self_log()) {
+        br_log_drop_self++;
+        return 0;
+    }
+    buf = br_fmt_claim(&busy);
+    if (!buf) {
+        return 0;
+    }
+    while (out[n] && n < BRIDGE_LOG_FMT_MAX - 1) {
+        buf[n] = out[n];
+        n++;
+    }
+    br_emit_text(0, buf, n);
+    *busy = 0;
+    br_wake_b2c();
+    return 0;
+}
+
+int putchar(int c)
+{
+    if (!BRIDGE_CDC_LOGS || BRIDGE_LOG_MIN_LEVEL > 2 || br_self_log()) {
+        return c;
+    }
+    if (!br_claim(&br_pc_busy)) {
+        return c;
+    }
+    br_pc_last = jiffies;
+    if (c == '\n' || br_pc_len >= BR_PC_BUF - 1) {
+        if (c != '\n') {
+            br_pc_buf[br_pc_len++] = (char)c;
+        }
+        br_emit_text(0, br_pc_buf, br_pc_len);
+        br_pc_len = 0;
+        br_wake_b2c();
+    } else {
+        br_pc_buf[br_pc_len++] = (char)c;
+    }
+    br_pc_busy = 0;
+    return c;
+}
+
+/* a half-finished putchar() line that nobody completed: flush it after ~100 ms */
+static void br_pc_flush_idle(void)
+{
+    if (br_pc_len && (long)(jiffies - br_pc_last) >= 10 && br_claim(&br_pc_busy)) {
+        if (br_pc_len) {
+            br_emit_text(0, br_pc_buf, br_pc_len);
+            br_pc_len = 0;
+        }
+        br_pc_busy = 0;
+    }
+}
+
+void put_buf(const u8 *buf, int len)
+{
+    static const char hex[] = "0123456789abcdef";
+    int total = len, i, j;
+    char line[16 * 3 + 2];
+
+    if (!BRIDGE_CDC_LOGS || BRIDGE_LOG_MIN_LEVEL > 2 || !buf || len <= 0 || br_self_log()) {
+        return;
+    }
+    if (len > BRIDGE_HEXDUMP_MAX) {
+        len = BRIDGE_HEXDUMP_MAX;
+    }
+    for (i = 0; i < len; i += 16) {
+        int n = (len - i) > 16 ? 16 : (len - i);
+        int l = 0;
+        for (j = 0; j < n; j++) {
+            line[l++] = hex[buf[i + j] >> 4];
+            line[l++] = hex[buf[i + j] & 15];
+            line[l++] = ' ';
+        }
+        br_log_push("hex:", line, (u16)(l - 1));
+    }
+    if (total > len) {
+        bridge_log("hexdump cut: %d of %d bytes shown", len, total);
+    }
+    br_wake_b2c();
+}
+
+#if BRIDGE_BT_STACK_DEBUG
+/* btstack runtime trace levels (weak in btstack.a; the SDK keeps the strong definitions
+ * commented out in apps/spp_and_le/config/lib_btstack_config.c). */
+u8 l2cap_debug_enable = 0xf0;
+u8 rfcomm_debug_enable = 0x0f;
+u8 profile_debug_enable = 0xff;
+u8 ble_debug_enable = 0xff;
+#endif
+
+/* ---------------------------------------------------------------------------------- */
+/* CDC side                                                                           */
+/* ---------------------------------------------------------------------------------- */
+static void br_cdc_wakeup(struct usb_device_t *usb_device)
+{
+    (void)usb_device;
+    br_wake_c2b();            /* USB OUT interrupt: nothing but a semaphore post */
+}
+
+static u32 br_ep_read(u8 *buf)
+{
+#if BRIDGE_RX_VIA_SDK_READ
+    return cdc_read_data(BRIDGE_USB_ID, buf, BR_EP_SIZE);
+#else
+    return usb_g_bulk_read(BRIDGE_USB_ID, CDC_DATA_EP_OUT, buf, BR_EP_SIZE, 0);
+#endif
+}
+
+static u32 br_cdc_write(const u8 *p, u32 n)
+{
+    u32 w;
+    br_in_write = 1;
+    w = cdc_write_data(BRIDGE_USB_ID, (u8 *)p, n);
+    br_in_write = 0;
+    return w;
+}
+
+/* ---------------------------------------------------------------------------------- */
+/* API for the glue                                                                   */
+/* ---------------------------------------------------------------------------------- */
+static u16 br_clamp_chunk(u16 c)
+{
+    if (c > BRIDGE_MAX_CHUNK) {
+        c = BRIDGE_MAX_CHUNK;
+    }
+    if (c < BRIDGE_MIN_CHUNK) {
+        c = BRIDGE_MIN_CHUNK;
+    }
+    return c;
+}
+
+void bridge_set_chunk(u16 chunk)
+{
+    br_chunk = br_clamp_chunk(chunk);
+    bridge_log("chunk size %u", (unsigned)br_chunk);
+}
+
+void bridge_peer_connected(u16 chunk)
+{
+    br_chunk = br_clamp_chunk(chunk);
+    br_peer = 1;
+    bridge_log("peer connected, chunk %u", (unsigned)br_chunk);
+    br_wake_c2b();
+}
+
+void bridge_peer_disconnected(void)
+{
+    br_peer = 0;
+    br_flush_req = 1;            /* C2B drops whatever is queued in ring A */
+    bridge_log("peer disconnected");
+    br_wake_c2b();
+}
+
+void bridge_tx_ready(void)
+{
+    br_wake_c2b();
+}
+
+void bridge_bt_rx(const u8 *data, u16 len)
+{
+    static u32 last_warn;
+    u16 w;
+
+    if (!len) {
+        return;
+    }
+    br_cnt_bt_rx += len;
+    w = ring_write(&br_ring_b, data, len);
+    if (w < len) {
+        br_drop_ring_b += len - w;
+        if (br_ratelimit(&last_warn, 100)) {
+            bridge_log("ring B full, dropped %u bytes (total %u)", (unsigned)(len - w), (unsigned)br_drop_ring_b);
+        }
+    }
+    br_wake_b2c();
+}
+
+/* ---------------------------------------------------------------------------------- */
+/* CDC -> BT task                                                                     */
+/* ---------------------------------------------------------------------------------- */
+static void br_c2b_send(u32 now)
+{
+    static u32 last_fail_log;
+
+    for (;;) {
+        u16 used = ring_used(&br_ring_a);
+        u16 chunk, n;
+        int full, idle, aged, rc;
+
+        if (!used) {
+            br_a_first = 0;
+            return;
+        }
+        if (!br_peer) {
+            br_drop_nopeer += used;
+            ring_drop(&br_ring_a, used);
+            br_a_first = 0;
+            return;
+        }
+        chunk = br_chunk;
+        full = used >= chunk;
+        idle = (long)(now - br_a_last_rx) >= BRIDGE_IDLE_TICKS;
+        aged = br_a_first && (long)(now - br_a_first) >= BRIDGE_MAX_HOLD_TICKS;
+        if (!full && !idle && !aged) {
+            return;
+        }
+        n = used < chunk ? used : chunk;
+        ring_peek(&br_ring_a, br_txbuf, n);
+        rc = bridge_bt_send(br_txbuf, n);
+        if (rc == BR_TX_OK) {
+            ring_drop(&br_ring_a, n);
+            br_cnt_c2b += n;
+            br_a_first = (used > n) ? now : 0;
+            continue;
+        }
+        if (rc == BR_TX_BUSY) {
+            br_busy_cnt++;
+            return;                                  /* retry on the next tick or tx_ready */
+        }
+        if (rc == BR_TX_TOO_BIG && chunk > BRIDGE_MIN_CHUNK) {
+            br_chunk = br_clamp_chunk(chunk / 2);
+            bridge_log("send of %u bytes over the limit, chunk -> %u", (unsigned)n, (unsigned)br_chunk);
+            continue;
+        }
+        if (rc == BR_TX_NOT_READY) {
+            br_drop_nopeer += used;                  /* nothing to send to: drop it all */
+            ring_drop(&br_ring_a, used);
+            br_a_first = 0;
+            return;
+        }
+        br_drop_fail += n;                           /* FAIL (or TOO_BIG at the minimum) */
+        ring_drop(&br_ring_a, n);
+        if (br_ratelimit(&last_fail_log, 100)) {
+            bridge_log("send failed (rc %d), dropped %u bytes (total %u)", rc, (unsigned)n, (unsigned)br_drop_fail);
+        }
+        br_a_first = (used > n) ? now : 0;
+    }
+}
+
+static void br_c2b_service(void)
+{
+    u32 now = jiffies;
+    u32 n;
+    int guard;
+
+    if (br_flush_req) {
+        u16 used;
+        br_flush_req = 0;
+        used = ring_used(&br_ring_a);
+        if (used) {
+            br_drop_nopeer += used;
+            ring_drop(&br_ring_a, used);
+        }
+        br_a_first = 0;
+    }
+
+    for (guard = 0; guard < 32; guard++) {
+        n = br_ep_read(br_usb_rx);
+        if (n == 0) {
+            break;
+        }
+        if (n > BR_EP_SIZE) {
+            n = BR_EP_SIZE;
+        }
+        br_cnt_cdc_rx += n;
+        if (!br_peer) {
+            br_drop_nopeer += n;
+            continue;
+        }
+        {
+            u16 w = ring_write(&br_ring_a, br_usb_rx, (u16)n);
+            if (w < n) {
+                br_drop_ring_a += n - w;
+            }
+            if (w) {
+                if (!br_a_first || ring_used(&br_ring_a) == w) {
+                    br_a_first = now ? now : 1;
+                }
+                br_a_last_rx = now;
+            }
+        }
+    }
+    if (guard == 32) {
+        br_wake_c2b();                               /* more may be waiting */
+    }
+    br_c2b_send(now);
+}
+
+static void br_c2b_task(void *p)
+{
+    (void)p;
+    cdc_set_wakeup_handler(br_cdc_wakeup);
+    br_last_reassert = jiffies;
+    for (;;) {
+        os_sem_pend(&br_sem_c2b, 1);                 /* 1 tick timeout = 10 ms polling */
+        br_c2b_wake = 0;
+        if ((long)(jiffies - br_last_reassert) >= BR_REASSERT_TICKS) {
+            /* cdc_set_wakeup_handler() does nothing while cdc_hdl is NULL and
+             * cdc_release() forgets the handler, so install it again every ~100 ms */
+            br_last_reassert = jiffies;
+            cdc_set_wakeup_handler(br_cdc_wakeup);
+        }
+        br_c2b_service();
+    }
+}
+
+/* ---------------------------------------------------------------------------------- */
+/* BT -> CDC task (data and logs)                                                     */
+/* ---------------------------------------------------------------------------------- */
+
+/* write one log line (already without CR/LF) to the CDC port; 1 = done */
+static int br_write_line(const u8 *s, u16 n)
+{
+    u16 l = 0;
+    u32 w;
+
+    if (n > BRIDGE_LOG_REC_MAX) {
+        n = BRIDGE_LOG_REC_MAX;
+    }
+    if (br_data_mid_line) {
+        br_linebuf[l++] = '\r';
+        br_linebuf[l++] = '\n';
+    }
+    memcpy(br_linebuf + l, s, n);
+    l += n;
+    br_linebuf[l++] = '\r';
+    br_linebuf[l++] = '\n';
+    w = br_cdc_write(br_linebuf, l);
+    if (w == l) {
+        br_data_mid_line = 0;
+        return 1;
+    }
+    if (w) {                       /* partial write: the line is cut, do not repeat it */
+        br_data_mid_line = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static u16 br_u32_dec(char *out, u32 v)
+{
+    char t[10];
+    u16 n = 0, i = 0;
+    do {
+        t[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+    while (n) {
+        out[i++] = t[--n];
+    }
+    return i;
+}
+
+/* emit at most one pending log line; returns 1 if something was written */
+static int br_b2c_log_one(int *blocked)
+{
+    u8 rec[BRIDGE_LOG_REC_MAX + 1];
+    u16 used, len;
+
+    if (*blocked) {
+        return 0;
+    }
+    if (br_log_drop_reported != br_log_drop_full + br_log_drop_busy + br_log_drop_self) {
+        u32 total = br_log_drop_full + br_log_drop_busy + br_log_drop_self;
+        char msg[64];
+        u16 l = 0;
+        const char *a = BRIDGE_LOG_PREFIX "bridge: log lines dropped, total ";
+        while (*a) {
+            msg[l++] = *a++;
+        }
+        l += br_u32_dec(msg + l, total);
+        if (br_write_line((u8 *)msg, l)) {
+            br_log_drop_reported = total;
+            return 1;
+        }
+        *blocked = 1;
+        return 0;
+    }
+    used = ring_used(&br_ring_log);
+    if (!used) {
+        return 0;
+    }
+    ring_peek(&br_ring_log, rec, 1);
+    len = rec[0];
+    if (len == 0 || len > BRIDGE_LOG_REC_MAX || (u16)(len + 1) > used) {
+        br_ring_log.rd = br_ring_log.wr;             /* corrupt: resync by dropping all */
+        return 0;
+    }
+    ring_get_at(&br_ring_log, ring_adv(&br_ring_log, br_ring_log.rd, 1), rec, len);
+    if (br_write_line(rec, len)) {
+        ring_drop(&br_ring_log, (u16)(len + 1));
+        return 1;
+    }
+    *blocked = 1;                                    /* port closed: keep the lines, retry later */
+    return 0;
+}
+
+static void br_b2c_drain(void)
+{
+    int blocked = 0;
+
+    for (;;) {
+        int did = 0;
+        u16 n = ring_peek(&br_ring_b, br_b2c_tmp, BR_B2C_BURST);
+
+        if (n) {
+            u32 w = br_cdc_write(br_b2c_tmp, n);
+            did = 1;
+            if (w == 0) {
+                /* port not open (no DTR) or the write failed: do not hoard stale data */
+                u16 all = ring_used(&br_ring_b);
+                br_drop_cdc += all;
+                ring_drop(&br_ring_b, all);
+            } else {
+                if (w > n) {
+                    w = n;
+                }
+                ring_drop(&br_ring_b, (u16)w);
+                br_cnt_b2c += w;
+                br_data_mid_line = (br_b2c_tmp[w - 1] != '\n');
+                if (w < n) {
+                    u16 all = ring_used(&br_ring_b);
+                    br_drop_cdc += all;
+                    ring_drop(&br_ring_b, all);
+                }
+            }
+        }
+        if (br_b2c_log_one(&blocked)) {
+            did = 1;
+        }
+        if (!did) {
+            break;
+        }
+    }
+}
+
+static void br_stats(void)
+{
+    u32 snap, now = jiffies;
+
+    if ((long)(now - br_last_stats) < BRIDGE_STATS_PERIOD_TICKS) {
+        return;
+    }
+    br_last_stats = now;
+    snap = br_cnt_c2b + br_cnt_b2c + br_cnt_bt_rx + br_cnt_cdc_rx + br_drop_nopeer + br_drop_ring_a +
+           br_drop_ring_b + br_drop_fail + br_drop_cdc + br_busy_cnt;
+    if (snap == br_stat_snapshot) {
+        return;
+    }
+    br_stat_snapshot = snap;
+    bridge_log("stats cdc_rx=%u c2b=%u bt_rx=%u b2c=%u", (unsigned)br_cnt_cdc_rx, (unsigned)br_cnt_c2b,
+               (unsigned)br_cnt_bt_rx, (unsigned)br_cnt_b2c);
+    bridge_log("drops nopeer=%u ringA=%u ringB=%u fail=%u cdc=%u busy_events=%u chunk=%u",
+               (unsigned)br_drop_nopeer, (unsigned)br_drop_ring_a, (unsigned)br_drop_ring_b,
+               (unsigned)br_drop_fail, (unsigned)br_drop_cdc, (unsigned)br_busy_cnt, (unsigned)br_chunk);
+}
+
+static void br_b2c_task(void *p)
+{
+    (void)p;
+    br_last_stats = jiffies;
+    for (;;) {
+        os_sem_pend(&br_sem_b2c, BR_B2C_POLL_TICKS);
+        br_b2c_wake = 0;
+        br_b2c_drain();
+        br_pc_flush_idle();
+        br_stats();
+    }
+}
+
+/* ---------------------------------------------------------------------------------- */
+/* init                                                                               */
+/* ---------------------------------------------------------------------------------- */
+void bridge_init(void)
+{
+    int start = 0;
+
+    local_irq_disable();
+    if (br_init_state == 0) {
+        br_init_state = 1;
+        start = 1;
+    }
+    local_irq_enable();
+    if (!start) {
+        return;
+    }
+    os_sem_create(&br_sem_c2b, 0);
+    os_sem_create(&br_sem_b2c, 0);
+    br_init_state = 2;
+    if (os_task_create(br_c2b_task, 0, 2, BR_TASK_STACK, 0, BR_NAME_C2B) != 0) {
+        bridge_log("ERROR: task %s not created", BR_NAME_C2B);
+    }
+    if (os_task_create(br_b2c_task, 0, 1, BR_TASK_STACK, 0, BR_NAME_B2C) != 0) {
+        bridge_log("ERROR: task %s not created", BR_NAME_B2C);
+    }
+    bridge_log("bridge up: ringA %u ringB %u log %u, idle flush %u tick(s), 1 tick = 10 ms",
+               (unsigned)BRIDGE_RING_A_SIZE, (unsigned)BRIDGE_RING_B_SIZE, (unsigned)BRIDGE_LOG_RING_SIZE,
+               (unsigned)BRIDGE_IDLE_TICKS);
+}

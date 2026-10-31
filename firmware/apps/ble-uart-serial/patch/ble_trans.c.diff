@@ -1,0 +1,173 @@
+--- a/apps/spp_and_le/examples/trans_data/ble_trans.c
++++ b/apps/spp_and_le/examples/trans_data/ble_trans.c
+@@ -32,6 +32,10 @@
+ #include "gatt_common/le_gatt_common.h"
+ #include "ble_trans.h"
+ #include "ble_trans_profile.h"
++#include "uart_bridge.h"
++
++/* uart bridge: the BLE name is fixed (owner decision), no "(BLE)" suffix */
++#define BRIDGE_BLE_NAME   "JL-UART-BLE"
+ 
+ #if CONFIG_APP_SPP_LE
+ 
+@@ -271,6 +275,36 @@
+     }
+ }
+ 
++/*
++ * uart bridge: called by the core's br_c2b task with one chunk (<= ATT MTU - 3 bytes).
++ * "Ready" = a central is connected AND it enabled notifications on ae02; otherwise the
++ * core drops and counts the data. The data is copied into the stack's send buffer by
++ * ble_comm_att_send_data() [assumed: it is the same call the SDK's own UART path uses].
++ */
++int bridge_bt_send(const u8 *data, u16 len)
++{
++    u16 h = trans_con_handle;
++    int ret;
++
++    if (!h || !ble_gatt_server_characteristic_ccc_get(h, ATT_CHARACTERISTIC_ae02_01_CLIENT_CONFIGURATION_HANDLE)) {
++        return BR_TX_NOT_READY;
++    }
++    if (!ble_comm_att_check_send(h, len)) {
++        return BR_TX_BUSY;
++    }
++    ret = ble_comm_att_send_data(h, ATT_CHARACTERISTIC_ae02_01_VALUE_HANDLE, (u8 *)data, len, ATT_OP_AUTO_READ_CCC);
++    if (ret == GATT_OP_RET_SUCESS) {
++        return BR_TX_OK;
++    }
++    if (ret == GATT_BUFFER_FULL || ret == GATT_CMD_RET_BUSY) {
++        return BR_TX_BUSY;
++    }
++    if (ret == GATT_CMD_USE_CCC_FAIL || ret == GATT_CMD_STACK_NOT_RUN) {
++        return BR_TX_NOT_READY;
++    }
++    return BR_TX_FAIL;
++}
++
+ /*************************************************************************************************/
+ /*!
+  *  \brief      发送请求连接参数表
+@@ -360,6 +394,7 @@
+     switch (event) {
+ 
+     case GATT_COMM_EVENT_CAN_SEND_NOW:
++        bridge_tx_ready();
+ #if TEST_AUDIO_DATA_UPLOAD
+         trans_test_send_audio_data(0);
+ #endif
+@@ -374,6 +409,8 @@
+     case GATT_COMM_EVENT_CONNECTION_COMPLETE:
+         trans_con_handle = little_endian_read_16(packet, 0);
+         trans_connection_update_enable = 1;
++        bridge_log("connected: handle 0x%04x", trans_con_handle);
++        bridge_peer_connected(20);                /* ATT MTU is 23 (payload 20) until exchanged */
+ 
+         log_info("connection_handle:%04x\n", little_endian_read_16(packet, 0));
+         log_info("connection_handle:%04x, rssi= %d\n", trans_con_handle, ble_vendor_get_peer_rssi(trans_con_handle));
+@@ -411,11 +448,14 @@
+             trans_client_search_remote_stop(trans_con_handle);
+ #endif
+             trans_con_handle = 0;
++            bridge_peer_disconnected();
++            bridge_log("disconnected: reason 0x%02x, advertising resumes (adv_auto_do=1)", packet[2]);
+         }
+         break;
+ 
+     case GATT_COMM_EVENT_ENCRYPTION_CHANGE:
+         log_info("ENCRYPTION_CHANGE:handle=%04x,state=%d,process =%d", little_endian_read_16(packet, 0), packet[2], packet[3]);
++        bridge_log("pairing/encryption: handle 0x%04x state %d process %d", little_endian_read_16(packet, 0), packet[2], packet[3]);
+         if (packet[3] == LINK_ENCRYPTION_RECONNECT) {
+             trans_resume_all_ccc_enable(little_endian_read_16(packet, 0), 1);
+         }
+@@ -437,6 +477,13 @@
+ 
+     case GATT_COMM_EVENT_MTU_EXCHANGE_COMPLETE:
+         log_info("con_handle= %02x, ATT MTU = %u\n", little_endian_read_16(packet, 0), little_endian_read_16(packet, 2));
++        {
++            u16 mtu = little_endian_read_16(packet, 2);
++            bridge_log("ATT MTU %u -> notify payload %u", mtu, mtu > 3 ? mtu - 3 : 20);
++            if (mtu > 3) {
++                bridge_set_chunk(mtu - 3);
++            }
++        }
+         break;
+ 
+     case GATT_COMM_EVENT_SERVER_STATE:
+@@ -573,9 +620,7 @@
+ 
+     u16 handle = att_handle;
+ 
+-#if !TEST_TRANS_CHANNEL_DATA
+-    log_info("write_callback,conn_handle =%04x, handle =%04x,size =%d\n", connection_handle, handle, buffer_size);
+-#endif
++    /* uart bridge: the per-write log_info was removed, it would flood the CDC port */
+ 
+     switch (handle) {
+ 
+@@ -590,6 +635,10 @@
+         trans_send_connetion_updata_deal(connection_handle);
+         log_info("\n------write ccc:%04x,%02x\n", handle, buffer[0]);
+         ble_gatt_server_characteristic_ccc_set(connection_handle, handle, buffer[0]);
++        if (handle == ATT_CHARACTERISTIC_ae02_01_CLIENT_CONFIGURATION_HANDLE) {
++            bridge_log("ae02 notifications %s (ccc 0x%02x)", (buffer[0] & 1) ? "enabled" : "disabled", buffer[0]);
++            bridge_tx_ready();
++        }
+         break;
+ 
+     case ATT_CHARACTERISTIC_ae10_01_VALUE_HANDLE:
+@@ -603,22 +652,8 @@
+         break;
+ 
+     case ATT_CHARACTERISTIC_ae01_01_VALUE_HANDLE:
+-
+-#if TEST_TRANS_CHANNEL_DATA
+-        /* putchar('R'); */
+-        trans_recieve_test_count += buffer_size;
+-        break;
+-#endif
+-
+-        log_info("\n-ae01_rx(%d):", buffer_size);
+-        put_buf(buffer, buffer_size);
+-
+-        //收发测试，自动发送收到的数据;for test
+-        if (ble_comm_att_check_send(connection_handle, buffer_size) &&
+-            ble_gatt_server_characteristic_ccc_get(trans_con_handle, ATT_CHARACTERISTIC_ae02_01_CLIENT_CONFIGURATION_HANDLE)) {
+-            log_info("-loop send1\n");
+-            ble_comm_att_send_data(connection_handle, ATT_CHARACTERISTIC_ae02_01_VALUE_HANDLE, buffer, buffer_size, ATT_OP_AUTO_READ_CCC);
+-        }
++        /* uart bridge: data written by the central goes to the CDC port (no hexdump, no loopback) */
++        bridge_bt_rx(buffer, buffer_size);
+         break;
+ 
+     case ATT_CHARACTERISTIC_ae03_01_VALUE_HANDLE:
+@@ -839,6 +874,7 @@
+ 
+ void bt_ble_before_start_init(void)
+ {
++    bridge_init();                      /* core tasks + log capture as early as possible */
+     log_info("%s", __FUNCTION__);
+     ble_comm_init(&trans_gatt_control_block);
+ }
+@@ -952,11 +988,8 @@
+     log_info("%s\n", __FUNCTION__);
+     log_info("ble_file: %s", __FILE__);
+ 
+-#if DOUBLE_BT_SAME_NAME
+-    ble_comm_set_config_name(bt_get_local_name(), 0);
+-#else
+-    ble_comm_set_config_name(bt_get_local_name(), 1);
+-#endif
++    bridge_init();                      /* idempotent */
++    ble_comm_set_config_name(BRIDGE_BLE_NAME, 0);
+     trans_con_handle = 0;
+     trans_server_init();
+ 
+@@ -975,6 +1008,7 @@
+ #endif
+ 
+     ble_module_enable(1);
++    bridge_log("BLE up: name %s, advertising requested (connectable, adv_auto_do=1), service ae30, rx ae01, tx ae02", BRIDGE_BLE_NAME);
+ 
+ #if TEST_TRANS_CHANNEL_DATA
+     if (TEST_TRANS_TIMER_MS < 10) {
