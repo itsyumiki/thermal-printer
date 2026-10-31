@@ -1,0 +1,232 @@
+diff --git a/src/pio_usb.c b/src/pio_usb.c
+index e84b6fa..abab9a3 100644
+--- a/src/pio_usb.c
++++ b/src/pio_usb.c
+@@ -290,7 +290,7 @@ static void apply_config(pio_port_t *pp, const pio_usb_configuration_t *c,
+   port->pin_dp = c->pin_dp;
+ 
+   if (c->pinout == PIO_USB_PINOUT_DPDM) {
+-    port->pin_dm = c->pin_dp + 1;
++    port->pin_dm = c->pin_dp + 2;
+     pp->fs_tx_program = &usb_tx_dpdm_program;
+     pp->fs_tx_pre_program = &usb_tx_pre_dpdm_program;
+     pp->ls_tx_program = &usb_tx_dmdp_program;
+@@ -559,7 +559,7 @@ int pio_usb_host_add_port(uint8_t pin_dp, PIO_USB_PINOUT pinout) {
+       root->pin_dp = pin_dp;
+ 
+       if (pinout == PIO_USB_PINOUT_DPDM) {
+-        root->pin_dm = pin_dp + 1;
++        root->pin_dm = pin_dp + 2;
+       } else {
+         root->pin_dm = pin_dp - 1;
+       }
+diff --git a/src/pio_usb_host.c b/src/pio_usb_host.c
+index 831bce9..aab3e10 100644
+--- a/src/pio_usb_host.c
++++ b/src/pio_usb_host.c
+@@ -66,10 +66,10 @@ usb_device_t *pio_usb_host_init(const pio_usb_configuration_t *c) {
+   root->mode = PIO_USB_MODE_HOST;
+ 
+   float const cpu_freq = (float)clock_get_hz(clk_sys);
+-  pio_calculate_clkdiv_from_float(cpu_freq / 48000000,
++  pio_calculate_clkdiv_from_float(cpu_freq / 24000000,
+                                   &pp->clk_div_fs_tx.div_int,
+                                   &pp->clk_div_fs_tx.div_frac);
+-  pio_calculate_clkdiv_from_float(cpu_freq / 6000000,
++  pio_calculate_clkdiv_from_float(cpu_freq / 3000000,
+                                   &pp->clk_div_ls_tx.div_int,
+                                   &pp->clk_div_ls_tx.div_frac);
+ 
+diff --git a/src/usb_rx.pio b/src/usb_rx.pio
+index 76e6fbe..432ec7f 100644
+--- a/src/usb_rx.pio
++++ b/src/usb_rx.pio
+@@ -166,7 +166,7 @@ static __always_inline void pio_sm_set_jmp_pin(PIO pio, uint sm, uint jmp_pin) {
+ 
+ static inline void usb_rx_fs_program_init(PIO pio, uint sm, uint offset, uint pin_dp, uint pin_dm, int pin_debug) {
+   if (pin_dp < pin_dm) {
+-    pio_sm_set_consecutive_pindirs(pio, sm, pin_dp, 2, false);
++    pio_sm_set_consecutive_pindirs(pio, sm, pin_dp, 3, false);
+   } else {
+     pio_sm_set_consecutive_pindirs(pio, sm, pin_dm, 2, false);
+   }
+diff --git a/src/usb_tx.pio b/src/usb_tx.pio
+index dffb7b9..2182246 100644
+--- a/src/usb_tx.pio
++++ b/src/usb_tx.pio
+@@ -3,90 +3,92 @@
+ .define public IRQ_TX_EOP 0   ; EOP start flag bit
+ 
+ ; USB NRZI transmitter
+-; Run at 48 MHz for full-spped (x4)
+-; Run at 6 MHz for low-spped (x4)
++; Run at 24 MHz for full-spped (x2)
++; Run at 3 MHz for low-spped (x2)
++; Raspberry Pi Debug Probe: three side-set pins, D+ at the base, D- two above
++; (the pin between is never enabled), and half the clock so the delays fit
+ ; autopull enabled
+ ; Should be placed at address 0
+ .program usb_tx_dpdm
+-.side_set 2
++.side_set 3
+ 
+ ; J for fs, K for ls
+-.define FJ_LK 0b01
++.define FJ_LK 0b001
+ ; K for fs, J for ls
+-.define FK_LJ 0b10
+-.define SE0 0b00
++.define FK_LJ 0b100
++.define SE0 0b000
+ 
+-irq IRQ_TX_EOP      side SE0 [7]
++irq IRQ_TX_EOP      side SE0 [3]
+ reset:
+ .wrap_target
+-out pc, 2           side FJ_LK [3]
+-set pindirs, 0b00   side FJ_LK [3]
+-out pc, 2           side FK_LJ [3]
++out pc, 2           side FJ_LK [1]
++set pindirs, 0b000   side FJ_LK [1]
++out pc, 2           side FK_LJ [1]
+ start:
+-set pindirs, 0b11   side FJ_LK
++set pindirs, 0b101   side FJ_LK
+ .wrap
+ 
+ ; USB transmitter for PRE packet (No EOP)
+-; Run at 48 MHz for full-spped
++; Run at 24 MHz for full-spped
+ ; autopull enabled
+ .program usb_tx_pre_dpdm
+-.side_set 2
++.side_set 3
+ 
+ ; J for fs, K for ls
+-.define FJ_LK 0b01
++.define FJ_LK 0b001
+ ; K for fs, J for ls
+-.define FK_LJ 0b10
+-.define SE0 0b00
++.define FK_LJ 0b100
++.define SE0 0b000
+ 
+-irq IRQ_TX_EOP      side FJ_LK [7]
++irq IRQ_TX_EOP      side FJ_LK [3]
+ reset:
+ .wrap_target
+-out pc, 2           side FJ_LK [3]
+-set pindirs, 0b00   side FJ_LK [3]
+-out pc, 2           side FK_LJ [3]
++out pc, 2           side FJ_LK [1]
++set pindirs, 0b000   side FJ_LK [1]
++out pc, 2           side FK_LJ [1]
+ start:
+-set pindirs, 0b11   side FJ_LK
++set pindirs, 0b101   side FJ_LK
+ .wrap
+ 
+ ; USB NRZI transmitter
+-; Run at 48 MHz for full-spped
+-; Run at 6 MHz for low-spped
++; Run at 24 MHz for full-spped
++; Run at 3 MHz for low-spped
+ ; autopull enabled
+ .program usb_tx_dmdp
+-.side_set 2
++.side_set 3
+ 
+-.define FK_LJ 0b01
+-.define FJ_LK 0b10
+-.define SE0 0b00
++.define FK_LJ 0b001
++.define FJ_LK 0b100
++.define SE0 0b000
+ 
+-irq IRQ_TX_EOP      side SE0 [7]
++irq IRQ_TX_EOP      side SE0 [3]
+ reset:
+ .wrap_target
+-out pc, 2           side FJ_LK [3]
+-set pindirs, 0b00   side FJ_LK [3]
+-out pc, 2           side FK_LJ [3]
++out pc, 2           side FJ_LK [1]
++set pindirs, 0b000   side FJ_LK [1]
++out pc, 2           side FK_LJ [1]
+ start:
+-set pindirs, 0b11   side FJ_LK
++set pindirs, 0b101   side FJ_LK
+ .wrap
+ 
+ ; USB transmitter for PRE packet (No EOP)
+-; Run at 48 MHz for full-spped
++; Run at 24 MHz for full-spped
+ ; autopull enabled
+ .program usb_tx_pre_dmdp
+-.side_set 2
++.side_set 3
+ 
+-.define FK_LJ 0b01
+-.define FJ_LK 0b10
+-.define SE0 0b00
++.define FK_LJ 0b001
++.define FJ_LK 0b100
++.define SE0 0b000
+ 
+-irq IRQ_TX_EOP      side FJ_LK [7]
++irq IRQ_TX_EOP      side FJ_LK [3]
+ reset:
+ .wrap_target
+-out pc, 2           side FJ_LK [3]
+-set pindirs, 0b00   side FJ_LK [3]
+-out pc, 2           side FK_LJ [3]
++out pc, 2           side FJ_LK [1]
++set pindirs, 0b000   side FJ_LK [1]
++out pc, 2           side FK_LJ [1]
+ start:
+-set pindirs, 0b11   side FJ_LK
++set pindirs, 0b101   side FJ_LK
+ .wrap
+ 
+ % c-sdk {
+@@ -94,12 +96,12 @@ set pindirs, 0b11   side FJ_LK
+ 
+   static void __no_inline_not_in_flash_func(usb_tx_configure_pins)(PIO pio, uint sm, uint pin_dp, uint pin_dm) {
+     if (pin_dp < pin_dm) {
+-      pio_sm_set_out_pins(pio, sm, pin_dp, 2);
+-      pio_sm_set_set_pins(pio, sm, pin_dp, 2);
++      pio_sm_set_out_pins(pio, sm, pin_dp, 3);
++      pio_sm_set_set_pins(pio, sm, pin_dp, 3);
+       pio_sm_set_sideset_pins(pio, sm, pin_dp);
+     } else {
+-      pio_sm_set_out_pins(pio, sm, pin_dm, 2);
+-      pio_sm_set_set_pins(pio, sm, pin_dm, 2);
++      pio_sm_set_out_pins(pio, sm, pin_dm, 3);
++      pio_sm_set_set_pins(pio, sm, pin_dm, 3);
+       pio_sm_set_sideset_pins(pio, sm, pin_dm);
+     }
+   }
+@@ -120,9 +122,9 @@ set pindirs, 0b11   side FJ_LK
+ 
+     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+ 
+-    // run at 48MHz
++    // run at 24MHz
+     // clk_sys should be multiply of 12MHz
+-    float div = (float)clock_get_hz(clk_sys) / (48000000UL);
++    float div = (float)clock_get_hz(clk_sys) / (24000000UL);
+     sm_config_set_clkdiv(&c, div);
+ 
+     pio_sm_init(pio, sm, offset + 1, &c);
+@@ -146,9 +148,9 @@ set pindirs, 0b11   side FJ_LK
+ 
+     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+ 
+-    // run at 6MHz
++    // run at 3MHz
+     // clk_sys should be multiply of 12MHz
+-    float div = (float)clock_get_hz(clk_sys) / (6000000UL);
++    float div = (float)clock_get_hz(clk_sys) / (3000000UL);
+     sm_config_set_clkdiv(&c, div);
+ 
+     pio_sm_init(pio, sm, offset + 1, &c);

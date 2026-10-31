@@ -1,0 +1,8 @@
+.deps/
+build/
+*.uf2
+*.elf
+*.bin
+*.map
+__pycache__/
+.venv/
