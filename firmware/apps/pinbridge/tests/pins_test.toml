@@ -1,0 +1,59 @@
+# TEST pin table: NOT a real board. Used only by the unit tests (C core + fake HAL, Python fake,
+# C simulator over a pty). It is richer than the real table on purpose so every capability
+# combination and the "atomic per port" paths can be exercised. Same schema as ../pins.toml.
+schema = 1
+max_pins = 12
+
+[pins.PA0]
+caps = ["in", "out", "pu", "pd"]
+note = "plain GPIO"
+
+[pins.PA1]
+caps = ["in", "out", "pu", "pd", "pwm"]
+pwm = "ch0l"
+note = "plain GPIO with PWM"
+
+[pins.PB1]
+caps = ["in", "pu", "adc"]
+adc = 5
+alias = "button"
+note = "input, pull-up, ADC (like the real PB1)"
+
+[pins.PB3]
+caps = ["in", "adc"]
+adc = 6
+alias = "paper"
+note = "input and ADC, no pulls (like the real PB3)"
+
+[pins.PB4]
+caps = ["in", "out", "pu", "pd", "adc"]
+adc = 7
+note = "everything but PWM"
+
+[pins.PC0]
+caps = ["in", "out"]
+note = "4-pin atomic pattern group (PC0..PC3)"
+
+[pins.PC1]
+caps = ["in", "out"]
+
+[pins.PC2]
+caps = ["in", "out"]
+
+[pins.PC3]
+caps = ["in", "out"]
+
+[pins.PC7]
+caps = ["in", "out", "pu", "pd"]
+alias = "led"
+
+[pins.PD0]
+caps = ["in", "out", "pu"]
+note = "port D, no pull-down"
+
+[pins.PD1]
+caps = ["in"]
+note = "input only"
+
+[denied]
+PA2 = "test: denied on purpose (documentation only)"

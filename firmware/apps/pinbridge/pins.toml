@@ -1,0 +1,81 @@
+# pinbridge: the ONE pin config (design doc section 4).
+#
+# Everything that decides which pins exist lives here. `tools/gen_pins.py` turns this file into
+#   - src/pb_pins.h                       (C table for the firmware core)
+#   - ../../../host/pinbridge/pinbridge/pins_gen.py   (same table for the Python library)
+#   - pins_table.md                       (human readable pin/denied table used by the README)
+# and prints the 32-bit config hash that HEL returns. Run `scripts/check-pinbridge.sh` to
+# regenerate into a temp dir and diff against the committed copies.
+#
+# A pin that is NOT listed under [pins.*] does not exist for the protocol: every command on it
+# answers `err pin`. Add a pin only when ALL of these hold:
+#   1. it is bonded out on the AC6956C QFN32 package (a datasheet package pin number is known),
+#   2. no SDK module enabled in THIS app owns it (see app.conf: UART0 log off, ADKEY off),
+#   3. touching it in the allowed modes cannot hurt the printer.
+# Capability flags (never sent on the wire):
+#   in  digital input (mode `in`)       out  push-pull output (modes `lo`/`hi`)
+#   pu  internal pull-up (mode `up`)    pd   internal pull-down (mode `dn`)
+#   adc analog input (needs `adc = <SDK AD_CH_* number>`)   pwm  hardware PWM (needs `pwm = "<note>"`)
+# `hiz` (the safe state) is always allowed on a listed pin.
+#
+# Evidence: package pin numbers, ADC channel numbers and board-net traces come from the owner's
+# datasheet notes and pin ledger in the (read-only) thermal-printer repo:
+#   re/docs/ac6956c-datasheet-notes.md, re/docs/pin-map.md  (AC6956C datasheet v1.1, user tracing).
+# They were NOT re-verified on hardware by this project [assumed]. The SDK ADC channel numbers
+# were checked against include_lib/driver/cpu/br23/asm/adc_api.h [verified].
+
+schema = 1
+# Only this many pins fit a worst-case 128 byte reply line (`STA` is ~9 bytes per pin).
+max_pins = 12
+
+# ---------------------------------------------------------------- allowed pins
+
+[pins.PC7]
+caps = ["in", "out", "pu", "pd"]
+alias = "led"
+note = "pkg pin 29. LED net (blink-pc7 and hello-cdc heartbeat, flashed and seen on hardware). The known-good test pin."
+
+[pins.PB1]
+caps = ["in", "pu", "adc"]
+adc = 5
+alias = "button"
+note = "pkg pin 14, ADC5. Power-button/power-control net (owner trace). SENSE ONLY: no output, no pull-down. Pull-up is what the stock firmware uses. ADKEY (which sampled this pin) is switched off in app.conf; the SDK long-press reset on PB1 is configured with time 0 (off) in board_ac635n_demo.c."
+
+[pins.PB3]
+caps = ["in", "adc"]
+adc = 6
+alias = "paper"
+note = "pkg pin 12, ADC6. Paper-presence sensor net (owner trace). SENSE ONLY, no pulls (they would bias the sensor)."
+
+[pins.PC4]
+caps = ["in", "adc"]
+adc = 10
+alias = "head_temp"
+note = "pkg pin 20, ADC10. Goes to the print head, likely the head thermistor (56k pull-up per the ledger; role inferred from code). SENSE ONLY, no pulls, no output."
+
+[pins.PC5]
+caps = ["in", "adc"]
+adc = 13
+alias = "vbat_div"
+note = "pkg pin 19, ADC13. Voltage divider, likely battery sense (owner trace; role inferred). SENSE ONLY, no pulls, no output."
+
+# ---------------------------------------------------------------- denied pins (documentation only)
+# These answer `err pin` exactly like any unlisted pin. The reasons end up in the README and in the
+# Python module (pinbridge.pins_gen.DENIED). A pin must not be in both lists (the generator checks).
+# To enable one, move it to [pins.*] on purpose, regenerate, review the diff, and flash.
+
+[denied]
+PA0  = "SDK UART0 log TX pad in the demo board config (TCFG_UART0_TX_PORT). Log is off in this app but bonding on this package is unconfirmed."
+PA1  = "Package pin 27. Traced to the printer's power-control circuitry: driving it could cut or hold board power. Owner decision."
+PA3  = "Not exposed on the QFN32 package (datasheet has no PA3); the SDK uses it as flash CS in the demo config."
+PA9  = "Package pin 26. Stepper phase A1 (owner trace). Driving motor coils can overheat them."
+PA10 = "Package pin 25. Stepper phase A2 (owner trace). Driving motor coils can overheat them."
+PC2  = "Package pin 22. Stepper phase B2 (owner trace). Driving motor coils can overheat them."
+PC3  = "Package pin 21. Stepper phase B1 (owner trace). Driving motor coils can overheat them."
+PB8  = "Package pin 8. Print head LATCH/strobe line (owner trace + firmware analysis). Thermal head."
+PB9  = "Package pin 7. Print head CLOCK line. Thermal head."
+PB10 = "Package pin 6. Print head DATA line. Thermal head."
+PB11 = "Package pin 5. Print head heater strobe/enable (TIMER2 ISR in the stock firmware). Can burn the head."
+PB5  = "Package pin 9 (LDO_IN / PB5): charger input pin, 4.5-5.5 V, not a plain GPIO to poke."
+DP   = "USB D+ (used by the CDC port). Never a pin of this protocol."
+DM   = "USB D- (used by the CDC port). Never a pin of this protocol."
