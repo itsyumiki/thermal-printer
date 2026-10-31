@@ -1,0 +1,7 @@
+[project]
+name = "br23-transporter"
+version = "0.1.0"
+description = "RP2040 transporter firmware + host tool to dump and flash a JieLi BR23 (AC6956C) thermal printer over its USB UBOOT"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["pyserial>=3.5"]
