@@ -8,11 +8,13 @@ Research log.
 - 2026-10-29: Built blink-pc7 firmware for BR23, patched into dump.bin using `patch_app.py`.
 - 2026-10-29: Flashed the blink firmware via `jluboottool.py`.
 - 2026-10-29: Verified PC7 blinks as expected.
+- 2026-11-01: Built `ble-uart-serial` (USB CDC <-> BLE bridge, shared core in `firmware/shared/uart-bridge/`), flashed it and tested on hardware: both directions work (MTU 185, name JL-UART-BLE). Open issues (ADKEY log spam on PB1, one unexplained reset, boot logs dropped, slave latency 10) are in `docs/uart-bridge-comparison.md`.
+- 2026-11-01: Decided not to build the Classic SPP variant (BLE-only: cross-OS reach, the project protocol is BLE already). Rationale in `docs/uart-bridge-comparison.md`.
 
 ## Open tasks
 
 - Identify the printer's actual pin map (print head, motor, paper sensor, button, battery sense).
-- Add UART or BLE transport app.
+- BLE transport app: first version done (`ble-uart-serial`), follow-up fixes listed in `docs/uart-bridge-comparison.md`.
 - Investigate oscillator/power pins: why does the demo board config boot, but might differ?
 - Make an automated build test that confirms reproducibility (the `faketime` fix).
 - Archive the research phase (done).
