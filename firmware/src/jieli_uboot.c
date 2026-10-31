@@ -1,4 +1,4 @@
-// JieLi WL82 UBOOT1.00 / LoaderV2 protocol, read-only subset.
+// JieLi BR23 UBOOT1.00 / LoaderV2 protocol, read-only subset.
 // Ported from jl-uboot-tool (jltech/uboot.py, cipher.py, crc.py) and the
 // fm-1-research-lab flow in tools/fm1_uboot_restore.py.
 
@@ -11,7 +11,7 @@
 #include "log.h"
 #include "pio_host.h"
 
-#define LOADER_ADDR 0x1C02000u
+#define LOADER_ADDR 0x12000u    // RAM address of br23loader (the SDK packager's -boot 0x12000)
 #define LOADER_ARG 0x0001
 
 // ROM UBOOT1.00
@@ -29,9 +29,10 @@
 
 #define KEEPALIVE_MS 1000   // the loader resets the chip after ~3 s without a command
 
-static uint8_t loader_buf[JL_LOADER_SIZE];   // uploaded by the host (fm1t.py)
+static uint8_t loader_buf[JL_LOADER_SIZE];   // uploaded by the host (br23t.py)
 static uint32_t loader_len;
 static bool loader_running;
+static uint8_t identity;     // 0 unknown, 1 chip matches JL_CHIP_KEY/JL_FLASH_ID, 2 mismatch
 static uint16_t read_chunk = JL_IO_SIZE;
 static uint64_t last_cmd_us;
 
@@ -40,6 +41,7 @@ static uint8_t __attribute__((aligned(4))) block[JL_IO_SIZE];
 
 void jl_reset(void) {
     loader_running = false;
+    identity = 0;
     read_chunk = JL_IO_SIZE;
 }
 
@@ -121,10 +123,10 @@ bool jl_ensure_loader(void) {
         return false;
     }
     if (!jl_have_loader()) {
-        dlog("JL: wl82loader not uploaded (fm1t.py --loader)");
+        dlog("JL: br23loader not uploaded (br23t.py --loader)");
         return false;
     }
-    dlog("JL: uploading wl82loader (%u bytes) to %08lX", (unsigned)JL_LOADER_SIZE,
+    dlog("JL: uploading br23loader (%u bytes) to %08lX", (unsigned)JL_LOADER_SIZE,
          (unsigned long)LOADER_ADDR);
 
     // The blob is shipped already ciphered: send it raw, 512 bytes at a time.
@@ -160,6 +162,7 @@ bool jl_ensure_loader(void) {
     }
 
     loader_running = true;
+    identity = 0;
     last_cmd_us = time_us_64();
     dlog("JL: loader running");
 
@@ -220,6 +223,19 @@ bool jl_flash_read(uint32_t addr, uint16_t len, uint8_t *buf) {
     return true;
 }
 
+bool jl_identity_ok(void) {
+    if (identity == 0) {
+        jl_info_t i;
+        if (!jl_info(&i)) return false;      // stays unknown: the caller refuses
+        identity = (i.chip_key == JL_CHIP_KEY && i.flash_id == JL_FLASH_ID) ? 1 : 2;
+        if (identity != 1) {
+            dlog("JL: chip key %04X / flash id %06lX do not match this build (%04X / %06X)",
+                 i.chip_key, (unsigned long)i.flash_id, JL_CHIP_KEY, JL_FLASH_ID);
+        }
+    }
+    return identity == 1;
+}
+
 bool jl_flash_write_sector(uint32_t addr, const uint8_t *data) {
     if (addr < JL_WRITE_MIN || addr >= JL_WRITE_END || (addr % JL_SECTOR_SIZE)) {
         dlog("JL: write to %06lX refused (allowed: %06X-%06X, 4 KiB aligned)",
@@ -227,6 +243,10 @@ bool jl_flash_write_sector(uint32_t addr, const uint8_t *data) {
         return false;
     }
     if (!jl_ensure_loader()) return false;
+    if (!jl_identity_ok()) {
+        dlog("JL: write to %06lX refused: chip identity not confirmed", (unsigned long)addr);
+        return false;
+    }
 
     uint8_t args[9];
     put_be32(args, addr);
@@ -268,7 +288,7 @@ bool jl_run_app(void) {
     if (!loader_running) return false;
     uint8_t args[4];
     put_be32(args, 1);
-    dlog("JL: RUN_APP - the FM-1 leaves UBOOT and boots its firmware");
+    dlog("JL: RUN_APP - the chip leaves UBOOT and boots its firmware");
     // The chip may reset before it answers; either way the loader is gone.
     cmd_exec(CMD_RUN_APP, args, sizeof(args));
     loader_running = false;
@@ -284,7 +304,7 @@ void jl_keepalive(void) {
 //--------------------------------------------------------------------+
 // RAM-run (ROM UBOOT1.00 stage only; requested by fm-1-research-lab)
 //--------------------------------------------------------------------+
-// WL82 UBOOT1.00 runs every memory write/read through jl_crc_cipher, per
+// WL82 UBOOT1.00 (FM-1) ran every memory write/read through jl_crc_cipher, per
 // transfer. These refuse to run once the loader is up: it lives at
 // LOADER_ADDR, the same address RAM-run images use, and would be clobbered.
 

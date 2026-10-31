@@ -1,6 +1,6 @@
 // Mac-facing USB device on the RP2040 native controller (rhport 0):
 //   CDC 0: log console (src/log.c, one-letter diagnostics)
-//   CDC 1: fm1t data channel (src/transporter_proto.c)
+//   CDC 1: br23t data channel (src/transporter_proto.c)
 //   Raspberry Pi reset interface, so `picotool -f` and a 1200 baud touch on
 //   the console still reboot the board into BOOTSEL.
 
@@ -53,10 +53,10 @@ static char serial_str[PICO_UNIQUE_BOARD_ID_SIZE_BYTES * 2 + 1];
 
 static const char *const desc_str[STR_COUNT] = {
     [STR_MANUF] = "kurogedelic",
-    [STR_PRODUCT] = "FM-1 Transporter",
+    [STR_PRODUCT] = "BR23 Transporter",
     [STR_SERIAL] = serial_str,
-    [STR_CDC0] = "FM-1 Transporter console",
-    [STR_CDC1] = "FM-1 Transporter data",
+    [STR_CDC0] = "BR23 Transporter console",
+    [STR_CDC1] = "BR23 Transporter data",
     [STR_RESET] = "Reset",
 };
 

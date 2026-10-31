@@ -1,6 +1,6 @@
 #pragma once
 
-// Mac-facing data channel on the second CDC interface (tools/fm1t.py).
+// Mac-facing data channel on the second CDC interface (host/br23t.py).
 //
 // Requests are text lines; replies are text lines, and `read` replies carry
 // a raw binary payload:
@@ -12,14 +12,15 @@
 //   runapp                -> OK | ERR no-loader  (loader RUN_APP: boot firmware)
 //   rekey                 -> OK rekey, then the transporter reboots into
 //                            USB_KEY mode (for a unit stuck with USB up)
-//   info                  -> OK key=980F type=3 id=856014 | ERR <why>
+//   info                  -> OK key=3496 type=3 id=856013 | ERR <why>
 //   read <addr> <len>     -> DATA <len>\n <len raw bytes> END <crc32>\n | ERR <why>
 //   ldr <off> <len> <crc32>\n <len raw bytes (<= 4096)>
-//                         -> OK | ERR <why>   (upload wl82loader.bin in order)
+//                         -> OK | ERR <why>   (upload br23loader.bin in order)
 //   wsec <addr> <crc32>\n <4096 raw bytes>
 //                         -> OK | ERR <why>   (erase + write + read-back verify)
 //
-// Writes are accepted only for whole 4 KiB sectors in [0x4000, 0x93000);
+// Writes are accepted only for whole 4 KiB sectors in [0x3000, 0x63000) and only
+// when the chip reports key 3496 / flash id 856013 (ERR identity otherwise);
 // see jieli_uboot.h. No block/chip erase exists.
 
 // core 0: feed bytes received on CDC 1; drain queued output to CDC 1.

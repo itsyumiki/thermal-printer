@@ -191,6 +191,14 @@ static void do_write_sector(uint32_t addr, uint32_t crc) {
         tx_line("ERR range");
         return;
     }
+    if (!jl_ensure_loader()) {
+        tx_line("ERR loader");
+        return;
+    }
+    if (!jl_identity_ok()) {
+        tx_line("ERR identity");
+        return;
+    }
     dlog("PROTO: write sector %06lX", (unsigned long)addr);
     tx_line(jl_flash_write_sector(addr, sector) ? "OK" : "ERR write");
 }

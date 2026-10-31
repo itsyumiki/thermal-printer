@@ -1,7 +1,7 @@
 # Architecture
 
 ```
-Mac ── native USB (CDC 0: log, CDC 1: fm1t) ──► XIAO RP2040 ── GP0/GP1/GND ──► FM-1
+Mac ── native USB (CDC 0: log, CDC 1: br23t) ──► XIAO RP2040 ── GP0/GP1/GND ──► printer
 ```
 
 | | Role |
@@ -12,17 +12,16 @@ Mac ── native USB (CDC 0: log, CDC 1: fm1t) ──► XIAO RP2040 ── GP0
 
 ## Boot flow
 
-1. If D+ is already pulled up (FM-1 running): 6 s of 1 ms pulses.
-   Otherwise: send USB_KEY `0x16EF` until ACK, then 1 ms pulses.
+1. If D+ is already pulled up (printer running): 6 s of 1 ms pulses.
+   Otherwise: send USB_KEY `0x16EF` until ACK, then 1 ms pulses. Switch the printer ON while the key runs.
 2. Release GP0/GP1 and start the PIO USB host.
-3. Stock V15 (`4C4A:C755`): the soft key moves it to UBOOT.
-   UBOOT (`4C4A:8057`): ready for `fm1t`.
+3. UBOOT (`4C4A:2342`): ready for `br23t`. (The FM-1's stock-V15 soft key is still in the code but cannot trigger on the printer.)
 
 The ROM trims its clock from the 1 ms pulses. If the pulses stop too early, it boots from flash instead.
 
 ## Safety
 
-The firmware writes only whole 4 KiB sectors in `0x4000`–`0x93000` and refuses everything else.
+The firmware writes only whole 4 KiB sectors in `0x3000`–`0x63000`, and only when the chip reports key `3496` / flash id `856013`. It refuses everything else.
 
 ## Source
 
@@ -31,5 +30,5 @@ The firmware writes only whole 4 KiB sectors in `0x4000`–`0x93000` and refuses
 | `src/recovery.c` | USB_KEY and pulses |
 | `src/pio_host.c` | USB host and soft key |
 | `src/jieli_uboot.c` | UBOOT and loader commands |
-| `src/transporter_proto.c` | fm1t protocol |
-| `tools/fm1t.py` | Mac client |
+| `src/transporter_proto.c` | br23t protocol |
+| `../host/br23t.py` | host client |

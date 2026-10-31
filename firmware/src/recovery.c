@@ -246,7 +246,7 @@ void recovery_run(void) {
     bool blink = false;
 
     key_start();
-    dlog("KEY: sending 0x%04X, polarity A (D+ clock, D- data). Switch the FM-1 ON now.",
+    dlog("KEY: sending 0x%04X, polarity A (D+ clock, D- data). Switch the printer ON now.",
          USB_KEY_WORD);
 
     for (;;) {

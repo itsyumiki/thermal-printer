@@ -3,23 +3,29 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// JieLi WL82 UBOOT1.00 + wl82loader (LoaderV2), read-only subset.
+// JieLi BR23 (AC6956C) UBOOT1.00 + br23loader (LoaderV2), read-only subset.
 // See docs/PROTOCOL.md. Core 1 only.
 //
-// Writes are limited to whole 4 KiB sectors inside the application area
-// [JL_WRITE_MIN, JL_WRITE_END). Header/SPL/isd_config below 0x4000 and the
-// device data from 0x93000 up are refused here, whatever the host asks.
+// BR23 thermal-printer profile. Writes are limited to whole 4 KiB sectors
+// inside [JL_WRITE_MIN, JL_WRITE_END), which is the printer's app area:
+//   0x3000  sector holding the end of uboot.boot + isd_config.ini (bytes
+//           0x3000-0x30FF, never changed by a normal flash) and, from 0x3100,
+//           app_area_head, the entry list and the start of app.bin
+//   0x3100..0x63578  app.bin, cfg_tool.bin, tone resources
+// Everything below 0x3000 (uboot.boot, directory) and from 0x63000 up (VM
+// storage, BTIF/Bluetooth info, key_mac) is refused here, whatever the host asks.
+// Writes are also refused unless the chip reports JL_CHIP_KEY / JL_FLASH_ID.
 // Deliberately absent: block/chip erase, chip-key write. RAM writes exist only
 // for the loader upload and the ROM-stage RAM-run calls below (RAM, never flash).
 
-#define JL_CHIP_KEY 0x980F
-#define JL_FLASH_ID 0x856014
-#define JL_FLASH_SIZE (1024u * 1024u)
+#define JL_CHIP_KEY 0x3496
+#define JL_FLASH_ID 0x856013
+#define JL_FLASH_SIZE (512u * 1024u)
 #define JL_IO_SIZE 512          // loader upload and flash write chunk
 #define JL_READ_MAX 4096        // largest READ_FLASH we issue (see jl_read_chunk)
 #define JL_SECTOR_SIZE 0x1000
-#define JL_WRITE_MIN 0x4000
-#define JL_WRITE_END 0x93000
+#define JL_WRITE_MIN 0x3000
+#define JL_WRITE_END 0x63000
 
 typedef struct {
     uint16_t chip_key;
@@ -30,7 +36,7 @@ typedef struct {
 // Forget loader state (call on every new mount).
 void jl_reset(void);
 
-#define JL_LOADER_SIZE 24064    // wl82loader.bin
+#define JL_LOADER_SIZE 11264    // br23loader.bin (jl-uboot-tool)
 
 // True once the host has uploaded the whole loader.
 bool jl_have_loader(void);
@@ -38,10 +44,14 @@ bool jl_have_loader(void);
 // Stores a loader chunk; chunks must arrive in order, starting at off 0.
 bool jl_loader_load(uint32_t off, const uint8_t *data, uint32_t len);
 
-// Uploads wl82loader to RAM and jumps to it, once per mount.
+// Uploads br23loader to RAM and jumps to it, once per mount.
 bool jl_ensure_loader(void);
 
 bool jl_info(jl_info_t *info);
+
+// True if the chip behind the running loader reports JL_CHIP_KEY and
+// JL_FLASH_ID (read once per loader session). Writes require it.
+bool jl_identity_ok(void);
 
 // READ_FLASH size to use: the loader's USB buffer size (GET_USB_BUFF_SIZE),
 // clamped to [JL_IO_SIZE, JL_READ_MAX] in 512-byte steps. Each Bulk-Only

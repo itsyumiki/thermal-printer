@@ -41,14 +41,13 @@ static void core1_main(void) {
     }
     sleep_ms(200);
 
-    printf("\nFM-1 Transporter\n");
+    printf("\nBR23 Transporter\n");
 #if FM1T_BOARD_DEBUGPROBE
     printf("Debug Probe: D+=GP4 (UART TX, orange) D-=GP6 (UART RX, yellow), PIO host on PIO1\n");
 #else
     printf("XIAO RP2040: D+=GP0/D6 D-=GP1/D7, PIO host on PIO1\n");
 #endif
-    printf("If the FM-1 runs stock V15, leave it on: fm1t enters UBOOT via the soft key.\n");
-    printf("Otherwise switch it OFF, and ON again once the key is running.\n");
+    printf("Switch the printer OFF, and ON again once the key is running.\n");
 
     recovery_init();
 #if FM1T_HOST_ONLY

@@ -19,6 +19,7 @@
 #define HOST_RHPORT 1
 #define FM1_VID 0x4C4A
 #define FM1_PID 0x8057
+#define BR23_PID 0x2342         // BR23 mask-ROM UBOOT1.00 ("BR23UBOOT1.00")
 #define FM1_V15_PID 0xC755      // stock FM-1 application (USB audio + MIDI)
 #define XFER_TIMEOUT_MS 2000
 #define FIRST_CBW_DELAY_MS 1500     // macOS had the device for seconds before its first CBW
@@ -293,7 +294,7 @@ static bool probe_descriptors(uint8_t daddr) {
     mounted_is_v15 = dd.idVendor == FM1_VID && dd.idProduct == FM1_V15_PID;
     if (mounted_is_v15) {
         dlog("  stock FM-1 application; `uboot` (fm1t) or console k enters UBOOT via the soft key");
-    } else if (dd.idVendor != FM1_VID || dd.idProduct != FM1_PID) {
+    } else if (dd.idVendor != FM1_VID || (dd.idProduct != FM1_PID && dd.idProduct != BR23_PID)) {
         dlog("  not the JieLi UBOOT (%04X:%04X expected)", FM1_VID, FM1_PID);
     }
 
