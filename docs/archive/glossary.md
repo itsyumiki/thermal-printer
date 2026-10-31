@@ -1,0 +1,21 @@
+# Glossary
+
+- **BR23**: JieLi platform/board family label used by the SDK. Family resemblance is not proof of exact silicon compatibility.
+- **AC6956C / AC635N**: chip/product family identifiers seen in this investigation. Similar build architecture does not mean their ROM ABI or peripherals are interchangeable.
+- **pi32 / pi32v2**: JieLi compiler target triples/architecture generations. Treat a mismatch warning as a real compatibility concern until vendor documentation or binary tests resolve it.
+- **R3 (`-mcpu=r3`)**: target CPU option passed by these Linux Makefiles.
+- **Clang**: compiler frontend and code generator used for C/C++ and integrated assembly.
+- **LLVM IR / bitcode**: compiler intermediate representation; `-flto` lets link-time optimization operate on it.
+- **LTO**: link-time optimization, which can optimize across source files during final link.
+- **`lto-wrapper` / `lto-ar`**: JieLi toolchain helpers for LTO-aware linking and archive handling.
+- **ELF**: Executable and Linkable Format container holding linked program sections, symbols and metadata.
+- **Linker script (`.ld`)**: defines address spaces, section placement, entry symbol and reserved memory.
+- **Map file (`.map`)**: human-readable report of link placement and symbol/section accounting.
+- **Overlay**: code/data payload loaded or mapped selectively to save scarce RAM/flash, commonly used for audio codecs and other optional modules.
+- **ROM stub / absolute symbol**: symbol linked to a fixed address assumed to be implemented by chip ROM; wrong addresses can break at runtime despite a clean link.
+- **ISP**: in-system programming, typically factory/service programming of flash.
+- **OTA / JL-OTA**: over-the-air firmware update mechanisms; their package format differs from a raw application payload.
+- **SPP**: Bluetooth Classic Serial Port Profile, often used as a serial-like data transport.
+- **BLE / GATT**: Bluetooth Low Energy transport and its attribute/service model.
+- **Bluetooth HID**: Bluetooth Human Interface Device profile. Not the same as USB HID.
+- **PID / VID**: product/vendor identifiers used in package or host-device metadata; preserve values where the updater requires them.
