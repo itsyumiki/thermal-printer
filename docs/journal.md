@@ -11,6 +11,8 @@ Research log.
 - 2026-11-01: Built `ble-uart-serial` (USB CDC <-> BLE bridge, shared core in `firmware/shared/uart-bridge/`), flashed it and tested on hardware: both directions work (MTU 185, name JL-UART-BLE). Open issues (ADKEY log spam on PB1, one unexplained reset, boot logs dropped, slave latency 10) are in `docs/uart-bridge-comparison.md`.
 - 2026-11-01: Decided not to build the Classic SPP variant (BLE-only: cross-OS reach, the project protocol is BLE already). Rationale in `docs/uart-bridge-comparison.md`.
 
+- 2026-11-01: Started pinbridge on branch `pinbridge`: generated pin tables/hash (`e611f647` real config), initial header-only protocol core, Python host skeleton, firmware adapter and safety documentation. Host smoke tests pass (2 tests); C core compiles with `-Wall -Wextra -Werror`. Firmware build is still being debugged; implementation is partial and not ready to flash.
+
 ## Open tasks
 
 - Identify the printer's actual pin map (print head, motor, paper sensor, button, battery sense).

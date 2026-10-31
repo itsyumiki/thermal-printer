@@ -1,6 +1,6 @@
 # pinbridge: design (protocol v2, "jlpin")
 
-Status: **design, nothing implemented yet** (2026-11-01). Written before the firmware so the protocol is not only in a prompt.
+Status: **partial implementation; not ready to flash** (2026-11-01). Config generator, initial portable core, host skeleton and firmware adapter exist; protocol coverage and firmware validation remain incomplete.
 Tags: [verified] seen in SDK headers/logs, [to verify] must be checked against the SDK before relying on it, [estimate] a guess, [open] needs an owner decision.
 
 ## 1. Goal
@@ -57,7 +57,7 @@ Initial contents: the agent infers the bonded-out pins from the docs on the box;
 | `DBG` | `DBG on\|off` | `ok` | enables `#` debug lines |
 
 **Modes** for `MOD`: `hiz` (safe state: input, no pull, digital buffer off), `in` (digital input, no pull), `up` (input + pull-up), `dn` (input + pull-down), `lo` / `hi` (output, initial level set atomically), `adc` (analog: digital buffer off, pulls off), `pwm`. A mode the pin's flags don't allow gives `err cap`.
-`GET` on an output pin returns the pad level if the SDK allows reading it back, else the last written level [to verify].
+`GET` on an output pin returns the last written software shadow level; pad readback is not used because its semantics could not be verified.
 `SET` with several pins is atomic per port; the SDK's `gpio_out(gpio, start, len, dat)` looks like the multi-bit primitive [to verify its semantics and whether pins across ports can be done in one go; if not, document the per-port granularity].
 Example:
 ```text
@@ -75,7 +75,7 @@ RST            ->  ok
 ```
 
 ## 7. Watchdog and reset detection
-Any valid line (including `HEL`) feeds the watchdog. If it expires while any pin is an output or PWM, firmware performs `RST` and emits `!wdg`. The Python library arms nothing extra (it is already on) and sends `HEL` at about a third of the timeout.
+Only lines that reply `ok` (including `HEL`) feed the watchdog. If it expires while any pin is an output or PWM, firmware performs `RST` and emits `!wdg`. The Python library arms nothing extra (it is already on) and sends `HEL` at about a third of the timeout.
 Also go to the safe state when the host closes the port, if the CDC line state (DTR) or a USB detach/suspend event is readable [to verify; if not, say so in the README].
 Reset detection is host-side via `up=`. One unexplained board reset was seen in the BLE bridge hardware run (docs/uart-bridge-comparison.md); the firmware main loop must stay simple and any SDK watchdog/stack concern should be noted.
 
