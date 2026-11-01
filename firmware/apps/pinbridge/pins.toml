@@ -8,10 +8,10 @@
 # regenerate into a temp dir and diff against the committed copies.
 #
 # A pin that is NOT listed under [pins.*] does not exist for the protocol: every command on it
-# answers `err pin`. Add a pin only when ALL of these hold:
-#   1. it is bonded out on the AC6956C QFN32 package (a datasheet package pin number is known),
-#   2. no SDK module enabled in THIS app owns it (see app.conf: UART0 log off, ADKEY off),
-#   3. touching it in the allowed modes cannot hurt the printer.
+# answers `err pin`. This is the raw host GPIO allow-list. Include documented driver pins even
+# when they control motors/printhead; use caution in test procedures rather than hiding them.
+# Keep pins denied only for concrete conflicts (USB, non-GPIO power/charger net, unresolved SDK
+# ownership, or unconfirmed package bonding). Exact electrical roles remain [assumed] until tested.
 # Capability flags (never sent on the wire):
 #   in  digital input (mode `in`)       out  push-pull output (modes `lo`/`hi`)
 #   pu  internal pull-up (mode `up`)    pd   internal pull-down (mode `dn`)
@@ -25,8 +25,9 @@
 # were checked against include_lib/driver/cpu/br23/asm/adc_api.h [verified].
 
 schema = 1
-# Only this many pins fit a worst-case 128 byte reply line (`STA` is ~9 bytes per pin).
-max_pins = 12
+# The command parser supports up to 16 configured pins. `GET` output fits within 128 bytes
+# at this count; query `STA` for subsets if many pins use verbose modes such as `hiz`.
+max_pins = 16
 
 # ---------------------------------------------------------------- allowed pins
 
@@ -36,46 +37,66 @@ alias = "led"
 note = "pkg pin 29. LED net (blink-pc7 and hello-cdc heartbeat, flashed and seen on hardware). The known-good test pin."
 
 [pins.PB1]
-caps = ["in", "pu", "adc"]
-adc = 5
+caps = ["in", "pu"]
 alias = "button"
-note = "pkg pin 14, ADC5. Power-button/power-control net (owner trace). SENSE ONLY: no output, no pull-down. Pull-up is what the stock firmware uses. ADKEY (which sampled this pin) is switched off in app.conf; the SDK long-press reset on PB1 is configured with time 0 (off) in board_ac635n_demo.c."
+note = "pkg pin 14. Power-button/power-control net (owner trace). SENSE ONLY: no output, no pull-down. Pull-up is what the stock firmware uses. ADKEY (which sampled this pin) is switched off in app.conf; the SDK long-press reset on PB1 is configured with time 0 (off) in board_ac635n_demo.c."
 
 [pins.PB3]
-caps = ["in", "adc"]
-adc = 6
+caps = ["in"]
 alias = "paper"
-note = "pkg pin 12, ADC6. Paper-presence sensor net (owner trace). SENSE ONLY, no pulls (they would bias the sensor)."
+note = "pkg pin 12. Paper-presence sensor net (owner trace). SENSE ONLY, no pulls (they would bias the sensor)."
 
 [pins.PC4]
-caps = ["in", "adc"]
-adc = 10
+caps = ["in"]
 alias = "head_temp"
-note = "pkg pin 20, ADC10. Goes to the print head, likely the head thermistor (56k pull-up per the ledger; role inferred from code). SENSE ONLY, no pulls, no output."
+note = "pkg pin 20. Goes to the print head, likely the head thermistor (56k pull-up per the ledger; role inferred from code). SENSE ONLY, no pulls, no output."
 
 [pins.PC5]
-caps = ["in", "adc"]
-adc = 13
+caps = ["in"]
 alias = "vbat_div"
-note = "pkg pin 19, ADC13. Voltage divider, likely battery sense (owner trace; role inferred). SENSE ONLY, no pulls, no output."
+note = "pkg pin 19. Voltage divider, likely battery sense (owner trace; role inferred). SENSE ONLY, no pulls, no output."
 
 # ---------------------------------------------------------------- denied pins (documentation only)
 # These answer `err pin` exactly like any unlisted pin. The reasons end up in the README and in the
 # Python module (pinbridge.pins_gen.DENIED). A pin must not be in both lists (the generator checks).
 # To enable one, move it to [pins.*] on purpose, regenerate, review the diff, and flash.
 
+[pins.PA9]
+caps = ["in", "out", "pu", "pd"]
+note = "pkg pin 26. Stepper phase A1 (owner trace); host GPIO access for driver development. Mapping not hardware-verified."
+
+[pins.PA10]
+caps = ["in", "out", "pu", "pd"]
+note = "pkg pin 25. Stepper phase A2 (owner trace); host GPIO access for driver development. Mapping not hardware-verified."
+
+[pins.PC2]
+caps = ["in", "out", "pu", "pd"]
+note = "pkg pin 22. Stepper phase B2 (owner trace); host GPIO access for driver development. Mapping not hardware-verified."
+
+[pins.PC3]
+caps = ["in", "out", "pu", "pd"]
+note = "pkg pin 21. Stepper phase B1 (owner trace); host GPIO access for driver development. Mapping not hardware-verified."
+
+[pins.PB8]
+caps = ["in", "out", "pu", "pd"]
+note = "pkg pin 8. Printhead LATCH/strobe line (owner trace + firmware analysis); host GPIO access. Mapping not hardware-verified."
+
+[pins.PB9]
+caps = ["in", "out", "pu", "pd"]
+note = "pkg pin 7. Printhead CLOCK line (owner trace); host GPIO access. Mapping not hardware-verified."
+
+[pins.PB10]
+caps = ["in", "out", "pu", "pd"]
+note = "pkg pin 6. Printhead DATA line (owner trace); host GPIO access. Mapping not hardware-verified."
+
+[pins.PB11]
+caps = ["in", "out", "pu", "pd"]
+note = "pkg pin 5. Printhead heater strobe/enable (TIMER2 ISR in stock firmware); host GPIO access for controlled experiments. Can burn head; mapping not hardware-verified."
+
 [denied]
-PA0  = "SDK UART0 log TX pad in the demo board config (TCFG_UART0_TX_PORT). Log is off in this app but bonding on this package is unconfirmed."
-PA1  = "Package pin 27. Traced to the printer's power-control circuitry: driving it could cut or hold board power. Owner decision."
-PA3  = "Not exposed on the QFN32 package (datasheet has no PA3); the SDK uses it as flash CS in the demo config."
-PA9  = "Package pin 26. Stepper phase A1 (owner trace). Driving motor coils can overheat them."
-PA10 = "Package pin 25. Stepper phase A2 (owner trace). Driving motor coils can overheat them."
-PC2  = "Package pin 22. Stepper phase B2 (owner trace). Driving motor coils can overheat them."
-PC3  = "Package pin 21. Stepper phase B1 (owner trace). Driving motor coils can overheat them."
-PB8  = "Package pin 8. Print head LATCH/strobe line (owner trace + firmware analysis). Thermal head."
-PB9  = "Package pin 7. Print head CLOCK line. Thermal head."
-PB10 = "Package pin 6. Print head DATA line. Thermal head."
-PB11 = "Package pin 5. Print head heater strobe/enable (TIMER2 ISR in the stock firmware). Can burn the head."
+PA0  = "SDK UART0 log TX pad in demo config; log is off here, but package bonding/ownership is not confirmed."
+PA1  = "Package pin 27. Traced to printer power-control circuitry; driving it could cut or hold board power. Electrical ownership unresolved."
+PA3  = "Not exposed on the QFN32 package (datasheet has no PA3); SDK uses it as flash CS in demo config."
 PB5  = "Package pin 9 (LDO_IN / PB5): charger input pin, 4.5-5.5 V, not a plain GPIO to poke."
-DP   = "USB D+ (used by the CDC port). Never a pin of this protocol."
-DM   = "USB D- (used by the CDC port). Never a pin of this protocol."
+DP   = "USB D+ (used by the CDC port). Reserved for USB transport."
+DM   = "USB D- (used by the CDC port). Reserved for USB transport."

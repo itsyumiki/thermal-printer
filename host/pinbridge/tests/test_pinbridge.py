@@ -14,6 +14,15 @@ class Tests(unittest.TestCase):
         self.assertIn("PC7=1", b.get("PC7")[0])
         b.close()
 
+    def test_stepper_and_printhead_gpio(self):
+        b = Board(serial_obj=FakeSerial()).open()
+        for pin in ("PA9", "PA10", "PC2", "PC3", "PB8", "PB9", "PB10", "PB11"):
+            b.mod(pin, "lo")
+            b.set(**{pin: 1})
+            self.assertIn(f"{pin}=1", b.get(pin)[0])
+        b.rst()
+        b.close()
+
     def test_hash_mismatch(self):
         s = FakeSerial()
         s._cmd = lambda line: s.q.append(b"ok jlpin 2 deadbeef up=1\n")

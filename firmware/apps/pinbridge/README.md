@@ -1,6 +1,6 @@
 # SAFETY — READ BEFORE POWERING THE BOARD
 
-The printer pin map is only partly known. Raw pin control can burn the thermal head or overheat motor coils. **Test on USB power only, with the thermal head disconnected and motor/battery supply off.** Never experiment on the assembled printer with power circuitry attached.
+The printer pin map is only partly known. Raw pin control can burn the thermal head or overheat motor coils. **Test on USB power only, with the thermal head disconnected and motor/battery supply off.** Never experiment on the assembled printer with power circuitry attached. Stepper and printhead pins are intentionally host-accessible for driver development; PB11 heater-strobe control is especially hazardous. GPIO access does not provide deterministic pulse timing over USB CDC.
 
 Boot does not intentionally configure GPIO; only SDK startup behavior remains. No protocol pin is touched until `MOD`. Pins absent from the allow-list return `err pin`. The watchdog defaults to 5000 ms and returns active outputs to high impedance after a timeout. This code has **not been tested on hardware**.
 
@@ -18,13 +18,13 @@ Install the host package in a venv: `python -m pip install ./host/pinbridge` (or
 
 ## Pin table
 
-See generated [`pins_table.md`](pins_table.md). Current config hash: `e611f647` (`HEL` hash). Allowed pins: PC7 (digital in/out and pulls; `led` alias, known-good LED test net), PB1 (input/pull-up/ADC5, `button`, sense only), PB3 (input/ADC6, `paper`, sense only), PC4 (input/ADC10, `head_temp`, sense only), PC5 (input/ADC13, `vbat_div`, sense only). Only PC7 permits output. No real configured pin supports PWM.
+See generated [`pins_table.md`](pins_table.md). Current config hash is generated in that table and returned by `HEL`. Allowed pins: PC7 (digital GPIO, `led` alias, known-good LED test net); PA9/PA10/PC2/PC3 (stepper phases); PB8/PB9/PB10/PB11 (printhead latch/clock/data/heater strobe); PB1/PB3/PC4/PC5 remain input-oriented sensor/power-sense pins. This configuration exposes only normal digital GPIO modes (input/output/pulls/high-impedance); ADC and PWM are out of scope for this phase. The added stepper/head assignments are based on owner notes and are not hardware-verified.
 
-Denied: PA0 (UART0/log pad; bonding not confirmed), PA1 (power control), PA3 (not on package), PA9/PA10/PC2/PC3 (stepper phases), PB8/PB9/PB10 (head latch/clock/data), PB11 (heater strobe), PB5 (charger/LDO input), DP/DM (USB data). Every other unlisted pin is denied because the available evidence does not confirm safe bonded-out use. The source evidence is the owner's pin ledger and datasheet notes, not hardware verification by this project.
+Denied: PA0 (SDK/log ownership and bonding unresolved), PA1 (power control), PA3 (not on package), PB5 (charger/LDO input), DP/DM (USB data). Other unlisted pins remain denied until bonding and electrical ownership are confirmed. Driver pins are not denied merely because they belong to printer subsystems.
 
 ## Build size [compiled]
 
-`build-pinbridge3/sdk.elf`: text 66,184 B, data 7,952 B, bss 9,856 B. `app.bin`: 66,224 B, below the 393,216 B application area (0x3000..0x63000) by 326,992 B. The existing hello-cdc baseline (`build-basecdc`) has text 81,400 B, data 7,952 B, bss 9,000 B and app.bin 81,440 B. Delta: text -15,216 B, data 0 B, bss +856 B, app.bin -15,216 B. These are build artifacts only; not proof of runtime safety.
+Latest local build (`~/projects/scratch-bridge/build-pinbridge`): text 49,580 B + data 17,008 B; `app.bin` 66,628 B, below the 393,216 B application area (0x3000..0x63000) by 326,588 B. SHA-256: `7ff96e3b56da3ab2f98af73e2513b75253da4ac674ffed8cc30534a517b1226e`. No stack-size warning in the latest build after moving command scratch buffers out of the task stack and increasing the command task stack allocation. These are build artifacts only; not proof of runtime safety.
 
 The SDK symbol-resolution report resolves the app overrides of `log_print`, `printf`, `puts`, `putchar`, and `put_buf` to `app_idle.o` [compiled]. The resolution file still shows `task_pc.c.o` referencing `cdc_write_data` in the stock `usb_cdc_wakeup`; replacing the wakeup callback at runtime is required and remains [untested on hardware].
 
@@ -42,6 +42,6 @@ The SDK symbol-resolution report resolves the app overrides of `log_print`, `pri
 1. USB power only; head disconnected; motor/battery supply off. Keep a recovery/known-good firmware image ready.
 2. Enumerate CDC and send `HEL`; report exact line/hash and whether `STA` responds cleanly without boot/log noise.
 3. Send `MOD PC7 lo`, `SET PC7=1`, `SET PC7=0`, `RST`; report LED behavior and any resets.
-4. With a meter only and the same safe setup, test PB1/PB3/PC4/PC5 as inputs/ADC without connecting external loads; report raw/mV stability and whether values change with known-safe stimuli.
+4. With a meter only and the same safe setup, test PB1/PB3/PC4/PC5 as digital inputs (PB1 may use pull-up); ADC is out of scope for this build.
 5. Arm an output, stop sending commands, and verify `!wdg` plus safe state after about five seconds. Unplug USB while output is configured and report safe-state behavior.
-6. Do not test denied pins or connect the print head/motor/battery supply. Send the full transcript, board revision, firmware hash and any unexpected lines to the maintainer.
+6. Do not connect the print head/motor/battery supply during initial GPIO tests. Do not drive PA1, PB5, DP or DM. Test the newly allowed stepper/head pins first as unloaded GPIO and only with the owner-reviewed pin map. Send the full transcript, board revision, firmware hash and any unexpected lines to the maintainer.

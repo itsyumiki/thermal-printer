@@ -3,31 +3,31 @@
 Same table as the firmware's pb_pins.h. Regenerate with scripts/check-pinbridge.sh --update.
 """
 
-CFG_HASH = "e611f647"
+CFG_HASH = "546c66a8"
 
 # (name, port, bit, caps, adc_channel, pwm_note, alias, note)
 PINS = (
-    ('PB1', 1, 1, ('in', 'pu', 'adc'), 5, None, 'button', 'pkg pin 14, ADC5. Power-button/power-control net (owner trace). SENSE ONLY: no output, no pull-down. Pull-up is what the stock firmware uses. ADKEY (which sampled this pin) is switched off in app.conf; the SDK long-press reset on PB1 is configured with time 0 (off) in board_ac635n_demo.c.'),
-    ('PB3', 1, 3, ('in', 'adc'), 6, None, 'paper', 'pkg pin 12, ADC6. Paper-presence sensor net (owner trace). SENSE ONLY, no pulls (they would bias the sensor).'),
-    ('PC4', 2, 4, ('in', 'adc'), 10, None, 'head_temp', 'pkg pin 20, ADC10. Goes to the print head, likely the head thermistor (56k pull-up per the ledger; role inferred from code). SENSE ONLY, no pulls, no output.'),
-    ('PC5', 2, 5, ('in', 'adc'), 13, None, 'vbat_div', 'pkg pin 19, ADC13. Voltage divider, likely battery sense (owner trace; role inferred). SENSE ONLY, no pulls, no output.'),
+    ('PA9', 0, 9, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 26. Stepper phase A1 (owner trace); host GPIO access for driver development. Mapping not hardware-verified.'),
+    ('PA10', 0, 10, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 25. Stepper phase A2 (owner trace); host GPIO access for driver development. Mapping not hardware-verified.'),
+    ('PB1', 1, 1, ('in', 'pu'), None, None, 'button', 'pkg pin 14. Power-button/power-control net (owner trace). SENSE ONLY: no output, no pull-down. Pull-up is what the stock firmware uses. ADKEY (which sampled this pin) is switched off in app.conf; the SDK long-press reset on PB1 is configured with time 0 (off) in board_ac635n_demo.c.'),
+    ('PB3', 1, 3, ('in',), None, None, 'paper', 'pkg pin 12. Paper-presence sensor net (owner trace). SENSE ONLY, no pulls (they would bias the sensor).'),
+    ('PB8', 1, 8, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 8. Printhead LATCH/strobe line (owner trace + firmware analysis); host GPIO access. Mapping not hardware-verified.'),
+    ('PB9', 1, 9, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 7. Printhead CLOCK line (owner trace); host GPIO access. Mapping not hardware-verified.'),
+    ('PB10', 1, 10, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 6. Printhead DATA line (owner trace); host GPIO access. Mapping not hardware-verified.'),
+    ('PB11', 1, 11, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 5. Printhead heater strobe/enable (TIMER2 ISR in stock firmware); host GPIO access for controlled experiments. Can burn head; mapping not hardware-verified.'),
+    ('PC2', 2, 2, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 22. Stepper phase B2 (owner trace); host GPIO access for driver development. Mapping not hardware-verified.'),
+    ('PC3', 2, 3, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 21. Stepper phase B1 (owner trace); host GPIO access for driver development. Mapping not hardware-verified.'),
+    ('PC4', 2, 4, ('in',), None, None, 'head_temp', 'pkg pin 20. Goes to the print head, likely the head thermistor (56k pull-up per the ledger; role inferred from code). SENSE ONLY, no pulls, no output.'),
+    ('PC5', 2, 5, ('in',), None, None, 'vbat_div', 'pkg pin 19. Voltage divider, likely battery sense (owner trace; role inferred). SENSE ONLY, no pulls, no output.'),
     ('PC7', 2, 7, ('in', 'out', 'pu', 'pd'), None, None, 'led', 'pkg pin 29. LED net (blink-pc7 and hello-cdc heartbeat, flashed and seen on hardware). The known-good test pin.'),
 )
 
 # pins that are deliberately not available, with the reason (documentation only)
 DENIED = {
-    'PA0': 'SDK UART0 log TX pad in the demo board config (TCFG_UART0_TX_PORT). Log is off in this app but bonding on this package is unconfirmed.',
-    'PA1': "Package pin 27. Traced to the printer's power-control circuitry: driving it could cut or hold board power. Owner decision.",
-    'PA3': 'Not exposed on the QFN32 package (datasheet has no PA3); the SDK uses it as flash CS in the demo config.',
-    'PA9': 'Package pin 26. Stepper phase A1 (owner trace). Driving motor coils can overheat them.',
-    'PA10': 'Package pin 25. Stepper phase A2 (owner trace). Driving motor coils can overheat them.',
+    'PA0': 'SDK UART0 log TX pad in demo config; log is off here, but package bonding/ownership is not confirmed.',
+    'PA1': 'Package pin 27. Traced to printer power-control circuitry; driving it could cut or hold board power. Electrical ownership unresolved.',
+    'PA3': 'Not exposed on the QFN32 package (datasheet has no PA3); SDK uses it as flash CS in demo config.',
     'PB5': 'Package pin 9 (LDO_IN / PB5): charger input pin, 4.5-5.5 V, not a plain GPIO to poke.',
-    'PB8': 'Package pin 8. Print head LATCH/strobe line (owner trace + firmware analysis). Thermal head.',
-    'PB9': 'Package pin 7. Print head CLOCK line. Thermal head.',
-    'PB10': 'Package pin 6. Print head DATA line. Thermal head.',
-    'PB11': 'Package pin 5. Print head heater strobe/enable (TIMER2 ISR in the stock firmware). Can burn the head.',
-    'PC2': 'Package pin 22. Stepper phase B2 (owner trace). Driving motor coils can overheat them.',
-    'PC3': 'Package pin 21. Stepper phase B1 (owner trace). Driving motor coils can overheat them.',
-    'DP': 'USB D+ (used by the CDC port). Never a pin of this protocol.',
-    'DM': 'USB D- (used by the CDC port). Never a pin of this protocol.',
+    'DP': 'USB D+ (used by the CDC port). Reserved for USB transport.',
+    'DM': 'USB D- (used by the CDC port). Reserved for USB transport.',
 }

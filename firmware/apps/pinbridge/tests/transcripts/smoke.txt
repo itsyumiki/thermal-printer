@@ -1,4 +1,5 @@
-# shared golden smoke transcript
+# shared golden smoke transcript using the synthetic test table
+@config test
 > HEL
 < ok jlpin 2 {cfg} up={int}
 > MOD PC7 lo
@@ -7,5 +8,11 @@
 < ok
 > GET PC7
 < ok PC7=1
+> MOD PC2 lo
+< ok
+> SET PC2=0
+< ok
+@hw PC7=hi PC2=lo
+@writes 2
 > RST
 < ok

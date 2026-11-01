@@ -50,6 +50,8 @@ def load(path):
     if cfg.get("schema") != 1:
         fail(f"{path}: schema must be 1")
     max_pins = cfg.get("max_pins", 12)
+    if not isinstance(max_pins, int) or max_pins < 1 or max_pins > 16:
+        fail(f"{path}: max_pins must be an integer from 1 to 16 (core command arrays are sized for 16)")
     pins = []
     for name, p in cfg.get("pins", {}).items():
         pb = parse_pin(name)
