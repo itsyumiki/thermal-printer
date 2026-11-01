@@ -8,6 +8,14 @@
 < ok
 > GET PC7
 < ok PC7=1
+> MOD PB1 up
+< ok
+@pad PB1=1
+> GET PB1
+< ok PB1=1
+@pad PB1=0
+> GET PB1
+< ok PB1=0
 > MOD PC2 lo
 < ok
 > SET PC2=0

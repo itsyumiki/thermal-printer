@@ -428,10 +428,24 @@ static void pb_command(pb_core *c, char *line) {
       pb_append(b, sizeof(c->reply), &z, " ");
       pb_append(b, sizeof(c->reply), &z, pb_defs[k].name);
       pb_append(b, sizeof(c->reply), &z, "=");
-      if (sta)
+      if (sta) {
         pb_append(b, sizeof(c->reply), &z, pb_modes[c->pins[k].mode]);
-      else
-        pb_append(b, sizeof(c->reply), &z, c->pins[k].level ? "1" : "0");
+      } else {
+        unsigned level = c->pins[k].level;
+        /* Input reads must sample the physical pad, not the output shadow.
+         * The shadow is only meaningful for output modes. */
+        if (c->pins[k].mode == PB_IN || c->pins[k].mode == PB_UP ||
+            c->pins[k].mode == PB_DN) {
+          if (!c->h.read_port) {
+            pb_error(c, "bsy", pb_defs[k].name);
+            return;
+          }
+          level = (c->h.read_port(c->h.ctx, pb_defs[k].port) >>
+                   pb_defs[k].bit) & 1u;
+          c->pins[k].last = (uint8_t)level;
+        }
+        pb_append(b, sizeof(c->reply), &z, level ? "1" : "0");
+      }
     }
     pb_reply(c, b);
     c->last_feed = now;

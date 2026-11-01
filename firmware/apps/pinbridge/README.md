@@ -43,7 +43,7 @@ By default the server binds to localhost only. Do not expose it to an untrusted 
 - [assumed] Pin bonding and net assignments come from the owner's documentation; no hardware is available here.
 - [untested on hardware] CDC wakeup replacement, detach safe state, GPIO register sequencing, ADC sampling, watchdog timing and USB behavior.
 - [compiled] is only claimed for build stages that complete; check the final project report for exact result.
-- The 10 ms OS tick limits watchdog/listener granularity. ADC battery readings in the SDK are stale/averaged by its slow refresh loop. `GET` on outputs reports the software shadow, not verified pad readback.
+- The 10 ms OS tick limits watchdog/listener granularity. ADC battery readings in the SDK are stale/averaged by its slow refresh loop. `GET` on input modes (`in`, `up`, `dn`) samples the GPIO pad input register; `GET` on outputs (`lo`, `hi`) reports the software shadow, not verified pad readback.
 - PWM is intentionally not exposed on the real pin table. DTR state is not readable in the SDK; unplug/detach event handling is the available best-effort safe-state mechanism. A closed host port relies on the watchdog.
 - The portable core currently has a basic implementation; do not treat this experimental branch as production-safe until all protocol and firmware limitations are resolved and the hardware checklist is completed.
 
