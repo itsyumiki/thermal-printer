@@ -52,6 +52,7 @@ function renderPins(){
    const read=document.createElement("button");read.className="button subtle";read.textContent="Read";read.onclick=()=>send({action:"get",pin:p.name});controls.append(read);card.append(controls);
   }else if(!denied){const controls=document.createElement("div");controls.className="pin-controls";const note=document.createElement("span");note.className="muted";note.textContent="Connect to control";controls.append(note);card.append(controls)}
   const stateLine=document.createElement("div");stateLine.className="pin-state";const left=document.createElement("span");left.textContent="CURRENT MODE";const right=document.createElement("b");right.textContent=denied?"UNAVAILABLE":modeLabels[st.mode]||"Not configured";stateLine.append(left,right);card.append(stateLine);
+  if(!denied){const valueLine=document.createElement("div");valueLine.className="pin-state pin-value-line";const valueLabel=document.createElement("span");valueLabel.textContent="PIN VALUE";const valueText=document.createElement("b");const value=st.value;valueText.textContent=value===1?"HIGH (1)":value===0?"LOW (0)":"Not read";valueText.classList.toggle("value-low",value===0);valueText.classList.toggle("value-unknown",value!==0&&value!==1);valueLine.append(valueLabel,valueText);card.append(valueLine)}
   if(denied){const d=document.createElement("div");d.className="pin-state";d.textContent=p.note;card.append(d)}
   grid.append(card);
  });
