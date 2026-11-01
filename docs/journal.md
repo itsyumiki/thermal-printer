@@ -22,3 +22,5 @@ Research log.
 - Make an automated build test that confirms reproducibility (the `faketime` fix).
 - Archive the research phase (done).
 - Cleanup: delete the Soundbox SDK checkout (it is unused) and the `work/` scratch directories.
+
+- 2026-11-02: Follow-up pinbridge work added five transcript files (including real-table GET/STA no-argument checks), a Python unittest harness for C transcripts and fake subset, Board behavior tests, a capability-filtered optional Tk GUI, danger-gate pure logic, and keepalive HEL thread. The C runner reply consumption was corrected to preserve buffered subsequent lines. PTY simulator and full independent fake parity remain unfinished. GUI widgets were not visually exercised (headless environment).

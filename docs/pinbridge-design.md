@@ -117,6 +117,10 @@ Match the repo's Python conventions (look for pyproject/uv/pytest and how `br23t
 3. PWM: worth it if only a few pins support it?
 4. Later: carry the same protocol over the BLE bridge (line-based, 128 B max, chunked)?
 
+## 15. Optional GUI port
+
+The optional `python -m pinbridge gui` module is a new compact Tk/customtkinter UI inspired by the same-owner AGPLv3 gpiodemo task-queue interface at `1224fb6^`. Old protocol/connection/parser plumbing and the SAM4E numeric pin map are not reused. `pinbridge.pins_gen` is the only pin source. Semantic mapping: mode menu -> capability-filtered `MOD`; output toggle -> `GET` + `SET`; listener checkbox -> `LSN` / `LSN off`; RESET ALL and close -> `RST`; Board HEL keepalive maintains the default watchdog. Dangerous output gate requires one confirmation per session, with typed `PB11` for the heater-strobe pin. UI starts with every row `untouched`; it does not configure pins or restore outputs after reset. The widget code has not been visually exercised because the environment is headless.
+
 ## 14. Changelog / deviations
 (Implementers: record any deviation from this document here and in the final report, with the reason.)
 
@@ -125,3 +129,9 @@ Match the repo's Python conventions (look for pyproject/uv/pytest and how `br23t
 - 2026-11-01: `GET` on output modes reports the core's last-written software level; physical pad readback semantics are unverified. Core remains header-only because the SDK build overlays a single app source; libc string routines link in the SDK build [compiled]. The C transcript harness was changed from a permissive stub into a strict line comparator and its wrong-reply rejection was checked. Transcript coverage is still incomplete; do not infer full section 12 coverage from the smoke case.
 - 2026-11-01: DTR is not a reliable disconnect indicator in this SDK: CDC sets line-state bits unconditionally and does not clear them on close. The watchdog is the real net for a closed host port; OTG detach handling is best-effort and untested on hardware. Firmware uses a separate TX task because `cdc_write_data` may block, but queue scheduling and runtime callback replacement remain untested on hardware.
 - 2026-11-01: ADC sweep example deferred/omitted. Current validation is host compilation and a small golden smoke transcript plus three Python smoke tests, not the comprehensive suite originally specified. Full C/Python/PTTY transcript parity, watchdog/listener edge-case matrix, CLI REPL smoke, and the complete example/test matrix remain incomplete.
+
+- 2026-11-02: Added five shared C transcripts (synthetic cases plus a separately compiled real-table runner) and host tests for the strict C transcript runner, Python fake smoke path, Board reset/error/event/keepalive/context-manager behavior, and GUI adapter/gate. The Python fake and C core are not yet behaviorally equivalent for all directives; PTY pb_sim and full transcript parity remain open.
+- 2026-11-02: Added an optional Tk/customtkinter GUI as a rewrite inspired by the same-owner AGPLv3 gpiodemo task-queue/UI concept. Old protocol layer and SAM4E pin map were not reused. Provenance is in GUI module headers. ADC sweep remains deferred.
+
+- 2026-11-02: Reformatted the header-only core for readability. Five transcript files now exercise command/error behavior, atomic SET rejection/write counts, line resync, watchdog and real-table GET/STA. The real-table transcript configures all 13 pins as inputs and verifies no-argument GET/STA replies fit the protocol line limit. These tests prove the successful HAL `set_mode` path and SET value parsing through MOD/SET/GET replies; they do not constitute full protocol coverage.
+- 2026-11-02: Board now sends periodic HEL keepalives at 1.5 s for the default 5 s watchdog and has host tests for backwards `up=` reset detection, `ack_reset()`, exception mapping, event queue, and context-manager close. This is host-only validation.

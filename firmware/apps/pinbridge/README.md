@@ -28,6 +28,14 @@ Latest final local build (`~/projects/scratch-bridge/build-pinbridge-final2`): `
 
 The SDK symbol-resolution report resolves the app overrides of `log_print`, `printf`, `puts`, `putchar`, and `put_buf` to `app_idle.o` [compiled]. The resolution file still shows `task_pc.c.o` referencing `cdc_write_data` in the stock `usb_cdc_wakeup`; replacing the wakeup callback at runtime is required and remains [untested on hardware].
 
+## Optional GUI (`pinbridge-gui`)
+
+Install the optional GUI extra in a virtual environment: `uv pip install -e 'host/pinbridge[gui]'`. Run `PYTHONPATH=host/pinbridge python -m pinbridge gui --mock` for a fake-only try-out, or `PYTHONPATH=host/pinbridge python -m pinbridge gui --port /dev/ttyACM0` for an explicitly selected CDC port. The GUI imports its widget module only when the `gui` subcommand is selected; importing the core library does not require tkinter/customtkinter.
+
+The GUI is a fresh, compact Tk/customtkinter implementation inspired by the task-queue seam in same-owner AGPLv3 gpiodemo (commit `1224fb6^`). Old wire protocol code and its SAM4E pin map were not reused. The adapter maps mode selection to `MOD <pin> hiz|in|up|dn|lo|hi`, output toggles to `GET` + `SET`, listener toggles to `LSN` / `LSN off`, and shutdown to `RST`. Mode options are derived from each generated pin's capabilities. Dangerous stepper/head pins require first-use confirmation for output; PB11 requires typing `PB11`. RESET ALL is always visible. No pins are configured at startup and reconnect/reset does not restore outputs. Watchdog/reset indications clear displayed state and require operator review.
+
+[tested on host] Adapter/mode-gate tests run headless. [tested on host] `tkinter` imports and `customtkinter` 6.0.0 installs in a temporary `uv` venv. [untested] No display/Xvfb is available, so the Tk widgets have not been seen by a human or driven through an actual GUI session. [untested on hardware] Serial event timing and GUI behavior against firmware are not tested. The current fake's listener/watchdog fidelity is limited; use `--mock` to exercise the basic UI only, not to validate safety timing.
+
 ## Limits and status
 
 - [assumed] Pin bonding and net assignments come from the owner's documentation; no hardware is available here.
