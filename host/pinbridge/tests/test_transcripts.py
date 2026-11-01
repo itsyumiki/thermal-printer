@@ -1,16 +1,20 @@
 """Run shared golden transcripts through the strict C runner and Python fake."""
 
+import os
 import pathlib
+import pty
 import shutil
 import subprocess
 import tempfile
 import unittest
 
+from pinbridge.board import Board
 from pinbridge.fake import FakeSerial
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 TRANSCRIPTS = ROOT / "firmware/apps/pinbridge/tests/transcripts"
 C_RUNNER = ROOT / "firmware/apps/pinbridge/tests/c/pb_test.c"
+C_SIM = ROOT / "firmware/apps/pinbridge/tests/c/pb_sim.c"
 
 
 class TranscriptTests(unittest.TestCase):
@@ -19,6 +23,7 @@ class TranscriptTests(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory(prefix="pinbridge-tests-")
         cls.binary = pathlib.Path(cls.tmp.name) / "pb_test"
         cls.real_binary = pathlib.Path(cls.tmp.name) / "pb_test_real"
+        cls.sim_binary = pathlib.Path(cls.tmp.name) / "pb_sim"
         cc = shutil.which("gcc")
         if not cc:
             raise unittest.SkipTest(
@@ -44,6 +49,21 @@ class TranscriptTests(unittest.TestCase):
             + ["-o", str(cls.real_binary)],
             check=True,
         )
+        subprocess.run(
+            [
+                cc,
+                "-std=c11",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                '-DPB_PINS_HEADER="pb_pins.h"',
+                "-I" + str(ROOT / "firmware/apps/pinbridge/src"),
+                str(C_SIM),
+                "-o",
+                str(cls.sim_binary),
+            ],
+            check=True,
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -55,7 +75,9 @@ class TranscriptTests(unittest.TestCase):
         self.assertGreaterEqual(len(cases), 5)
         for case in cases:
             with self.subTest(transcript=case.name):
-                runner = self.real_binary if case.name == "real-table.txt" else self.binary
+                runner = (
+                    self.real_binary if case.name == "real-table.txt" else self.binary
+                )
                 subprocess.run(
                     [str(runner), str(case)],
                     check=True,
@@ -99,10 +121,46 @@ class TranscriptTests(unittest.TestCase):
         self.assertTrue(ok, detail)
 
     def test_python_runner_rejects_wrong_transcript(self):
-        content = (TRANSCRIPTS / "smoke.txt").read_text().replace("< ok\n", "< WRONG\n", 1)
+        content = (
+            (TRANSCRIPTS / "smoke.txt").read_text().replace("< ok\n", "< WRONG\n", 1)
+        )
         ok, detail = self._run_python_fake_transcript(content)
         self.assertFalse(ok)
         self.assertIsNotNone(detail)
+
+    @unittest.skipUnless(os.name == "posix", "PTY serial integration requires POSIX")
+    def test_board_round_trip_over_pty_c_simulator(self):
+        try:
+            import serial  # noqa: F401
+        except ImportError:
+            self.skipTest("pyserial unavailable")
+        master_fd, slave_fd = pty.openpty()
+        port = os.ttyname(slave_fd)
+        process = subprocess.Popen(
+            [str(self.sim_binary)],
+            stdin=master_fd,
+            stdout=master_fd,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        board = Board(port, timeout=1.0)
+        try:
+            board.open()
+            self.assertEqual(board.mod("PC7", "lo"), [])
+            self.assertEqual(board.set(PC7=True), [])
+            self.assertEqual(board.get("PC7"), ["PC7=1"])
+            self.assertEqual(board.rst(), [])
+        finally:
+            board.close()
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1)
+            os.close(master_fd)
 
 
 if __name__ == "__main__":
