@@ -1,0 +1,64 @@
+# command and GPIO regression cases
+@config test
+> HEL
+< ok jlpin 2 {cfg} up={int}
+>r mod pc7 lo
+< ok
+> SET PC7=1
+< ok
+@writes 1
+> GET pc7
+< ok PC7=1
+> STA PC7
+< ok PC7=hi
+> LSN PB3
+< err mod PB3
+> MOD PB1 up
+< ok
+> LSN PB1
+< ok
+> LSN off
+< ok
+> MOD PB1 adc
+< ok
+> ADC PB1
+< ok PB1=412/1219
+> PWM PB1 500
+< err cmd PWM
+> WDG 0
+< ok
+> DBG on
+< ok
+> DBG off
+< #rx DBG t=0
+< ok
+> RST
+< ok
+> WHAT
+< err cmd WHAT
+> MOD
+< err arg
+> MOD PZ9 up
+< err pin PZ9
+> MOD PB3 lo
+< err cap PB3
+> MOD PC7 hi
+< ok
+> SET PC7=1 PZ9=0
+< err pin PZ9
+@writes 0
+> MOD PC7 invalid
+< err arg invalid
+> WDG 50
+< err arg 50
+> WDG 100
+< ok
+> WDG 3600001
+< err arg 3600001
+> MOD PC7 hi
+< ok
+> SET PC7=0
+< ok
+@writes 1
+> RST
+< ok

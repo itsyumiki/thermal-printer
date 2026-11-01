@@ -19,6 +19,8 @@ class Board:
         self._reset = False
         self.on_event = None
         self.up = None
+        self._keepalive_stop = threading.Event()
+        self._keepalive_thread = None
 
     def open(self):
         if self.serial is None:
@@ -43,7 +45,21 @@ class Board:
         if data[0] != "jlpin" or data[1] != "2":
             raise ProtocolError(f"unsupported protocol version {data[0]}")
         self.up = int(data[3].split("=", 1)[1])
+        self._keepalive_stop.clear()
+        self._keepalive_thread = threading.Thread(target=self._keepalive_loop, daemon=True, name="pinbridge-keepalive")
+        self._keepalive_thread.start()
         return self
+
+    def _keepalive_loop(self):
+        # Feed the default 5 s firmware watchdog at roughly one-third interval.
+        while not self._keepalive_stop.wait(1.5):
+            try:
+                self.command("HEL")
+            except BoardReset:
+                return
+            except Exception:
+                # The next foreground command reports transport failure; do not spin.
+                continue
 
     def _read_loop(self):
         while not self._stop.is_set():
@@ -139,6 +155,7 @@ class Board:
                 self.command("RST")
         except Exception:
             pass
+        self._keepalive_stop.set()
         self._stop.set()
         if self.serial:
             try:

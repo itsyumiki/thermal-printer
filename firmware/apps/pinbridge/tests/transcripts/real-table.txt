@@ -1,0 +1,35 @@
+@config real
+> HEL
+< ok jlpin 2 {cfg} up={int}
+> MOD PA9 in
+< ok
+> MOD PA10 in
+< ok
+> MOD PB1 in
+< ok
+> MOD PB3 in
+< ok
+> MOD PB8 in
+< ok
+> MOD PB9 in
+< ok
+> MOD PB10 in
+< ok
+> MOD PB11 in
+< ok
+> MOD PC2 in
+< ok
+> MOD PC3 in
+< ok
+> MOD PC4 in
+< ok
+> MOD PC5 in
+< ok
+> MOD PC7 in
+< ok
+> GET
+< ok PA9=0 PA10=0 PB1=0 PB3=0 PB8=0 PB9=0 PB10=0 PB11=0 PC2=0 PC3=0 PC4=0 PC5=0 PC7=0
+> STA
+< ok PA9=in PA10=in PB1=in PB3=in PB8=in PB9=in PB10=in PB11=in PC2=in PC3=in PC4=in PC5=in PC7=in
+> RST
+< ok

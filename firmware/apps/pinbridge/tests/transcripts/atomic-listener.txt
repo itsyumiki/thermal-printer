@@ -1,0 +1,22 @@
+@config test
+> MOD PC0 lo
+< ok
+> MOD PC1 lo
+< ok
+> SET PC0=1 PC1=0
+< ok
+@writes 1
+> SET PC0=0 PC1=1 BAD=0
+< err pin BAD
+@writes 0
+> MOD PB1 up
+< ok
+> LSN PB1
+< ok
+@pad PB1=0
+@advance 50
+> LSN off PB3
+< ok
+> RST
+< ok
+@hw PC0=in PC1=in PB1=in

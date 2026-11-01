@@ -77,9 +77,8 @@ class FakeSerial:
                     self.values[pin] = v
                     self.modes[pin] = "hi" if v else "lo"
         elif c == "RST":
-            self.modes = {
-                p[0]: ("hiz" if self.modes[p[0]] != "off" else "off") for p in PINS
-            }
+            self.modes = {p[0]: "off" for p in PINS}
+            self.values = {p[0]: 0 for p in PINS}
         elif c in ("GET", "STA"):
             names = t[1:] or [p[0] for p in PINS]
             out = "ok"
@@ -102,8 +101,23 @@ class FakeSerial:
                 or (int(t[1]) and not 100 <= int(t[1]) <= 3600000)
             ):
                 out = f"err arg {t[-1]}"
-        elif c == "DBG" or c == "LSN":
-            pass
+        elif c == "DBG":
+            if len(t) != 2 or t[1].lower() not in ("on", "off"):
+                out = "err arg"
+        elif c == "LSN":
+            if len(t) < 2:
+                out = "err arg"
+            elif t[1].lower() == "off":
+                pass
+            else:
+                for pin in t[1:]:
+                    p = next((p for p in PINS if p[0] == pin.upper()), None)
+                    if not p:
+                        out = f"err pin {pin}"
+                        break
+                    if self.modes[p[0]] not in ("in", "up", "dn"):
+                        out = f"err mod {pin}"
+                        break
         elif c == "ADC":
             out = "ok PB1=412/1219" if len(t) > 1 else "err arg"
         else:

@@ -1,0 +1,9 @@
+# length and ignored lines
+
+# comment
+> HEL
+< ok jlpin 2 {cfg} up={int}
+@long 140
+< err len
+> HEL
+< ok jlpin 2 {cfg} up={int}
