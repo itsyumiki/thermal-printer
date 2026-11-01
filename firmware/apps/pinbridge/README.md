@@ -24,7 +24,7 @@ Denied: PA0 (SDK/log ownership and bonding unresolved), PA1 (power control), PA3
 
 ## Build size [compiled]
 
-Latest local build (`~/projects/scratch-bridge/build-pinbridge`): text 49,580 B + data 17,008 B; `app.bin` 66,628 B, below the 393,216 B application area (0x3000..0x63000) by 326,588 B. SHA-256: `7ff96e3b56da3ab2f98af73e2513b75253da4ac674ffed8cc30534a517b1226e`. No stack-size warning in the latest build after moving command scratch buffers out of the task stack and increasing the command task stack allocation. These are build artifacts only; not proof of runtime safety.
+Latest final local build (`~/projects/scratch-bridge/build-pinbridge-final2`): `size sdk.elf` reports text 66,776 B, data 7,952 B, bss 10,084 B; `app.bin` 66,816 B, below the 393,216 B application area (0x3000..0x63000) by 326,400 B. Against `build-basecdc/app.bin` (81,440 B from the baseline build record), this is 14,624 B smaller. SHA-256: `6611f3663248e2d1aba66178f5a3547f46603e0bfa6514f3ef3e526801def5da`. These are [compiled] artifacts only; not proof of runtime safety.
 
 The SDK symbol-resolution report resolves the app overrides of `log_print`, `printf`, `puts`, `putchar`, and `put_buf` to `app_idle.o` [compiled]. The resolution file still shows `task_pc.c.o` referencing `cdc_write_data` in the stock `usb_cdc_wakeup`; replacing the wakeup callback at runtime is required and remains [untested on hardware].
 
