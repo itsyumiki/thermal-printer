@@ -6,7 +6,10 @@
 #include "usb/device/usb_stack.h"
 #include "usb/usb_config.h"
 #include "usb/device/cdc.h"
+#include "asm/adc_api.h"
 #include "pb_core.h"
+/* The BR23 SDK header omits this public implementation declaration. */
+extern u32 adc_get_value(u32 ch);
 #if !TCFG_USB_SLAVE_CDC_ENABLE
 #error "pinbridge requires USB CDC"
 #endif
@@ -24,7 +27,31 @@ static void pb_wakeup(void *dev){(void)dev;os_sem_post(&rx_sem);}
 static int hal_mode(void *ctx,unsigned port,unsigned bit,unsigned mode,unsigned level){JL_PORT_FLASH_TypeDef *p=ports[port];u32 mask=1u<<bit;(void)ctx;local_irq_disable();if(mode==PB_HIZ){p->DIR|=mask;p->PU&=~mask;p->PD&=~mask;p->DIE&=~mask;p->DIEH&=~mask;}else if(mode==PB_IN||mode==PB_UP||mode==PB_DN||mode==PB_ADC){p->DIR|=mask;p->PU=(p->PU&~mask)|(mode==PB_UP?mask:0);p->PD=(p->PD&~mask)|(mode==PB_DN?mask:0);p->DIE=(p->DIE&~mask)|((mode==PB_ADC)?0:mask);p->DIEH&=~mask;}else if(mode==PB_LO||mode==PB_HI){if(level)p->OUT|=mask;else p->OUT&=~mask;p->DIE|=mask;p->DIR&=~mask;}else {local_irq_enable();return -1;}local_irq_enable();return 0;}
 static void hal_write(void *ctx,unsigned port,uint16_t mask,uint16_t vals){(void)ctx;local_irq_disable();ports[port]->OUT=(ports[port]->OUT&~mask)|(vals&mask);local_irq_enable();}
 static uint16_t hal_read(void *ctx,unsigned port){(void)ctx;return (uint16_t)ports[port]->IN;}
-static int hal_adc(void *ctx,int ch,unsigned *raw,unsigned *mv){(void)ctx;(void)ch;(void)raw;(void)mv;return -1;}
+static u16 adc_registered;
+static u32 adc_ready_at[16];
+static int hal_adc(void *ctx,int ch,unsigned *raw,unsigned *mv){
+    u32 sdk_ch, now;
+    (void)ctx;
+    if(ch==-2){
+        if(!raw&&!mv)return 0;
+        if(raw)*raw=adc_get_value(AD_CH_VBAT);
+        if(mv)*mv=adc_get_voltage(AD_CH_VBAT)*4u; /* SDK VBAT channel measures one quarter of the rail */
+        return 0;
+    }
+    if(ch<0||ch>=16)return -1;
+    sdk_ch=(u32)ch;
+    if(!(adc_registered&(1u<<sdk_ch))){
+        adc_add_sample_ch(sdk_ch);
+        adc_registered|=(u16)(1u<<sdk_ch);
+        adc_ready_at[sdk_ch]=jiffies+10u; /* let the SDK's 2 ms scan loop collect a real sample */
+    }
+    if(!raw&&!mv)return 0; /* capability/probe call from MOD */
+    now=jiffies;
+    if((int32_t)(now-adc_ready_at[sdk_ch])<0)return -1;
+    if(raw)*raw=adc_get_value(sdk_ch);
+    if(mv)*mv=adc_get_voltage(sdk_ch);
+    return 0;
+}
 static uint32_t hal_ms(void *ctx){(void)ctx;return jiffies*10u;}
 static int hal_tx(void *ctx,const char *s,size_t n){size_t i;u16 free_space;(void)ctx;free_space=(u16)((rd+PB_RING-wr-1)%PB_RING);if(n>free_space){drops++;return -1;}for(i=0;i<n;i++){ring[wr]=(u8)s[i];wr=(u16)((wr+1)%PB_RING);}return (int)n;}
 static void tx_task(void *priv){u8 b[64];(void)priv;for(;;){unsigned n=0;while(rd!=wr&&n<sizeof b){b[n++]=ring[rd];rd=(u16)((rd+1)%PB_RING);}if(n){if(!cdc_write_data(PB_USB,b,n)){} }else os_time_dly(1);}}

@@ -39,6 +39,7 @@ def _pin_data():
                 "port": "ABC"[port],
                 "bit": bit,
                 "caps": list(caps),
+                "adc": adc,
                 "alias": alias,
                 "note": note,
                 "dangerous": name
@@ -221,6 +222,68 @@ class WebBackend:
             return {"type": "disconnected"}
         if action == "status":
             return {"type": "status", "status": await self._status()}
+        if action == "printer_poll":
+            if not self.board:
+                return {"type": "error", "message": "Connect to a device first."}
+            try:
+
+                def poll_printer():
+                    with self.board_lock:
+                        # Keep the two digital sensors in their measured modes and
+                        # the two analog sensor nets connected to the SDK ADC scanner.
+                        self.board.command("MOD PB1 up")
+                        self.board.command("MOD PB3 in")
+                        self.board.command("MOD PC4 adc")
+                        self.board.command("MOD PC5 adc")
+                        digital = self.board.get("PB1", "PB3")
+                        try:
+                            analog = self.board.adc("PC4", "PC5")
+                        except BusyError:
+                            # First ADC mode switch registers channels with the SDK's
+                            # periodic scanner; allow it to collect before retrying.
+                            time.sleep(0.12)
+                            analog = self.board.adc("PC4", "PC5")
+                    levels = {}
+                    for item in digital:
+                        if "=" in item:
+                            key, value = item.split("=", 1)
+                            levels[key] = int(value)
+                    readings = {}
+                    for item in analog:
+                        if "=" in item:
+                            key, value = item.split("=", 1)
+                            raw, mv = value.split("/", 1)
+                            readings[key] = {"raw": int(raw), "mv": int(mv)}
+                    return levels, readings
+
+                levels, readings = await asyncio.to_thread(poll_printer)
+                status = await self._status()
+                for pin in status["pins"]:
+                    reading = readings.get(pin["name"])
+                    if reading:
+                        pin["value"] = reading["raw"]
+                        pin["mv"] = reading["mv"]
+                return {
+                    "type": "printer_status",
+                    "status": status,
+                    "printer": {
+                        "paper_present": levels.get("PB3") == 0,
+                        "paper_level": levels.get("PB3"),
+                        "power_button_pressed": levels.get("PB1") == 0,
+                        "power_button_level": levels.get("PB1"),
+                        "power_latched": any(
+                            p["name"] == "PA1" and p["value"] == 1
+                            for p in status["pins"]
+                        ),
+                        "head_sensor": readings.get("PC4"),
+                        "battery_sensor": readings.get("PC5"),
+                    },
+                }
+            except Exception as exc:
+                return {
+                    "type": "error",
+                    "message": f"Printer status poll failed: {exc}",
+                }
         if action in {"startup", "power"}:
             if not self.board:
                 return {"type": "error", "message": "Connect to a device first."}
@@ -267,16 +330,23 @@ class WebBackend:
             return {"type": "error", "message": "Connect to a device first."}
         pin = str(msg.get("pin", "")).upper()
         allowed = {p[0] for p in PINS}
-        if action in {"mode", "set", "get", "listen"} and pin not in allowed:
+        if action in {"mode", "set", "get", "adc", "listen"} and pin not in allowed:
             return {"type": "error", "message": "Unknown or unavailable GPIO pin."}
         try:
             if action == "mode":
                 mode = str(msg.get("mode", "")).lower()
-                valid = {"hiz", "in", "up", "dn", "lo", "hi"}
+                valid = {"hiz", "in", "up", "dn", "lo", "hi", "adc"}
                 if mode not in valid:
                     return {"type": "error", "message": "Unsupported mode."}
                 spec = next(p for p in PINS if p[0] == pin)
-                need = {"in": "in", "up": "pu", "dn": "pd", "lo": "out", "hi": "out"}
+                need = {
+                    "in": "in",
+                    "up": "pu",
+                    "dn": "pd",
+                    "lo": "out",
+                    "hi": "out",
+                    "adc": "adc",
+                }
                 if mode != "hiz" and need.get(mode) not in spec[3]:
                     return {
                         "type": "error",
@@ -365,6 +435,16 @@ class WebBackend:
                     mode = "up" if pin == "PB1" else "in"
                     await self._command(f"MOD {pin} {mode}")
                 reply = await self._command(f"GET {pin}")
+            elif action == "adc":
+                spec = next(p for p in PINS if p[0] == pin)
+                if "adc" not in spec[3]:
+                    return {"type": "error", "message": f"{pin} does not support ADC."}
+                current = {
+                    p["name"]: p["mode"] for p in (await self._status())["pins"]
+                }.get(pin, "off")
+                if current != "adc":
+                    await self._command(f"MOD {pin} adc")
+                reply = await self._command(f"ADC {pin}")
             elif action == "listen":
                 reply = await self._command(
                     f"LSN {pin}" if msg.get("enabled") else f"LSN off {pin}"
@@ -381,12 +461,25 @@ class WebBackend:
                 reply = await self._command(f"WDG {ms}")
             else:
                 return {"type": "error", "message": f"Unknown action: {action}"}
+            status = await self._status()
+            if action == "adc" and reply:
+                for item in reply:
+                    if "=" not in item:
+                        continue
+                    name, reading = item.split("=", 1)
+                    if "/" not in reading:
+                        continue
+                    raw, mv = reading.split("/", 1)
+                    for pin_state in status["pins"]:
+                        if pin_state["name"] == name:
+                            pin_state["value"] = int(raw)
+                            pin_state["mv"] = int(mv)
             return {
                 "type": "result",
                 "action": action,
                 "pin": pin,
                 "reply": reply,
-                "status": await self._status(),
+                "status": status,
             }
         except Exception as exc:
             return {"type": "error", "message": str(exc)}

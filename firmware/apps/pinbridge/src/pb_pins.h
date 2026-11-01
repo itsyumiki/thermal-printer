@@ -4,8 +4,8 @@
 #define PB_PINS_H
 
 #define PB_NPINS        15
-#define PB_CFG_HASH     0xdfbf0b5fu
-#define PB_CFG_HASH_STR "dfbf0b5f"
+#define PB_CFG_HASH     0xea4a6cb8u
+#define PB_CFG_HASH_STR "ea4a6cb8"
 
 /* X(name, port(0=A..3=D), bit, caps, adc_channel or PB_NOADC, pwm_present 0/1)
  * Needs PB_CAP_* and PB_NOADC defined by the includer (pb_core.h does). */
@@ -22,8 +22,8 @@
     X("PB11", 1, 11, PB_CAP_IN|PB_CAP_OUT|PB_CAP_PU|PB_CAP_PD, PB_NOADC, 0) \
     X("PC2", 2, 2, PB_CAP_IN|PB_CAP_OUT|PB_CAP_PU|PB_CAP_PD, PB_NOADC, 0) \
     X("PC3", 2, 3, PB_CAP_IN|PB_CAP_OUT|PB_CAP_PU|PB_CAP_PD, PB_NOADC, 0) \
-    X("PC4", 2, 4, PB_CAP_IN, PB_NOADC, 0) \
-    X("PC5", 2, 5, PB_CAP_IN, PB_NOADC, 0) \
+    X("PC4", 2, 4, PB_CAP_IN|PB_CAP_ADC, 10, 0) \
+    X("PC5", 2, 5, PB_CAP_IN|PB_CAP_ADC, 13, 0) \
     X("PC7", 2, 7, PB_CAP_IN|PB_CAP_OUT|PB_CAP_PU|PB_CAP_PD, PB_NOADC, 0)
 
 #endif /* PB_PINS_H */

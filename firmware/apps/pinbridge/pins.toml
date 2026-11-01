@@ -55,12 +55,14 @@ alias = "paper"
 note = "pkg pin 12. Paper-presence sensor net (owner trace). SENSE ONLY, no pulls (they would bias the sensor)."
 
 [pins.PC4]
-caps = ["in"]
+caps = ["in", "adc"]
+adc = 10
 alias = "head_temp"
 note = "pkg pin 20. Goes to the print head, likely the head thermistor (56k pull-up per the ledger; role inferred from code). SENSE ONLY, no pulls, no output."
 
 [pins.PC5]
-caps = ["in"]
+caps = ["in", "adc"]
+adc = 13
 alias = "vbat_div"
 note = "pkg pin 19. Voltage divider, likely battery sense (owner trace; role inferred). SENSE ONLY, no pulls, no output."
 

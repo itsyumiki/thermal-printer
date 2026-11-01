@@ -103,6 +103,12 @@ class TranscriptTests(unittest.TestCase):
         serial = FakeSerial()
         for number, raw in enumerate(content.splitlines(), 1):
             line = raw.strip()
+            if line.startswith("@pad "):
+                for item in line[5:].split():
+                    if "=" in item:
+                        pin, value = item.split("=", 1)
+                        serial.values[pin.upper()] = int(value)
+                continue
             if not line or line.startswith("#") or line.startswith("@"):
                 continue
             if line.startswith(">r "):

@@ -15,6 +15,13 @@ class FakeSerial:
         self.up = 0
         self.modes = {p[0]: "off" for p in PINS}
         self.values = {p[0]: 0 for p in PINS}
+        self.values["PB1"] = 1  # released power button; PB3 low means paper present
+        self.adc_values = {
+            "PB1": (412, 1219),
+            "PB3": (80, 240),
+            "PC4": (512, 1650),
+            "PC5": (620, 2000),
+        }
         self.timeout = 0.1
 
     def write(self, data):
@@ -119,7 +126,23 @@ class FakeSerial:
                         out = f"err mod {pin}"
                         break
         elif c == "ADC":
-            out = "ok PB1=412/1219" if len(t) > 1 else "err arg"
+            if len(t) < 2:
+                out = "err arg"
+            else:
+                readings = []
+                for name in t[1:]:
+                    pin = name.upper()
+                    p = next((p for p in PINS if p[0] == pin), None)
+                    if not p:
+                        out = f"err pin {pin}"
+                        break
+                    if self.modes[pin] != "adc":
+                        out = f"err mod {pin}"
+                        break
+                    raw, mv = self.adc_values.get(pin, (0, 0))
+                    readings.append(f"{pin}={raw}/{mv}")
+                else:
+                    out = "ok " + " ".join(readings)
         else:
             out = f"err cmd {t[0]}"
         with self.lock:

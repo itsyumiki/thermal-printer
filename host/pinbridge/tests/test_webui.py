@@ -13,7 +13,7 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
         self.ws = await self.client.ws_connect("/ws")
         hello = await self.ws.receive_json()
         self.assertEqual(hello["type"], "hello")
-        self.assertEqual(hello["cfg_hash"], "dfbf0b5f")
+        self.assertEqual(hello["cfg_hash"], "ea4a6cb8")
 
     async def asyncTearDown(self):
         await self.ws.close()
@@ -63,10 +63,31 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
         await self.send({"action": "connect"})
         result = await self.send({"action": "get", "pin": "PB1"})
         self.assertEqual(result["type"], "result")
-        self.assertIn("PB1=0", result["reply"][-1])
+        self.assertIn("PB1=1", result["reply"][-1])
         self.assertEqual(
             {p["name"]: p["mode"] for p in result["status"]["pins"]}["PB1"], "up"
         )
+
+    async def test_printer_poll_translates_digital_sensors_and_reads_adc(self):
+        await self.send({"action": "connect"})
+        result = await self.send({"action": "printer_poll"})
+        self.assertEqual(result["type"], "printer_status")
+        printer = result["printer"]
+        self.assertTrue(printer["paper_present"])
+        self.assertFalse(printer["power_button_pressed"])
+        self.assertEqual(printer["head_sensor"], {"raw": 512, "mv": 1650})
+        self.assertEqual(printer["battery_sensor"], {"raw": 620, "mv": 2000})
+        modes = {p["name"]: p["mode"] for p in result["status"]["pins"]}
+        self.assertEqual(modes["PC4"], "adc")
+        self.assertEqual(modes["PC5"], "adc")
+
+    async def test_adc_read_action(self):
+        await self.send({"action": "connect"})
+        result = await self.send({"action": "adc", "pin": "PC4"})
+        self.assertEqual(result["type"], "result")
+        self.assertEqual(result["reply"], ["PC4=512/1650"])
+        pin = next(p for p in result["status"]["pins"] if p["name"] == "PC4")
+        self.assertEqual((pin["value"], pin["mv"]), (512, 1650))
 
     async def test_power_button_action_sets_pa1_low_and_high(self):
         await self.send({"action": "connect"})

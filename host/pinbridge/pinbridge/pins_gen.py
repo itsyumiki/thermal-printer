@@ -3,7 +3,7 @@
 Same table as the firmware's pb_pins.h. Regenerate with scripts/check-pinbridge.sh --update.
 """
 
-CFG_HASH = "dfbf0b5f"
+CFG_HASH = "ea4a6cb8"
 
 # (name, port, bit, caps, adc_channel, pwm_note, alias, note)
 PINS = (
@@ -19,8 +19,8 @@ PINS = (
     ('PB11', 1, 11, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 5. Printhead heater strobe/enable (TIMER2 ISR in stock firmware); host GPIO access for controlled experiments. Can burn head; mapping not hardware-verified.'),
     ('PC2', 2, 2, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 22. Stepper phase B2 (owner trace); host GPIO access for driver development. Mapping not hardware-verified.'),
     ('PC3', 2, 3, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 21. Stepper phase B1 (owner trace); host GPIO access for driver development. Mapping not hardware-verified.'),
-    ('PC4', 2, 4, ('in',), None, None, 'head_temp', 'pkg pin 20. Goes to the print head, likely the head thermistor (56k pull-up per the ledger; role inferred from code). SENSE ONLY, no pulls, no output.'),
-    ('PC5', 2, 5, ('in',), None, None, 'vbat_div', 'pkg pin 19. Voltage divider, likely battery sense (owner trace; role inferred). SENSE ONLY, no pulls, no output.'),
+    ('PC4', 2, 4, ('in', 'adc'), 10, None, 'head_temp', 'pkg pin 20. Goes to the print head, likely the head thermistor (56k pull-up per the ledger; role inferred from code). SENSE ONLY, no pulls, no output.'),
+    ('PC5', 2, 5, ('in', 'adc'), 13, None, 'vbat_div', 'pkg pin 19. Voltage divider, likely battery sense (owner trace; role inferred). SENSE ONLY, no pulls, no output.'),
     ('PC7', 2, 7, ('in', 'out', 'pu', 'pd'), None, None, 'led', 'pkg pin 29. LED net (blink-pc7 and hello-cdc heartbeat, flashed and seen on hardware). The known-good test pin.'),
 )
 
