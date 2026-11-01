@@ -12,13 +12,14 @@ class GuiPinMapTests(unittest.TestCase):
         self.assertIn("DP", ALL_KNOWN)
         self.assertIn("DM", ALL_KNOWN)
 
-    def test_power_control_pin_is_described_but_reserved(self):
-        self.assertEqual(_caps("PA1"), "RESERVED")
+    def test_pa0_and_pa1_are_controllable(self):
+        for pin in ("PA0", "PA1"):
+            self.assertNotEqual(_caps(pin), "RESERVED")
+            self.assertTrue(_description(pin))
         self.assertIn("power-control", _description("PA1"))
-        self.assertIn("unresolved", _description("PA1"))
 
     def test_system_and_usb_entries_are_not_mapped_as_gpio(self):
-        for pin in ("PA0", "PA1", "PA3", "PB5", "DP", "DM"):
+        for pin in ("PA3", "PB5", "DP", "DM"):
             self.assertEqual(_caps(pin), "RESERVED")
             self.assertTrue(_description(pin))
 

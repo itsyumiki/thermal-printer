@@ -31,6 +31,14 @@ max_pins = 16
 
 # ---------------------------------------------------------------- allowed pins
 
+[pins.PA0]
+caps = ["in", "out", "pu", "pd"]
+note = "SDK UART0 log TX pad in demo config; Pinbridge disables SDK logging. Exposed for explicit GPIO experiments."
+
+[pins.PA1]
+caps = ["in", "out", "pu", "pd"]
+note = "pkg pin 27. Traced to printer power-control circuitry; output control may change board power. Use explicit output confirmation. Electrical behavior not hardware-verified."
+
 [pins.PC7]
 caps = ["in", "out", "pu", "pd"]
 alias = "led"
@@ -94,8 +102,6 @@ caps = ["in", "out", "pu", "pd"]
 note = "pkg pin 5. Printhead heater strobe/enable (TIMER2 ISR in stock firmware); host GPIO access for controlled experiments. Can burn head; mapping not hardware-verified."
 
 [denied]
-PA0  = "SDK UART0 log TX pad in demo config; log is off here, but package bonding/ownership is not confirmed."
-PA1  = "Package pin 27. Traced to printer power-control circuitry; driving it could cut or hold board power. Electrical ownership unresolved."
 PA3  = "Not exposed on the QFN32 package (datasheet has no PA3); SDK uses it as flash CS in demo config."
 PB5  = "Package pin 9 (LDO_IN / PB5): charger input pin, 4.5-5.5 V, not a plain GPIO to poke."
 DP   = "USB D+ (used by the CDC port). Reserved for USB transport."

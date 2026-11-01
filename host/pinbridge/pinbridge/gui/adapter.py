@@ -15,7 +15,7 @@ from ..fake import FakeSerial
 from ..pins_gen import PINS
 from ..protocol import BoardReset
 
-DANGEROUS_PINS = frozenset(("PB8", "PB9", "PB10", "PB11", "PA9", "PA10", "PC2", "PC3"))
+DANGEROUS_PINS = frozenset(("PA0", "PA1", "PB8", "PB9", "PB10", "PB11", "PA9", "PA10", "PC2", "PC3"))
 
 
 def modes_for_pin(pin_name: str) -> tuple[str, ...]:

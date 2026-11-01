@@ -10,6 +10,7 @@ import unittest
 
 from pinbridge.board import Board
 from pinbridge.fake import FakeSerial
+from pinbridge.pins_gen import CFG_HASH
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 TRANSCRIPTS = ROOT / "firmware/apps/pinbridge/tests/transcripts"
@@ -109,7 +110,7 @@ class TranscriptTests(unittest.TestCase):
             elif line.startswith("> "):
                 serial.write((line[2:] + "\n").encode())
             elif line.startswith("< "):
-                expected = line[2:].replace("{cfg}", "546c66a8").replace("{int}", "10")
+                expected = line[2:].replace("{cfg}", CFG_HASH).replace("{int}", "10")
                 actual = serial.readline().decode().strip()
                 if actual != expected:
                     return False, (number, expected, actual)

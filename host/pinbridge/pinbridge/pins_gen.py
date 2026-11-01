@@ -3,10 +3,12 @@
 Same table as the firmware's pb_pins.h. Regenerate with scripts/check-pinbridge.sh --update.
 """
 
-CFG_HASH = "546c66a8"
+CFG_HASH = "dfbf0b5f"
 
 # (name, port, bit, caps, adc_channel, pwm_note, alias, note)
 PINS = (
+    ('PA0', 0, 0, ('in', 'out', 'pu', 'pd'), None, None, None, 'SDK UART0 log TX pad in demo config; Pinbridge disables SDK logging. Exposed for explicit GPIO experiments.'),
+    ('PA1', 0, 1, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 27. Traced to printer power-control circuitry; output control may change board power. Use explicit output confirmation. Electrical behavior not hardware-verified.'),
     ('PA9', 0, 9, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 26. Stepper phase A1 (owner trace); host GPIO access for driver development. Mapping not hardware-verified.'),
     ('PA10', 0, 10, ('in', 'out', 'pu', 'pd'), None, None, None, 'pkg pin 25. Stepper phase A2 (owner trace); host GPIO access for driver development. Mapping not hardware-verified.'),
     ('PB1', 1, 1, ('in', 'pu'), None, None, 'button', 'pkg pin 14. Power-button/power-control net (owner trace). SENSE ONLY: no output, no pull-down. Pull-up is what the stock firmware uses. ADKEY (which sampled this pin) is switched off in app.conf; the SDK long-press reset on PB1 is configured with time 0 (off) in board_ac635n_demo.c.'),
@@ -24,8 +26,6 @@ PINS = (
 
 # pins that are deliberately not available, with the reason (documentation only)
 DENIED = {
-    'PA0': 'SDK UART0 log TX pad in demo config; log is off here, but package bonding/ownership is not confirmed.',
-    'PA1': 'Package pin 27. Traced to printer power-control circuitry; driving it could cut or hold board power. Electrical ownership unresolved.',
     'PA3': 'Not exposed on the QFN32 package (datasheet has no PA3); SDK uses it as flash CS in demo config.',
     'PB5': 'Package pin 9 (LDO_IN / PB5): charger input pin, 4.5-5.5 V, not a plain GPIO to poke.',
     'DP': 'USB D+ (used by the CDC port). Reserved for USB transport.',

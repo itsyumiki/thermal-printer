@@ -3,13 +3,15 @@
 #ifndef PB_PINS_H
 #define PB_PINS_H
 
-#define PB_NPINS        13
-#define PB_CFG_HASH     0x546c66a8u
-#define PB_CFG_HASH_STR "546c66a8"
+#define PB_NPINS        15
+#define PB_CFG_HASH     0xdfbf0b5fu
+#define PB_CFG_HASH_STR "dfbf0b5f"
 
 /* X(name, port(0=A..3=D), bit, caps, adc_channel or PB_NOADC, pwm_present 0/1)
  * Needs PB_CAP_* and PB_NOADC defined by the includer (pb_core.h does). */
 #define PB_PIN_LIST(X) \
+    X("PA0", 0, 0, PB_CAP_IN|PB_CAP_OUT|PB_CAP_PU|PB_CAP_PD, PB_NOADC, 0) \
+    X("PA1", 0, 1, PB_CAP_IN|PB_CAP_OUT|PB_CAP_PU|PB_CAP_PD, PB_NOADC, 0) \
     X("PA9", 0, 9, PB_CAP_IN|PB_CAP_OUT|PB_CAP_PU|PB_CAP_PD, PB_NOADC, 0) \
     X("PA10", 0, 10, PB_CAP_IN|PB_CAP_OUT|PB_CAP_PU|PB_CAP_PD, PB_NOADC, 0) \
     X("PB1", 1, 1, PB_CAP_IN|PB_CAP_PU, PB_NOADC, 0) \
