@@ -183,7 +183,7 @@ def run_gui(port=None, mock=False):
         "Version / config",
         "Help",
         "Debug: off",
-        "Reset device",
+        "Reset pins",
     ):
         btn = ttk.Button(actions, text=label)
         btn.pack(side="left", padx=(0, 5))
@@ -671,9 +671,9 @@ def run_gui(port=None, mock=False):
                 parts = run_command("DBG on" if not debug_enabled else "DBG off")
                 nonlocal_debug = not debug_enabled
                 set_debug_state(nonlocal_debug)
-            elif label == "Reset device":
+            elif label == "Reset pins":
                 if messagebox.askyesno(
-                    "Reset device",
+                    "Reset pins",
                     "Send RST and return all configured pins to high impedance?",
                     parent=root,
                 ):
@@ -1064,7 +1064,7 @@ def run_gui(port=None, mock=False):
     )
     action_buttons["Help"].configure(command=lambda: run_action("Help"))
     action_buttons["Debug: off"].configure(command=lambda: run_action("Debug: off"))
-    action_buttons["Reset device"].configure(command=lambda: run_action("Reset device"))
+    action_buttons["Reset pins"].configure(command=lambda: run_action("Reset pins"))
     watchdog_button.configure(command=lambda: set_watchdog())
     bulk_apply.configure(command=apply_bulk_mode)
     bulk_read_button.configure(command=bulk_read)
