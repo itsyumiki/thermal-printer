@@ -11,7 +11,7 @@ def main(argv=None):
     r.add_argument("--port")
     r.add_argument("--timeout", type=float, default=0.5)
     g = sub.add_parser("gui", help="optional Tk pin GUI")
-    gg = g.add_mutually_exclusive_group(required=True)
+    gg = g.add_mutually_exclusive_group()
     gg.add_argument("--port")
     gg.add_argument("--mock", action="store_true")
     a = p.parse_args(argv)
