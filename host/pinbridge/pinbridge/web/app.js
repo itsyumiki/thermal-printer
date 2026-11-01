@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const state = { ws:null, pins:[], pinStatus:{}, connected:false, pending:null, toastTimer:null };
+const state = { ws:null, pins:[], pinStatus:{}, connected:false, pending:null, toastTimer:null, powerOn:false, startupRunning:false };
 const DANGEROUS = new Set(["PA0","PA1","PA9","PA10","PB8","PB9","PB10","PB11","PC2","PC3"]);
 const modeLabels = {hiz:"High impedance",in:"Input",up:"Input · pull-up",dn:"Input · pull-down",lo:"Output LOW",hi:"Output HIGH",off:"Not configured"};
 function log(message, type="info") {
@@ -22,11 +22,11 @@ function connectSocket(){
 function handleMessage(m){
   if(m.type==="hello"){state.pins=m.pins||[];$("hash").textContent=m.cfg_hash||"—";$("pinCount").textContent=state.pins.filter(p=>!p.denied).length;$("pinCountSub").textContent=state.pins.length+" documented pin entries";renderPins();renderPorts(m.ports||[]);if(m.status)applyStatus(m.status);if(m.mock)log("Mock serial mode enabled","event");return}
   if(m.type==="ports"){renderPorts(m.ports||[]);return}
-  if(m.type==="connected"){state.connected=true;applyStatus(m.status);$("connectBtn").classList.add("hidden");$("disconnectBtn").classList.remove("hidden");log("Device connected: "+(m.status.port||"serial device"),"event");toast("Device connected");send({action:"status"});return}
-  if(m.type==="disconnected"){state.connected=false;applyStatus({connected:false});$("connectBtn").classList.remove("hidden");$("disconnectBtn").classList.add("hidden");log("Device disconnected","event");toast("Disconnected");return}
+  if(m.type==="connected"){state.connected=true;applyStatus(m.status);$("connectBtn").classList.add("hidden");$("disconnectBtn").classList.remove("hidden");$("powerBtn").disabled=false;log("Device connected: "+(m.status.port||"serial device"),"event");toast("Connected — running startup power macro…");state.startupRunning=true;send({action:"startup"});return}
+  if(m.type==="disconnected"){state.connected=false;state.powerOn=false;applyStatus({connected:false});$("connectBtn").classList.remove("hidden");$("disconnectBtn").classList.add("hidden");$("powerBtn").disabled=true;$("powerBtn").textContent="Power on";$("powerBtn").classList.remove("is-on");log("Device disconnected","event");toast("Disconnected");return}
   if(m.type==="status"){applyStatus(m.status);return}
   if(m.type==="confirm_required"){askConfirm(m,m.mode==="set");return}
-  if(m.type==="result"){if(m.reply)log(m.reply.join(" ")||"ok","info");if(m.status)applyStatus(m.status);return}
+  if(m.type==="result"){if(m.reply)log(m.reply.join(" ")||"ok","info");if(m.status)applyStatus(m.status);if(m.action==="startup"||m.action==="power"){state.powerOn=!!(m.status&&m.status.pins||[]).some(p=>p.name==="PA1"&&p.value===1);$("powerBtn").textContent=state.powerOn?"Power off":"Power on";$("powerBtn").classList.toggle("is-on",state.powerOn);if(m.action==="startup"){state.startupRunning=false;toast("PA1 is HIGH — you can let go of the power button.");log("Startup macro complete: PA1 HIGH; PB1 pull-up enabled","event")}else toast(state.powerOn?"Printer power latched ON":"Printer power set LOW");}return}
   if(m.type==="raw"){log(m.command,"command");log((m.reply||[]).join(" ")||"ok");if(m.command.toUpperCase().startsWith("HEL"))send({action:"status"});return}
   if(m.type==="error"){log(m.message||"Unknown backend error","error");toast(m.message||"Operation failed",true);return}
   if(m.type==="event"){log((m.event||"event")+": "+(m.detail||""),"event");return}
@@ -61,6 +61,6 @@ function askConfirm(m,sendOnApprove=false){state.pending={...m,sendOnApprove};$(
 function closeConfirm(){$("confirmModal").classList.add("hidden");state.pending=null}
 $("cancelConfirm").onclick=closeConfirm;$("confirmModal").onclick=e=>{if(e.target===$("confirmModal"))closeConfirm()};
 $("approveConfirm").onclick=()=>{const m=state.pending;if(!m)return;closeConfirm();if(m.sendOnApprove)send({action:"set",pin:m.pin,value:m.value,confirm:m.pin});else send({action:"mode",pin:m.pin,mode:m.mode,confirm:m.pin})};
-$("connectBtn").onclick=()=>send({action:"connect",port:$("portSelect").value});$("disconnectBtn").onclick=()=>send({action:"disconnect"});$("refreshPorts").onclick=()=>send({action:"ports"});$("refreshStatus").onclick=()=>send({action:"status"});$("resetPins").onclick=()=>{if(confirm("Put all configured pins into the firmware safe state?"))send({action:"reset"})};$("search").oninput=renderPins;$("groupFilter").onchange=renderPins;$("clearLog").onclick=()=>$("log").replaceChildren();$("logsNav").onclick=()=>$("consolePanel").scrollIntoView({behavior:"smooth"});
+$("connectBtn").onclick=()=>send({action:"connect",port:$("portSelect").value});$("disconnectBtn").onclick=()=>send({action:"disconnect"});$("powerBtn").onclick=()=>{if(!state.connected)return;send({action:"power",value:state.powerOn?0:1})};$("refreshPorts").onclick=()=>send({action:"ports"});$("refreshStatus").onclick=()=>send({action:"status"});$("resetPins").onclick=()=>{if(confirm("Put all configured pins into the firmware safe state?"))send({action:"reset"})};$("search").oninput=renderPins;$("groupFilter").onchange=renderPins;$("clearLog").onclick=()=>$("log").replaceChildren();$("logsNav").onclick=()=>$("consolePanel").scrollIntoView({behavior:"smooth"});
 $("rawForm").onsubmit=e=>{e.preventDefault();const command=$("rawCommand").value.trim();if(command){send({action:"raw",command});$("rawCommand").value=""}};
 connectSocket();fetch("/api/info").then(r=>r.json()).then(d=>{state.pins=d.pins||state.pins;$("hash").textContent=d.cfg_hash||"—";$("pinCount").textContent=state.pins.filter(p=>!p.denied).length;$("pinCountSub").textContent=state.pins.length+" documented pin entries";renderPins();renderPorts(d.ports||[])}).catch(()=>{});

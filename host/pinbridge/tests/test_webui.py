@@ -49,6 +49,38 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
         disconnected = await self.send({"action": "disconnect"})
         self.assertEqual(disconnected["type"], "disconnected")
 
+    async def test_startup_macro_latches_power_on_and_prepares_button_input(self):
+        await self.send({"action": "connect"})
+        result = await self.send({"action": "startup"})
+        self.assertEqual(result["type"], "result")
+        self.assertEqual(result["action"], "startup")
+        pins = {p["name"]: p for p in result["status"]["pins"]}
+        self.assertEqual(pins["PA1"]["mode"], "hi")
+        self.assertEqual(pins["PA1"]["value"], 1)
+        self.assertEqual(pins["PB1"]["mode"], "up")
+
+    async def test_read_button_pin_prepares_pullup_before_get(self):
+        await self.send({"action": "connect"})
+        result = await self.send({"action": "get", "pin": "PB1"})
+        self.assertEqual(result["type"], "result")
+        self.assertIn("PB1=0", result["reply"][-1])
+        self.assertEqual(
+            {p["name"]: p["mode"] for p in result["status"]["pins"]}["PB1"], "up"
+        )
+
+    async def test_power_button_action_sets_pa1_low_and_high(self):
+        await self.send({"action": "connect"})
+        on = await self.send({"action": "power", "value": 1})
+        self.assertEqual(on["type"], "result")
+        self.assertEqual(
+            {p["name"]: p["value"] for p in on["status"]["pins"]}["PA1"], 1
+        )
+        off = await self.send({"action": "power", "value": 0})
+        self.assertEqual(off["type"], "result")
+        self.assertEqual(
+            {p["name"]: p["value"] for p in off["status"]["pins"]}["PA1"], 0
+        )
+
     async def test_dangerous_output_requires_confirmation(self):
         await self.send({"action": "connect"})
         prompt = await self.send({"action": "mode", "pin": "PA1", "mode": "hi"})

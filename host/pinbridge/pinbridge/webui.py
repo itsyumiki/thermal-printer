@@ -221,6 +221,40 @@ class WebBackend:
             return {"type": "disconnected"}
         if action == "status":
             return {"type": "status", "status": await self._status()}
+        if action in {"startup", "power"}:
+            if not self.board:
+                return {"type": "error", "message": "Connect to a device first."}
+            try:
+                turn_on = action == "startup" or msg.get("value") in (
+                    1,
+                    True,
+                    "1",
+                    "on",
+                    "ON",
+                )
+
+                def run_power_sequence():
+                    with self.board_lock:
+                        # PA1 is the power latch. Keep the sequence atomic against
+                        # other WebSocket clients issuing serial commands.
+                        self.board.command("MOD PA1 hi")
+                        if turn_on:
+                            self.board.command("SET PA1=1")
+                            # PB1 is the power-button sense net; stock hardware uses pull-up.
+                            self.board.command("MOD PB1 up")
+                            return ["ok power=on", "ok button=ready"]
+                        return self.board.command("SET PA1=0")
+
+                reply = await asyncio.to_thread(run_power_sequence)
+                return {
+                    "type": "result",
+                    "action": "startup" if action == "startup" else "power",
+                    "pin": "PA1",
+                    "reply": reply,
+                    "status": await self._status(),
+                }
+            except Exception as exc:
+                return {"type": "error", "message": f"Power sequence failed: {exc}"}
         if action == "raw":
             line = str(msg.get("command", "")).strip()
             if not line or len(line) > 120 or any(ord(c) < 32 for c in line):
@@ -305,6 +339,31 @@ class WebBackend:
                     }
                 reply = await self._command(f"SET {pin}={value}")
             elif action == "get":
+                # GET requires a configured pin. Prepare safe, non-power/non-driver
+                # pins as inputs on first read; never silently reconfigure PA1 or
+                # stepper/printhead outputs just to satisfy a Read click.
+                current = {
+                    p["name"]: p["mode"] for p in (await self._status())["pins"]
+                }.get(pin, "off")
+                if current in {"off", "hiz"}:
+                    if pin in {
+                        "PA0",
+                        "PA1",
+                        "PA9",
+                        "PA10",
+                        "PB8",
+                        "PB9",
+                        "PB10",
+                        "PB11",
+                        "PC2",
+                        "PC3",
+                    }:
+                        return {
+                            "type": "error",
+                            "message": f"{pin} is not configured. Set its mode explicitly before reading to avoid changing a power/driver pin.",
+                        }
+                    mode = "up" if pin == "PB1" else "in"
+                    await self._command(f"MOD {pin} {mode}")
                 reply = await self._command(f"GET {pin}")
             elif action == "listen":
                 reply = await self._command(
