@@ -21,6 +21,19 @@ class CliTests(unittest.TestCase):
         self.assertIn("--mock", p.stdout)
         self.assertIn("--port", p.stdout)
 
+    def test_webui_help_is_headless(self):
+        p = subprocess.run(
+            [sys.executable, "-m", "pinbridge", "webui", "--help"],
+            cwd=ROOT,
+            env=ENV,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("--http-port", p.stdout)
+        self.assertIn("--no-browser", p.stdout)
+
     def test_repl_help(self):
         p = subprocess.run(
             [sys.executable, "-m", "pinbridge", "repl", "--help"],

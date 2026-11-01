@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0a0d12"><title>Pinbridge · Hardware Console</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="rail">
+    <div class="brand-mark">P<span>·</span></div>
+    <div class="rail-label">HARDWARE</div>
+    <button class="rail-btn active" title="Pin map">⌘</button>
+    <button class="rail-btn" id="logsNav" title="Console">≋</button>
+    <div class="rail-bottom"><span class="rail-dot" id="railDot"></span></div>
+  </aside>
+  <main class="main">
+    <header class="topbar">
+      <div><div class="eyebrow">PINBRIDGE / DEVICE LAB</div><h1>Hardware console</h1></div>
+      <div class="top-actions"><span class="socket-status" id="socketStatus"><i></i> Connecting</span><button class="icon-btn" id="refreshPorts" title="Refresh ports">↻</button></div>
+    </header>
+    <section class="connect-card">
+      <div class="connect-left"><div class="device-icon">▤</div><div><div class="small-label">SERIAL DEVICE</div><div class="connect-state" id="deviceState">No device connected</div><div class="muted" id="deviceMeta">Connect a Pinbridge-enabled board to begin</div></div></div>
+      <div class="connect-controls"><select id="portSelect" aria-label="Serial port"><option value="">Choose serial port…</option></select><button class="button primary" id="connectBtn">Connect <span>↗</span></button><button class="button subtle hidden" id="disconnectBtn">Disconnect</button></div>
+    </section>
+    <section class="stats">
+      <div class="stat"><span>FIRMWARE</span><strong id="firmware">JLpin <em>v2</em></strong><small>USB CDC protocol</small></div>
+      <div class="stat"><span>CONFIG HASH</span><strong class="mono" id="hash">────────</strong><small>Pin map signature</small></div>
+      <div class="stat"><span>DEVICE UPTIME</span><strong id="uptime">—</strong><small>Reported by firmware</small></div>
+      <div class="stat"><span>GPIO PINS</span><strong id="pinCount">—</strong><small id="pinCountSub">Known pin entries</small></div>
+    </section>
+    <div class="section-head"><div><div class="eyebrow">LIVE CONTROL</div><h2>Pin matrix</h2><p>Inspect state and operate supported GPIOs.</p></div><div class="matrix-actions"><input id="search" placeholder="Search pins…" autocomplete="off"><select id="groupFilter"><option value="ALL">All ports</option><option>A</option><option>B</option><option>C</option><option value="SYS">Reserved</option></select><button class="button subtle" id="refreshStatus">Refresh state</button><button class="button subtle" id="resetPins">Reset pins</button></div></div>
+    <div class="legend"><span><i class="legend-dot output"></i>Output capable</span><span><i class="legend-dot input"></i>Input only</span><span><i class="legend-dot reserved"></i>Reserved / unavailable</span><span class="legend-right">Changes apply immediately</span></div>
+    <section id="pinGrid" class="pin-grid"><div class="empty-state">Loading pin map…</div></section>
+    <section class="console-panel" id="consolePanel">
+      <div class="console-head"><div><div class="eyebrow">DIAGNOSTICS</div><h2>Command console</h2></div><div class="console-tools"><label class="toggle-label"><input type="checkbox" id="autoScroll" checked> Auto-scroll</label><button class="button subtle" id="clearLog">Clear</button></div></div>
+      <div id="log" class="log"><div class="log-line muted">Web console initialized. Connect to a device to start.</div></div>
+      <form id="rawForm" class="raw-form"><span class="prompt">jlpin ›</span><input id="rawCommand" placeholder="Enter protocol command (e.g. STA, GET PC7)" autocomplete="off"><button class="button primary" type="submit">Send ↗</button></form>
+    </section>
+    <footer><span>PINBRIDGE <b>LOCAL SESSION</b></span><span>WebSocket transport <i id="footerDot"></i></span></footer>
+  </main>
+</div>
+<div id="toast" class="toast"></div>
+<div class="modal-backdrop hidden" id="confirmModal"><div class="modal"><div class="modal-icon">!</div><div class="eyebrow">OUTPUT CONFIRMATION</div><h2 id="confirmTitle">Enable output?</h2><p id="confirmText">This pin may control a hardware subsystem.</p><div class="modal-actions"><button class="button subtle" id="cancelConfirm">Cancel</button><button class="button danger" id="approveConfirm">Confirm action</button></div></div></div>
+<script src="/assets/app.js"></script>
+</body></html>
