@@ -18,7 +18,7 @@ Status: **complete against the Sprint 1 acceptance criteria**.
 - `./scripts/check-pinbridge.sh` — PASS, generated pin files are current.
 - `git diff --check` — PASS.
 - Implementation and test changes are pushed on branch `pinbridge`; this completion report is finalized in the follow-up commit.
-- GitHub Actions firmware build for commit `3bc7368002483f5bf86ddc561a93c11c173029ec` was still running when this report was written: [workflow run 41501706826](https://github.com/itsyumiki/thermal-printer/actions/runs/41501706826). Its result must be checked before claiming remote build success.
+- GitHub Actions workflow run [41501706826](https://github.com/itsyumiki/thermal-printer/actions/runs/41501706826) — PASS for firmware commit `3bc7368002483f5bf86ddc561a93c11c173029ec` (run conclusion `success`). Later documentation/test-only commits do not change the firmware sources from that build.
 
 ## Evidence boundary and Sprint 2 handoff
 

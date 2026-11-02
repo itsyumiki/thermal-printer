@@ -1,6 +1,6 @@
 # Pinbridge / TBP implementation sprints
 
-Status: planning and agent handoffs, 2026-11-02. These documents split the current TBP/WebUI baseline into small, reviewable units. They do not claim the planned work is implemented.
+Status: sprint handoffs, 2026-11-02. Sprint 0 baseline and Sprint 1 protocol reliability are complete against their documented acceptance gates; later sprints remain planned.
 
 ## How to use these handoffs
 
@@ -9,7 +9,7 @@ Work one sprint at a time, in order. Before editing, read the sprint handoff, `d
 ## Latest handoff reports
 
 - [Sprint 0 baseline report](sprint-00-report.md) — commands, test results, implementation gaps, and Sprint 1 blockers.
-- [Sprint 1 progress checkpoint](sprint-01-progress.md) — current code changes, passing tests, and remaining acceptance gaps.
+- [Sprint 1 completion report](sprint-01-progress.md) — protocol changes, fake-transport and C transcript tests, checks, and evidence boundaries.
 - [TBP implementation matrix](../tbp-implementation-matrix.md) — draft-to-code status and known ambiguities.
 
 ## Sprint sequence
@@ -26,7 +26,7 @@ Work one sprint at a time, in order. Before editing, read the sprint handoff, `d
 
 ## Dependency rule
 
-Sprint 0 can start immediately. Sprint 1 can proceed against the current baseline. Sprint 2 depends on protocol semantics being agreed in Sprint 1. Sprint 3 must define safe behavior before heater-driven printing is treated as usable. Sprint 4 depends on the executor and safety interfaces from Sprints 2–3. Sprint 5 can be developed in parallel on mock fixtures, but its final acceptance depends on the actual queue/status semantics from Sprints 1–4. Sprint 6 follows all implementation sprints.
+Sprint 0 baseline is complete. Sprint 1 protocol/session/retry semantics and deterministic tests are complete. Sprint 2 depends on preserving this contract while introducing asynchronous execution. Sprint 3 must define safe behavior before heater-driven printing is treated as usable. Sprint 4 depends on the executor and safety interfaces from Sprints 2–3. Sprint 5 can be developed in parallel on mock fixtures, but its final acceptance depends on the actual queue/status semantics from Sprints 1–4. Sprint 6 follows all implementation sprints.
 
 ## Project-wide constraints
 
