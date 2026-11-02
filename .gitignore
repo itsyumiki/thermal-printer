@@ -2,3 +2,6 @@ out/
 build/
 *.pyc
 __pycache__/
+
+# Local CI build scratch.
+.ci/

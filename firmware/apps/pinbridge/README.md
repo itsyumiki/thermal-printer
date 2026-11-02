@@ -12,6 +12,8 @@ An experimental jlpin v2 text pin server for JieLi AC6956C / AC635N (BR23), over
 
 From the repo root, run `nice -n 19 ~/projects/scratch-bridge/tools/mk2.sh firmware/apps/pinbridge pinbridge`. The helper builds in a fresh patched SDK copy. Flashing is deliberately not run here. For the owner-controlled flash flow, first review `docs/flashing.md` and `docs/hardware-and-flash.md`, then follow that repository's documented image-patching and flashing steps only after reviewing the build output and taking the safety precautions above.
 
+The [Pinbridge C firmware GitHub Actions workflow](../../../.github/workflows/pinbridge.yml) builds on pushes to `pinbridge` and pull requests targeting it. It runs the existing `scripts/build-app.sh`, caches the pinned vendor archives and SDK Git mirror, and uploads `app.bin`, `sdk.elf`, `sdk.map`, checksums and build logs. CI does not run tests or flash hardware. Handwritten C code uses the adjacent `.clang-format` rules; `src/pb_pins.h` is generated from `pins.toml` and must not be formatted manually.
+
 ## Two-minute REPL try-out
 
 Install the host package in a venv: `python -m pip install ./host/pinbridge` (or `uv pip install ./host/pinbridge`). Once the owner has flashed a reviewed build and confirmed the safe test setup, run `PYTHONPATH=host/pinbridge python -m pinbridge repl --port /dev/ttyACM0`. Try `HEL`, `STA`, `MOD PC7 lo`, `SET PC7=1`, `GET PC7`, `RST`. Use the explicit `--port`; USB VID/PID auto-detection is not implemented.
