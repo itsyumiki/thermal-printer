@@ -346,12 +346,24 @@ class WebBackend:
                     direction = str(msg.get("direction", "")).upper()
                     if direction not in {"FWD", "REV"}:
                         raise ValueError("direction must be FWD or REV")
-                    count = integer("count", 0, 200)
-                    inter = integer("inter_step_us", 0, 100000)
-                    dwell = integer("coil_on_us", 0, 100000)
-                    if count * (inter + dwell) > 2000000:
-                        raise ValueError("total step timing must be <= 2,000,000 us")
+                    count = integer("count", 0, 60000)
+                    inter = integer("inter_step_us", 0, 60000000)
+                    dwell = integer("coil_on_us", 0, 60000000)
+                    if count * (((inter + 999) // 1000) + max(1, (dwell + 999) // 1000)) > 60000:
+                        raise ValueError("rounded 1 ms step timing must be <= 60,000 ms")
                     line = f"PSTEP {direction} {count} {inter} {dwell}"
+                    started = await self._command(line)
+                    if started and started[0] == "started":
+                        deadline = asyncio.get_running_loop().time() + 65
+                        while True:
+                            state = await self._command("PSTEPSTAT")
+                            if state and state[0] == "done":
+                                return {"type": "raw", "command": line, "reply": ["ok", "halfsteps"]}
+                            if not state or state[0] != "busy":
+                                raise RuntimeError(f"unexpected stepper status: {state}")
+                            if asyncio.get_running_loop().time() >= deadline:
+                                raise TimeoutError("stepper did not finish within 65 seconds")
+                            await asyncio.sleep(0.01)
                 else:
                     raise ValueError("op must be shift, latch, heat, or step")
                 return {"type": "raw", "command": line, "reply": await self._command(line)}

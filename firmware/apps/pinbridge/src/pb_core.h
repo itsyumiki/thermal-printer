@@ -62,6 +62,9 @@ typedef struct {
   unsigned pollport;
   char reply[128];
   size_t rlen;
+  volatile uint8_t step_active, step_reverse, step_stage, step_done_pending;
+  volatile uint32_t step_remaining, step_wait_ms;
+  uint32_t step_gap_ms, step_dwell_ms, step_index;
   int scratch_p[PB_MAX_PINS];
   char *scratch_v[17];
 } pb_core;
@@ -165,6 +168,8 @@ static void pb_safe_pin(pb_core *c, unsigned i) {
 }
 static void pb_safe_state(pb_core *c) {
   unsigned i;
+  c->step_active = 0;
+  c->step_done_pending = 0;
   for (i = 0; i < PB_NPINS; i++)
     pb_safe_pin(c, i);
 }
@@ -266,19 +271,32 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
     (void)pb_printer_pin(c, "PB11", 0); pb_reply(c, "ok"); c->last_feed = pb_now(c); return;
   }
   if (pb_eq(v[0], "PSTEP")) {
-    int reverse;
-    if (n != 5 || (!pb_eq(v[1], "FWD") && !pb_eq(v[1], "REV")) || !pb_u32(v[2], &count) || !pb_u32(v[3], &a) || !pb_u32(v[4], &b) || count > 200 || a > 100000 || b > 100000 || (uint64_t)count * (a+b) > 2000000u || !pb_all_outputs(c, motorpins, 4)) { pb_error(c, "arg", "PSTEP"); return; }
-    /* a=inter-step gap, b=coil-on dwell; nominal phase period is a+b.
-       The busy-wait is approximate, not calibrated to stock firmware timing. */
-    reverse = pb_eq(v[1], "REV");
-    for (i = 0; i < count; i++) {
-      unsigned phase = reverse ? (7u - ((unsigned)i & 7u)) : ((unsigned)i & 7u);
-      unsigned k;
+    unsigned phase, k;
+    if (n != 5 || (!pb_eq(v[1], "FWD") && !pb_eq(v[1], "REV")) || !pb_u32(v[2], &count) || !pb_u32(v[3], &a) || !pb_u32(v[4], &b) || count > 60000u || a > 60000000u || b > 60000000u || (uint64_t)count * (((uint64_t)a+999u)/1000u + ((((uint64_t)b+999u)/1000u) ? (((uint64_t)b+999u)/1000u) : 1u)) > 60000u || !pb_all_outputs(c, motorpins, 4) || c->step_active) { pb_error(c, "arg", "PSTEP"); return; }
+    /* Nonblocking 1 ms scheduler: USB command handling and watchdog polling
+       continue during motion. Timing resolution is 1 ms, not microseconds. */
+    c->step_reverse = (uint8_t)pb_eq(v[1], "REV");
+    c->step_remaining = count;
+    c->step_index = 0;
+    c->step_gap_ms = (a + 999u) / 1000u;
+    c->step_dwell_ms = (b + 999u) / 1000u;
+    c->step_stage = 0;
+    c->step_wait_ms = c->step_dwell_ms;
+    if (c->step_wait_ms == 0) c->step_wait_ms = 1;
+    c->step_active = count != 0;
+    c->last_feed = pb_now(c);
+    if (count) {
+      phase = c->step_reverse ? 7u : 0u;
       for (k = 0; k < 4; k++) (void)pb_printer_pin(c, motorpins[k], phases[phase][k]);
-      pb_wait_us(c, (unsigned)b); /* coil-on dwell */
-      if (i + 1 < count) pb_wait_us(c, (unsigned)a); /* remaining inter-step gap */
-    }
-    pb_reply(c, "ok halfsteps"); c->last_feed = pb_now(c); return;
+      pb_reply(c, "ok started");
+    } else pb_reply(c, "ok halfsteps");
+    return;
+  }
+  if (pb_eq(v[0], "PSTEPSTAT")) {
+    if (n != 1) { pb_error(c, "arg", "PSTEPSTAT"); return; }
+    pb_reply(c, c->step_active ? "ok busy" : "ok done");
+    c->last_feed = pb_now(c);
+    return;
   }
 }
 
@@ -304,7 +322,7 @@ static void pb_command(pb_core *c, char *line) {
     pb_num(d, sizeof d, &q, now);
     pb_reply(c, d);
   }
-  if (pb_eq(v[0], "PHEAD") || pb_eq(v[0], "PLATCH") || pb_eq(v[0], "PHEAT") || pb_eq(v[0], "PSTEP")) {
+  if (pb_eq(v[0], "PHEAD") || pb_eq(v[0], "PLATCH") || pb_eq(v[0], "PHEAT") || pb_eq(v[0], "PSTEP") || pb_eq(v[0], "PSTEPSTAT")) {
     pb_printer_command(c, v, n);
     return;
   }
@@ -670,8 +688,37 @@ static void pb_rx(pb_core *c, const uint8_t *data, size_t len) {
     c->line[c->llen++] = x;
   }
 }
+static inline void pb_step_tick(pb_core *c) {
+  static const char *const pins[4] = {"PA9", "PA10", "PC3", "PC2"};
+  static const uint8_t seq[8][4] = {{0,1,1,0},{0,1,0,0},{0,1,0,1},{0,0,0,1},{1,0,0,1},{1,0,0,0},{1,0,1,0},{0,0,1,0}};
+  unsigned k, phase;
+  if (!c->step_active) return;
+  c->last_feed = pb_now(c);
+  if (c->step_wait_ms > 1) { c->step_wait_ms--; return; }
+  c->step_wait_ms = 0;
+  if (!c->step_stage) {
+    c->step_stage = 1;
+    if (c->step_gap_ms) { c->step_wait_ms = c->step_gap_ms; return; }
+    /* Zero gap: advance phase in this same 1 ms tick. */
+  } else {
+    c->step_stage = 0;
+  }
+  if (--c->step_remaining == 0) {
+    c->step_active = 0;
+    c->step_done_pending = 1;
+    return;
+  }
+  c->step_index++;
+  phase = c->step_reverse ? (7u - (c->step_index & 7u)) : (c->step_index & 7u);
+  for (k = 0; k < 4; k++) (void)pb_printer_pin(c, pins[k], seq[phase][k]);
+  c->step_stage = 0;
+  c->step_wait_ms = c->step_dwell_ms;
+  if (!c->step_wait_ms) c->step_wait_ms = 1;
+}
+
 static void pb_poll(pb_core *c) {
   uint32_t now = pb_now(c);
+  if (c->step_done_pending) { c->step_done_pending = 0; pb_reply(c, "!step done"); }
   unsigned i, port = c->pollport++ % 4;
   int anyout = 0;
   for (i = 0; i < PB_NPINS; i++) {

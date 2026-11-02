@@ -3,7 +3,7 @@
 
 --steps counts half-step transitions. --full-steps is a convenience expressed as
 two half-step transitions per requested full-step angle; the firmware still runs
-the same eight-state table. Timing is a requested busy-wait, not calibrated speed.
+the same eight-state table. Timing uses a 1 ms nonblocking scheduler; actual motor speed remains hardware-dependent.
 
 This script does not flash firmware or verify hardware. Use an owner-reviewed,
 current-limited motor setup with the thermal head disconnected. The coils are
@@ -20,8 +20,8 @@ MOTOR_PINS = ("PA9", "PA10", "PC3", "PC2")
 SUCCESS_TYPES = {"raw", "result", "connected"}
 ERROR_TYPES = {"error", "confirm_required"}
 DEFAULT_FULL_STEPS = 100
-MAX_HALF_STEPS = 200
-MAX_RUN_US = 2_000_000
+MAX_HALF_STEPS = 60000
+MAX_RUN_US = 60_000_000
 
 
 class Pinbridge:
@@ -31,7 +31,7 @@ class Pinbridge:
     async def request(self, **message):
         await self.websocket.send_json(message)
         while True:
-            reply = await asyncio.wait_for(self.websocket.receive_json(), timeout=8)
+            reply = await asyncio.wait_for(self.websocket.receive_json(), timeout=70)
             kind = reply.get("type")
             if kind in ERROR_TYPES:
                 raise RuntimeError(f"{kind}: {reply.get('message', reply)}")
@@ -107,15 +107,15 @@ def parse_args():
         parser.error(f"total half-step transitions must be 1..{MAX_HALF_STEPS}")
     if not 1 <= args.rate <= 1000:
         parser.error("--rate must be 1..1000 half-steps per second")
-    if not 0 <= args.coil_on_us <= 100000:
-        parser.error("--coil-on-us must be 0..100000")
+    if not 0 <= args.coil_on_us <= 60_000_000:
+        parser.error("--coil-on-us must be 0..60000000")
 
     period_us = round(1_000_000 / args.rate)
     gap_us = period_us - args.coil_on_us
     if gap_us < 0:
         parser.error("--coil-on-us cannot exceed the requested step period")
     if count * period_us > MAX_RUN_US:
-        parser.error("total requested run time must be at most 2 seconds")
+        parser.error("total requested run time must be at most 60 seconds")
 
     return args, count, count_description, period_us, gap_us
 
@@ -141,7 +141,7 @@ async def run(args, count, count_description, period_us, gap_us):
                 f"requested period={period_us} us; coil dwell={args.coil_on_us} us; "
                 f"inter-step gap={gap_us} us"
             )
-            print("Note: firmware busy-wait timing is approximate and not calibrated.")
+            print("Note: firmware timing resolution is 1 ms; actual motor speed is not hardware-verified.")
             if args.dry_run:
                 print("dry run: no motor phase or step commands sent")
                 return

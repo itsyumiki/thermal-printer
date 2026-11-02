@@ -118,6 +118,29 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(malformed["type"], "error")
         self.assertIn("96 hexadecimal", malformed["message"])
 
+    async def test_stepper_action_waits_for_async_firmware_completion(self):
+        await self.send({"action": "connect"})
+        commands = []
+        states = iter((["busy"], ["done"]))
+
+        async def command(line):
+            commands.append(line)
+            if line.startswith("PSTEP "):
+                return ["started"]
+            if line == "PSTEPSTAT":
+                return next(states)
+            raise AssertionError(line)
+
+        self.backend._command = command
+        result = await self.send({
+            "action": "printer", "confirm": "printer", "op": "step",
+            "direction": "FWD", "count": 400, "inter_step_us": 4000,
+            "coil_on_us": 1000,
+        })
+        self.assertEqual(result["type"], "raw")
+        self.assertEqual(result["reply"], ["ok", "halfsteps"])
+        self.assertEqual(commands, ["PSTEP FWD 400 4000 1000", "PSTEPSTAT", "PSTEPSTAT"])
+
     async def test_dangerous_output_requires_confirmation(self):
         await self.send({"action": "connect"})
         prompt = await self.send({"action": "mode", "pin": "PA1", "mode": "hi"})
