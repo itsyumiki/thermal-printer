@@ -4,8 +4,9 @@
 Requires Pinbridge WebUI running at ws://127.0.0.1:8765/ws and the printer
 connected. The printhead data polarity (1=black) follows the current experimental
 hypothesis. This is a low-level demo, not the stock four-phase row scheduler.
-Paper-feed distance is mechanism-dependent: --tail-steps is half-step transitions,
-not millimetres. Calibrate it on your printer before relying on a distance.
+Paper-feed distance is mechanism-dependent: --tail-steps is phase transitions,
+not millimetres. The firmware PSTEP count includes the initial phase, so one
+actual transition requires count=2. Calibrate feed distance before relying on mm.
 """
 import argparse
 import asyncio
@@ -98,8 +99,8 @@ async def run(args):
 
             print("pins before:", status.get("reply"))
             print(f"plan: {SQUARE_SIZE}x{SQUARE_SIZE} checkerboard centered at x={SQUARE_START}..{SQUARE_START + SQUARE_SIZE - 1}; ")
-            print(f"24 heated rows at {args.heat_us} us per row, one half-step after each; then {args.tail_steps} unheated {args.tail_direction} half-steps of blank-paper feed")
-            print("Reminder: tail half-steps do not map to mm until calibrated; row timing is experimental.")
+            print(f"24 heated rows at {args.heat_us} us per row, one phase transition after each; then {args.tail_steps} unheated {args.tail_direction} phase transitions of blank-paper feed")
+            print("Reminder: phase transitions do not map to mm until calibrated; row timing is experimental.")
             if args.dry_run:
                 for y in range(SQUARE_SIZE):
                     print("".join("##" if ((x + y) % 2 == 0) else "  " for x in range(SQUARE_SIZE)))
@@ -120,15 +121,18 @@ async def run(args):
                     await con.printer(op="shift", data_hex=row.hex(), bit_delay_us=args.bit_us, data_hold_us=args.hold_us)
                     await con.printer(op="latch", pulse_us=args.latch_us)
                     await con.printer(op="heat", pulse_us=args.heat_us)
-                    await con.printer(op="step", direction="FWD", count=1,
+                    # PSTEP count includes the initial phase: count=1 only energizes
+                    # the starting phase and produces zero phase transitions.
+                    await con.printer(op="step", direction="FWD", count=2,
                                       inter_step_us=args.row_step_us, coil_on_us=args.coil_on_us)
                     print(f"printed row {y + 1}/{SQUARE_SIZE}")
                 if args.tail_steps:
                     # No shift/latch/heat during this final feed: move only the paper.
+                    # N requested transitions require N+1 phase entries in PSTEP.
                     await con.printer(op="step", direction=args.tail_direction,
-                                      count=args.tail_steps, inter_step_us=args.row_step_us,
+                                      count=args.tail_steps + 1, inter_step_us=args.row_step_us,
                                       coil_on_us=args.coil_on_us)
-                    print(f"blank-paper feed complete: {args.tail_steps} half-steps (not calibrated mm)")
+                    print(f"blank-paper feed complete: {args.tail_steps} phase transitions (not calibrated mm)")
             finally:
                 if configured:
                     try:
