@@ -148,13 +148,21 @@ describe("TBP fake-transport retry behavior", () => {
     expect(link.nextId).toBe(2);
   });
 
-  test("disconnect rejects pending work and clears its timer/state", async () => {
-    const { link } = fakeLink(() => {});
+  test("disconnect clears pending work and prevents queued stale commands", async () => {
+    const { link, count } = fakeLink(() => {});
     const pending = link.transact(OP.STAT, new Uint8Array(), true, 1000);
+    const queued = link.transact(
+      OP.MOVE,
+      Uint8Array.of(0, 0, 0, 1, 3, 232),
+      true,
+      1000,
+    );
     await Promise.resolve();
     expect(link.pending.size).toBe(1);
     link.drop("simulated reconnect");
     await expect(pending).rejects.toThrow("simulated reconnect");
+    await expect(queued).rejects.toThrow("UART is not connected");
+    expect(count()).toBe(1);
     expect(link.pending.size).toBe(0);
     expect(link.info).toBeNull();
   });
