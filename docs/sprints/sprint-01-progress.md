@@ -6,7 +6,8 @@ Status: **in progress; not accepted as complete**.
 ## Changes in this checkpoint
 
 - C TBP duplicate detection now uses the 1..255 sequence-cycle distance and a per-session terminal-state history, retains the last 127 accepted IDs, clears history on HELLO, and rejects stale IDs not in retained history rather than replaying an arbitrary last-command result.
-- Host retry logic now resends the identical serialized request if ACK arrived but terminal STATUS did not. Previously that path set the retry count to its limit and dropped the connection without resending.
+- Host retry logic now resends the identical serialized request if ACK arrived but terminal STATUS did not. Previously that path set the retry count to its limit and dropped the connection without resending. A `ERR SEQ` whose expected ID equals the pending command ID also retries that exact frame within the normal retry budget; if the expected ID differs, the operation fails closed instead of silently changing a ROW/MOVE command ID.
+- Expanded host framing tests to explicitly reject mixed-hex and bad-CRC frames.
 - Spec clarified maximum wire-line length vs C NUL storage and the 38-byte INFO body vs 39-byte enclosing STATUS DATA. Duplicate response semantics are explicit, with a reminder that asynchronous execution must preserve actual state.
 - Added C transcript vectors for duplicate/future ID handling and wrap from `FF` to `01`; added a Bun receive test for reserved event ID `00`.
 
@@ -14,11 +15,11 @@ Status: **in progress; not accepted as complete**.
 
 - `cd host/pinbridge/bun && bun run check` — PASS, 7 tests / 22 assertions, Prettier clean.
 - `cd host/pinbridge && .venv/bin/python -m unittest discover -s tests -v` — PASS, 34 tests; all C transcript fixtures including `tbp-sequence.txt` and `tbp-wrap.txt` pass under GCC `-std=c11 -Wall -Wextra -Werror`.
-- `git diff --check` — pending final commit validation.
+- `git diff --check` — pending final commit validation for this follow-up checkpoint.
 
 ## Remaining Sprint 1 work
 
-- Host ERR SEQ recovery currently updates `nextId` but rejects the current command; it does not maintain/replay a durable ordered set of unfinished frames from the printer's expected ID.
+- Host ERR SEQ recovery is deliberately conservative when the printer reports an expected ID different from the current command. The current command API serializes transactions, so there is no durable multi-frame in-flight queue to replay; safe recovery across an ID gap requires explicit operation semantics rather than blindly renumbering potentially non-idempotent ROW/MOVE commands.
 - Add deterministic fake-transport tests for lost ACK, lost terminal STATUS, retry exhaustion, and reconnect/session reset. The terminal retry code path is fixed but not yet covered by a transport-level test.
 - Test the history retention boundary (exactly 127 IDs vs evicted IDs) and a duplicate ROW/MOVE command's no-reexecution property beyond the state-only protocol transcript.
 - Align malformed mixed-hex input, CRLF and overlong-line behavior between the C receiver and host parser without breaking the legacy text-command interface.

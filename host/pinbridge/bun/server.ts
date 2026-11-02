@@ -30,6 +30,7 @@ type Pending = {
   waitTerminal: boolean;
   timer?: ReturnType<typeof setTimeout>;
   retries: number;
+  retry?: () => void;
 };
 class PrinterLink {
   serial: SerialPort | null = null;
@@ -298,12 +299,22 @@ class PrinterLink {
     if (f.op === KIND.ERR) {
       const code = f.data[0] ?? 0,
         arg = f.data[1] ?? 0;
-      if (code === 6) this.nextId = arg || 1;
-      else this.nextId = f.id || this.nextId;
+      if (p.timer) clearTimeout(p.timer);
+      // ERR SEQ with this same id means the printer still expects this
+      // command. Retry the exact frame; never rewrite a motion command's ID
+      // or payload in place. If it expects another ID, fail closed and let
+      // the caller decide whether it is safe to resubmit the operation.
+      if (code === 6) {
+        this.nextId = arg || 1;
+        if (arg === f.id && p.retry) {
+          p.acked = false;
+          p.retry();
+          return;
+        }
+      } else this.nextId = f.id || this.nextId;
       const error = new Error(
         `TBP ERR 0x${code.toString(16).padStart(2, "0")} (arg ${arg})`,
       );
-      if (p.timer) clearTimeout(p.timer);
       this.pending.delete(f.id);
       p.reject(error);
       this.emit("command-error", { id: f.id, message: error.message });
@@ -414,6 +425,7 @@ class PrinterLink {
           } else attempt();
         }, timeout);
       };
+      p.retry = attempt;
       attempt();
     });
     if (op === OP.HELLO) this.nextId = 2;

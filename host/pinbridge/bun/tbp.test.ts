@@ -42,6 +42,8 @@ describe("TBP v1 framing", () => {
     expect(() => decode(frame.slice(0, -2) + "00")).toThrow();
     expect(() => decode("010101")).toThrow();
     expect(() => decode(" " + frame)).toThrow();
+    expect(() => decode(frame.slice(0, 4) + "GG" + frame.slice(6))).toThrow();
+    expect(() => decode("01010101E655")).toThrow();
     expect(() => decode("AA".repeat(261))).toThrow();
     expect(() => encode(0, OP.HELLO, Uint8Array.of(1))).toThrow();
     expect(decode(frame + "\r").id).toBe(1);
