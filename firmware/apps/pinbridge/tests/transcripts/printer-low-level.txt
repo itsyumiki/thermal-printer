@@ -1,0 +1,29 @@
+# Low-level printer command parser smoke test; simulated delay callback is a no-op.
+> MOD PB8 lo
+< ok
+> MOD PB9 lo
+< ok
+> MOD PB10 lo
+< ok
+> MOD PB11 lo
+< ok
+> MOD PA9 lo
+< ok
+> MOD PA10 lo
+< ok
+> MOD PC3 lo
+< ok
+> MOD PC2 lo
+< ok
+> PHEAD 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1
+< ok bits=384
+> PLATCH 2
+< ok
+> PHEAT 100
+< ok
+> PSTEP FWD 1 100 100
+< ok
+> PHEAT 6001
+< err arg PHEAT
+> PSTEP SIDE 1 1 1
+< err arg PSTEP

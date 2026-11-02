@@ -51,6 +51,7 @@ typedef struct {
   int (*pwm_set)(void *, unsigned, unsigned, unsigned);
   uint32_t (*millis)(void *);
   int (*tx_write)(void *, const char *, size_t);
+  void (*delay_us)(void *, unsigned);
 } pb_hal;
 typedef struct {
   pb_hal h;
@@ -178,6 +179,102 @@ static void pb_init(pb_core *c, const pb_hal *h) {
     c->pins[i].mode = PB_OFF;
   }
 }
+/* Low-level printer primitives. All timing executes on the MCU, not over USB/WebSocket. */
+static int pb_u32(const char *s, uint32_t *out) {
+  uint32_t v = 0;
+  if (!*s) return 0;
+  while (*s) {
+    if (*s < '0' || *s > '9') return 0;
+    { unsigned d = (unsigned)(*s++ - '0'); if (v > 429496729u || (v == 429496729u && d > 5u)) return 0; v = v * 10u + d; }
+  }
+  *out = v;
+  return 1;
+}
+static int pb_hexbyte(const char *s, unsigned *out) {
+  unsigned v = 0, i;
+  for (i = 0; i < 2; i++) {
+    char x = s[i]; unsigned d;
+    if (x >= '0' && x <= '9') d = (unsigned)(x - '0');
+    else if (x >= 'a' && x <= 'f') d = (unsigned)(x - 'a' + 10);
+    else if (x >= 'A' && x <= 'F') d = (unsigned)(x - 'A' + 10);
+    else return 0;
+    v = (v << 4) | d;
+  }
+  *out = v; return 1;
+}
+static int pb_printer_pin(pb_core *c, const char *name, unsigned level) {
+  int i = pb_pin(name);
+  uint16_t mask, value;
+  if (i < 0 || (c->pins[i].mode != PB_LO && c->pins[i].mode != PB_HI) || !c->h.write_port)
+    return -1;
+  mask = (uint16_t)(1u << pb_defs[i].bit);
+  value = level ? mask : 0;
+  c->h.write_port(c->h.ctx, pb_defs[i].port, mask, value);
+  c->pins[i].level = (uint8_t)level;
+  c->pins[i].mode = (uint8_t)(level ? PB_HI : PB_LO);
+  return 0;
+}
+static void pb_wait_us(pb_core *c, unsigned us) {
+  if (us && c->h.delay_us) c->h.delay_us(c->h.ctx, us);
+}
+static int pb_all_outputs(pb_core *c, const char *const *pins, unsigned n) {
+  unsigned i;
+  for (i = 0; i < n; i++) {
+    int k = pb_pin(pins[i]);
+    if (k < 0 || (c->pins[k].mode != PB_LO && c->pins[k].mode != PB_HI)) return 0;
+  }
+  return 1;
+}
+static void pb_printer_command(pb_core *c, char **v, int n) {
+  static const char *const headpins[] = {"PB10", "PB9", "PB8", "PB11"};
+  static const char *const motorpins[] = {"PA9", "PA10", "PC3", "PC2"};
+  static const uint8_t phases[4][4] = {{1,0,1,0},{0,1,1,0},{0,1,0,1},{1,0,0,1}};
+  uint32_t a, b, count, i, j; char *hex;
+  if (!c->h.delay_us) { pb_error(c, "bsy", "delay"); return; }
+  if (pb_eq(v[0], "PHEAD")) {
+    if (n != 4 || strlen(v[1]) != 96 || !pb_u32(v[2], &a) || !pb_u32(v[3], &b) || a > 1000 || b > 1000 || !pb_all_outputs(c, headpins, 4)) { pb_error(c, "arg", "PHEAD"); return; }
+    hex = v[1];
+    for (i = 0; i < 48; i++) {
+      unsigned byte;
+      if (!pb_hexbyte(hex + i*2, &byte)) { pb_error(c, "hex", "PHEAD"); return; }
+    }
+    for (i = 0; i < 48; i++) {
+      unsigned byte; (void)pb_hexbyte(hex + i*2, &byte);
+      for (j = 0; j < 8; j++) {
+        if (pb_printer_pin(c, "PB10", (byte >> j) & 1u) < 0) { pb_error(c, "mod", "PB10"); return; }
+        pb_wait_us(c, (unsigned)b); /* data setup / hold */
+        (void)pb_printer_pin(c, "PB9", 1); pb_wait_us(c, (unsigned)a);
+        (void)pb_printer_pin(c, "PB9", 0); pb_wait_us(c, (unsigned)a);
+      }
+    }
+    pb_reply(c, "ok bits=384"); c->last_feed = pb_now(c); return;
+  }
+  if (pb_eq(v[0], "PLATCH")) {
+    if (n != 2 || !pb_u32(v[1], &a) || a > 1000 || !pb_all_outputs(c, headpins, 4)) { pb_error(c, "arg", "PLATCH"); return; }
+    (void)pb_printer_pin(c, "PB8", 0); pb_wait_us(c, (unsigned)a);
+    (void)pb_printer_pin(c, "PB8", 1); pb_reply(c, "ok"); c->last_feed = pb_now(c); return;
+  }
+  if (pb_eq(v[0], "PHEAT")) {
+    /* Single bounded pulse only; 6 ms is the inferred stock firmware cutoff, not a safety guarantee. */
+    if (n != 2 || !pb_u32(v[1], &a) || a > 6000 || !pb_all_outputs(c, headpins, 4)) { pb_error(c, "arg", "PHEAT"); return; }
+    (void)pb_printer_pin(c, "PB11", 1); pb_wait_us(c, (unsigned)a);
+    (void)pb_printer_pin(c, "PB11", 0); pb_reply(c, "ok"); c->last_feed = pb_now(c); return;
+  }
+  if (pb_eq(v[0], "PSTEP")) {
+    int reverse;
+    if (n != 5 || (!pb_eq(v[1], "FWD") && !pb_eq(v[1], "REV")) || !pb_u32(v[2], &count) || !pb_u32(v[3], &a) || !pb_u32(v[4], &b) || count > 200 || a > 100000 || b > 100000 || (uint64_t)count * (a+b) > 2000000u || !pb_all_outputs(c, motorpins, 4)) { pb_error(c, "arg", "PSTEP"); return; }
+    reverse = pb_eq(v[1], "REV");
+    for (i = 0; i < count; i++) {
+      unsigned phase = reverse ? (3u - ((unsigned)i & 3u)) : ((unsigned)i & 3u);
+      unsigned k;
+      for (k = 0; k < 4; k++) (void)pb_printer_pin(c, motorpins[k], phases[phase][k]);
+      pb_wait_us(c, (unsigned)b); /* coil-on dwell */
+      if (i + 1 < count) pb_wait_us(c, (unsigned)a); /* inter-step delay */
+    }
+    pb_reply(c, "ok"); c->last_feed = pb_now(c); return;
+  }
+}
+
 static void pb_command(pb_core *c, char *line) {
   char **v = c->scratch_v;
   int n = pb_token(line, v, 16), *p = c->scratch_p, i, j;
@@ -199,6 +296,10 @@ static void pb_command(pb_core *c, char *line) {
     pb_append(d, sizeof d, &q, " t=");
     pb_num(d, sizeof d, &q, now);
     pb_reply(c, d);
+  }
+  if (pb_eq(v[0], "PHEAD") || pb_eq(v[0], "PLATCH") || pb_eq(v[0], "PHEAT") || pb_eq(v[0], "PSTEP")) {
+    pb_printer_command(c, v, n);
+    return;
   }
   if (pb_eq(v[0], "HEL")) {
     if (n != 1) {

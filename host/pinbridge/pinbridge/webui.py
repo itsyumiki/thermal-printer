@@ -318,6 +318,47 @@ class WebBackend:
                 }
             except Exception as exc:
                 return {"type": "error", "message": f"Power sequence failed: {exc}"}
+        if action == "printer":
+            # Explicit high-level WebSocket facade over bounded MCU-timed primitives.
+            if not self.board:
+                return {"type": "error", "message": "Connect to a device first."}
+            if msg.get("confirm") != "printer":
+                return {"type": "confirm_required", "message": "Confirm printer-head/stepper operation.", "confirm": "printer"}
+            op = str(msg.get("op", "")).lower()
+            try:
+                def integer(key, low, high):
+                    value = msg.get(key)
+                    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                        raise ValueError(f"{key} must be an integer in {low}..{high}")
+                    return value
+                if op == "shift":
+                    data = str(msg.get("data_hex", ""))
+                    if len(data) != 96 or any(ch not in "0123456789abcdefABCDEF" for ch in data):
+                        raise ValueError("data_hex must contain exactly 96 hexadecimal characters (48 bytes)")
+                    bit_us = integer("bit_delay_us", 0, 1000)
+                    hold_us = integer("data_hold_us", 0, 1000)
+                    line = f"PHEAD {data} {bit_us} {hold_us}"
+                elif op == "latch":
+                    line = f"PLATCH {integer('pulse_us', 0, 1000)}"
+                elif op == "heat":
+                    line = f"PHEAT {integer('pulse_us', 0, 6000)}"
+                elif op == "step":
+                    direction = str(msg.get("direction", "")).upper()
+                    if direction not in {"FWD", "REV"}:
+                        raise ValueError("direction must be FWD or REV")
+                    count = integer("count", 0, 200)
+                    inter = integer("inter_step_us", 0, 100000)
+                    dwell = integer("coil_on_us", 0, 100000)
+                    if count * (inter + dwell) > 2000000:
+                        raise ValueError("total step timing must be <= 2,000,000 us")
+                    line = f"PSTEP {direction} {count} {inter} {dwell}"
+                else:
+                    raise ValueError("op must be shift, latch, heat, or step")
+                return {"type": "raw", "command": line, "reply": await self._command(line)}
+            except ValueError as exc:
+                return {"type": "error", "message": str(exc)}
+            except Exception as exc:
+                return {"type": "error", "message": f"Printer command failed: {exc}"}
         if action == "raw":
             line = str(msg.get("command", "")).strip()
             if not line or len(line) > 120 or any(ord(c) < 32 for c in line):

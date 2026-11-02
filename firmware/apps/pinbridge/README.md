@@ -59,3 +59,15 @@ By default the server binds to localhost only. Do not expose it to an untrusted 
 4. With a meter only and the same safe setup, verify PB1 pull-up (released HIGH / pressed LOW), PB3 without pulls (paper present LOW / empty HIGH), and compare `ADC PC4 PC5` raw/mV readings against the measured signal voltages. Do not infer printhead temperature or battery voltage until the thermistor curve and divider ratio are confirmed.
 5. Arm an output, stop sending commands, and verify `!wdg` plus safe state after about five seconds. Unplug USB while output is configured and report safe-state behavior.
 6. Do not connect the print head/motor/battery supply during initial GPIO tests. PA1 output may affect board power; PB5 is the charger/LDO input, and DP/DM are USB data lines. Test the newly allowed stepper/head pins first as unloaded GPIO and only with the owner-reviewed pin map. Send the full transcript, board revision, firmware hash and any unexpected lines to the maintainer.
+
+
+## Experimental low-level printer commands
+
+The portable command core includes MCU-timed experimental commands, also exposed by the WebSocket `action: "printer"` facade (`confirm: "printer"`):
+
+- `PHEAD <96 hex chars> <clock-half-period-us> <data-setup-us>` — shifts 48 bytes, LSB-first. Requires PB8–PB11 configured as outputs; delays each capped at 1000 us.
+- `PLATCH <pulse-us>` — PB8 low pulse then high; cap 1000 us.
+- `PHEAT <pulse-us>` — one PB11 high pulse then low; cap 6000 us. This is **not** the stock timer ISR and the cap is not a thermal safety guarantee.
+- `PSTEP <FWD|REV> <count> <inter-step-us> <coil-on-us>` — full-step phases on PA9/PA10/PC3/PC2; count <= 200, total dwell <= 2 seconds. Coil state remains at the last phase.
+
+These commands are blocking low-level experiments, not a complete printer scheduler. They do not implement the stock four-phase row sequence, temperature interlocks, paper detection, or native heater timing. Use the host example `host/pinbridge/examples/printhead_dotted_line_ws_demo.py`; by default it prints only one row and asks for typed confirmation. Source parser/WebSocket tests cover argument handling only. The isolated vendor-SDK firmware build completed successfully for this change; the image has not been flashed or hardware-tested. The busy-loop delay implementation is approximate and uncalibrated, so it does not provide exact microsecond timing or a certified heater safety limit. Review the build notes and hardware plan before any flash/run.

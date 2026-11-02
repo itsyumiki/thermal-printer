@@ -47,10 +47,12 @@ static int sim_tx(void *ctx, const char *data, size_t length) {
   return fflush(stdout) == 0;
 }
 
+static void sim_delay_us(void *ctx, unsigned us) { (void)ctx; (void)us; }
+
 int main(void) {
   pb_core core;
   const pb_hal hal = {NULL, sim_mode, sim_write, sim_read, sim_adc, NULL,
-                      sim_millis, sim_tx};
+                      sim_millis, sim_tx, sim_delay_us};
   int ch;
   pb_init(&core, &hal);
   while ((ch = getchar()) != EOF) {

@@ -102,6 +102,22 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
             {p["name"]: p["value"] for p in off["status"]["pins"]}["PA1"], 0
         )
 
+    async def test_printer_action_requires_connection(self):
+        result = await self.send({"action": "printer", "confirm": "printer", "op": "heat", "pulse_us": 1000})
+        self.assertEqual(result["type"], "error")
+        self.assertIn("Connect", result["message"])
+
+    async def test_printer_action_requires_confirmation_and_bounds_heat_pulse(self):
+        await self.send({"action": "connect"})
+        prompt = await self.send({"action": "printer", "op": "heat", "pulse_us": 1000})
+        self.assertEqual(prompt["type"], "confirm_required")
+        rejected = await self.send({"action": "printer", "confirm": "printer", "op": "heat", "pulse_us": 6001})
+        self.assertEqual(rejected["type"], "error")
+        self.assertIn("pulse_us", rejected["message"])
+        malformed = await self.send({"action": "printer", "confirm": "printer", "op": "shift", "data_hex": "00", "bit_delay_us": 2, "data_hold_us": 1})
+        self.assertEqual(malformed["type"], "error")
+        self.assertIn("96 hexadecimal", malformed["message"])
+
     async def test_dangerous_output_requires_confirmation(self):
         await self.send({"action": "connect"})
         prompt = await self.send({"action": "mode", "pin": "PA1", "mode": "hi"})
