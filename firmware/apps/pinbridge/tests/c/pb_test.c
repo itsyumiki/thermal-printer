@@ -148,6 +148,17 @@ int main(int argc, char **argv) {
         if (*s == '@') {
             unsigned a, b;
             char pin[16], val[16];
+            if (sscanf(s, "@accept %u", &a) == 1) {
+                if (a < 1 || a > 255)
+                    fail(ln, "bad @accept id");
+                pb_tbp_accept(&c, (uint8_t)a);
+                continue;
+            }
+            if (sscanf(s, "@history %u %u", &a, &b) == 2) {
+                if (a < 1 || a > 255 || c.tbp_history[a] != b)
+                    fail(ln, "history state mismatch");
+                continue;
+            }
             if (sscanf(s, "@time %u", &a) == 1) {
                 now_ms = a;
                 continue;
