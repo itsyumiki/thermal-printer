@@ -108,6 +108,16 @@ int main(int argc, char **argv) {
         value = 777u;
         if (pb_sensor_battery_mv(1250u, 0u, 1u, &value) || value != 777u)
             fail(0, "unset battery divider was accepted or output modified");
+        {
+            int temperature = 123456;
+            if (!pb_sensor_temperature_mC(10000u, 10000u, 3950u, 25, &temperature) ||
+                temperature < 24900 || temperature > 25100)
+                fail(0, "NTC beta conversion at R0 does not match T0");
+            temperature = 123456;
+            if (pb_sensor_temperature_mC(10000u, 0u, 3950u, 25, &temperature) ||
+                temperature != 123456)
+                fail(0, "unset NTC R0 was accepted or output modified");
+        }
     }
     pb_init(&c, &h);
     active_core = &c;
