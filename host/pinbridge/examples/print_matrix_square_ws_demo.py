@@ -125,7 +125,7 @@ async def run(args):
                     # PSTEP count includes the initial phase, so N transitions need N+1.
                     await con.printer(op="step", direction="FWD", count=args.row_steps + 1,
                                       inter_step_us=args.row_step_us, coil_on_us=args.coil_on_us)
-                    print(f"printed row {y + 1}/{SQUARE_SIZE}; fed {args.row_steps} phase transitions")
+                    print(f"printed row {y + 1}/{ROW_COUNT}; fed {args.row_steps} phase transitions")
                 if args.tail_steps:
                     # No shift/latch/heat during this final feed: move only the paper.
                     # N requested transitions require N+1 phase entries in PSTEP.
