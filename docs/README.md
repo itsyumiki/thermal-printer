@@ -11,6 +11,7 @@
 | [troubleshooting.md](troubleshooting.md) | Every failure hit so far, with cause and fix |
 | [stock-print-scheduler-handoff.md](stock-print-scheduler-handoff.md) | Recovered stock print/stepper cadence, implementation direction, acceptance criteria, and next-agent handoff |
 | [thermal-protocol-spec.md](thermal-protocol-spec.md) | Draft v1 binary host/printer protocol: framing, ids, opcodes, queue, row timing model, safety limits, error codes, examples |
+| [sprints/README.md](sprints/README.md) | Bite-sized implementation plan, dependencies, definition of done, and per-sprint agent handoffs |
 | [../host/pinbridge/bun/README.md](../host/pinbridge/bun/README.md) | Bun-based production WebSocket/UART host, TBP helpers, browser UI, and current executor limitations |
 | [journal.md](journal.md) | What was tried, in order, including dead ends, and what is not done yet |
 | [archive/](archive/) | Early research notes, superseded |
