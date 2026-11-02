@@ -44,6 +44,14 @@ The Python backend serves the bundled HTML, CSS, JavaScript and JSON/WebSocket A
 
 By default the server binds to localhost only. Do not expose it to an untrusted network: it is a hardware-control interface and currently has no authentication. The UI only offers the capabilities in the generated firmware pin table; PA3, PB5, DP and DM remain unavailable as GPIO. Mock mode exercises UI flows but is not a safety or timing test. Do not connect the print head, motor or battery supply during initial GPIO experiments. No device is flashed by starting the Web UI.
 
+## Editable tuning defaults
+
+`src/pb_tuning.h` is the single header for owner-retunable starting values. It carries the previous scripts' nominal head timings (clock half-period 2 us, data setup 1 us, latch 2 us), demo heater request (1500 us nominal; 6000 us legacy input ceiling), and stepper starting points (1 ms minimum scheduler period, 6 ms demo event cadence, 1 ms gap/dwell). These are **provisional starting points**, not claims of calibrated timing. Explicit host command parameters still take precedence where the protocol supplies them.
+
+The same header contains sensor conversion/threshold inputs. The 56 kOhm thermistor pull-up is recorded from the owner ledger; thermistor R0/Beta, ADC reference, battery divider ratio and temperature/battery thresholds are zero (unset) until populated from the existing measured calibration data. Do not interpret zero as a physical calibration.
+
+Critically, `PB_TBP_SENSOR_CAPS`, `PB_TBP_HEATER_TIMER_READY`, and all active `PB_TBP_*` heater timing/duty limits in `pb_core.h` remain zero. Editing a provisional `PB_TUNE_*` value does not enable heating. Only a reviewed implementation with real sensor conversion, a working timer, and validated fail-safe checks should connect the tunables to advertised capabilities.
+
 ## Limits and status
 
 - [assumed] Pin bonding and net assignments come from the owner's documentation; no hardware is available here.

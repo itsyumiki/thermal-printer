@@ -70,3 +70,9 @@ The owner confirms that all pin mappings and physical functions—including butt
 4. Add tests and controlled validation for sensor faults, overtemperature, low battery, paper absent, ESTOP, link loss, and watchdog behavior before changing the zero heater limits. Owner-confirmed pin functionality does not substitute for validating these safety interlocks in the new firmware path.
 
 The present work intentionally disables heater operation. Physical pin/peripheral functions are owner-confirmed; sensor acquisition/conversion, thresholds, firmware timing and safety interlocks still need validation. Do not set `PB_TBP_BURN_MAX_US` or sensor capability bits nonzero as a workaround.
+
+### Editable tuning header — 2026-11-02
+
+`firmware/apps/pinbridge/src/pb_tuning.h` now centralizes the previous WebUI/demo timing starting points and the calibration values that still need to be carried into the new firmware path. The provisional timing defaults are head clock 2 us, data setup 1 us, latch 2 us, heater request 1500 us nominal (6000 us legacy request ceiling only), and 1 ms / 6 ms stepper starting points. The 56 kOhm thermistor pull-up is recorded; thermistor R0/Beta, ADC reference, battery divider ratio, and sensor thresholds remain explicitly unset where this repo does not contain a grounded numeric value.
+
+These tuning inputs do **not** alter the active fail-closed gate: sensor capabilities, heater timer readiness, burn tick/max, guard, duty window/budget, and shift timing advertised to TBP remain zero. Existing host-supplied timing arguments remain explicit command inputs; macros are the central source for editable firmware policy/defaults, not an implicit override of command fields.

@@ -238,7 +238,8 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
         uint32_t latch_us, heat_us;
         if (n != 7 || strlen(v[1]) != 96 || !pb_u32(v[2], &a) || !pb_u32(v[3], &b) ||
             !pb_u32(v[4], &latch_us) || !pb_u32(v[5], &heat_us) || !pb_u32(v[6], &count) ||
-            a > 10u || b > 10u || latch_us > 1000u || heat_us > 6000u || count > 8u) {
+            a > PB_TUNE_HEAD_TIMING_MAX_US || b > PB_TUNE_HEAD_TIMING_MAX_US ||
+            latch_us > PB_TUNE_HEAD_TIMING_MAX_US || heat_us > PB_TUNE_HEATER_REQUEST_MAX_US || count > 8u) {
             pb_error(c, "arg", "PEVENT");
             return;
         }

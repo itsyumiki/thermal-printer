@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include "pb_tuning.h"
 #define PB_CAP_IN 1u
 #define PB_CAP_OUT 2u
 #define PB_CAP_PU 4u
@@ -33,8 +34,8 @@ typedef struct {
 #define PB_MAX_PINS 16u
 #define PB_TBP_QUEUE_DEPTH 4u
 #define PB_TBP_DATA_MAX 54u
-#define PB_TBP_MIN_PERIOD_US 1000u
-/* Heating remains disabled until temperature, battery and paper sensors are mapped/calibrated. */
+#define PB_TBP_MIN_PERIOD_US PB_TUNE_STEPPER_MIN_PERIOD_US
+/* Runtime-advertised safety limits remain independent of provisional tuning defaults. */
 #define PB_TBP_SENSOR_CAP_TEMP 0x01u
 #define PB_TBP_SENSOR_CAP_BATTERY 0x02u
 #define PB_TBP_SENSOR_CAP_PAPER 0x08u
