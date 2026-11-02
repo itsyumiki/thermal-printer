@@ -1,4 +1,4 @@
-# Queued DWELL commands finish in FIFO order and release queue credits.
+# Queued DWELL commands finish in FIFO order, STAT tracks terminal IDs, and credits recover.
 @config real
 > 01010101E654
 < 01810100CD2F
@@ -9,11 +9,15 @@
 < 038101020005
 > 041202001EF35A
 < 048101034109
-@advance 200
+@advance 20
 < 02820203036E8F
+> 050200410E
+< 05810102279C
+< 05820E030202040002FFFFFFFFFFFFFF04438A
+@advance 200
 < 0382020303C4DE
 < 0482020303A30A
-> 051202000A0BBE
-< 0581010117FF
+> 061202000AE56C
+< 068101018C23
 @advance 30
-< 0582020303095B
+< 0682020303E789
