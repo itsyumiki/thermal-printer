@@ -64,6 +64,8 @@ def parse_args():
     parser.add_argument("--latch-us", type=int, default=2)
     parser.add_argument("--heat-us", type=int, default=1500,
                         help="PB11 high pulse per row (0..6000 us; not a safety guarantee)")
+    parser.add_argument("--row-steps", type=int, default=8,
+                        help="actual motor phase transitions after each printed row (default: 8)")
     parser.add_argument("--row-step-us", type=int, default=1000,
                         help="requested inter-step gap for each printed row")
     parser.add_argument("--coil-on-us", type=int, default=1000)
@@ -80,6 +82,8 @@ def parse_args():
         parser.error("--heat-us must be 0..6000")
     if not 0 <= args.row_step_us <= 60_000_000 or not 0 <= args.coil_on_us <= 60_000_000:
         parser.error("step timing must be 0..60000000 us")
+    if not 0 <= args.row_steps <= 60000:
+        parser.error("--row-steps must be 0..60000")
     if not 0 <= args.tail_steps <= 60000:
         parser.error("--tail-steps must be 0..60000")
     return args
@@ -99,7 +103,7 @@ async def run(args):
 
             print("pins before:", status.get("reply"))
             print(f"plan: {SQUARE_SIZE}x{SQUARE_SIZE} checkerboard centered at x={SQUARE_START}..{SQUARE_START + SQUARE_SIZE - 1}; ")
-            print(f"24 heated rows at {args.heat_us} us per row, one phase transition after each; then {args.tail_steps} unheated {args.tail_direction} phase transitions of blank-paper feed")
+            print(f"24 heated rows at {args.heat_us} us per row, {args.row_steps} phase transitions after each; then {args.tail_steps} unheated {args.tail_direction} phase transitions of blank-paper feed")
             print("Reminder: phase transitions do not map to mm until calibrated; row timing is experimental.")
             if args.dry_run:
                 for y in range(SQUARE_SIZE):
@@ -121,11 +125,10 @@ async def run(args):
                     await con.printer(op="shift", data_hex=row.hex(), bit_delay_us=args.bit_us, data_hold_us=args.hold_us)
                     await con.printer(op="latch", pulse_us=args.latch_us)
                     await con.printer(op="heat", pulse_us=args.heat_us)
-                    # PSTEP count includes the initial phase: count=1 only energizes
-                    # the starting phase and produces zero phase transitions.
-                    await con.printer(op="step", direction="FWD", count=2,
+                    # PSTEP count includes the initial phase, so N transitions need N+1.
+                    await con.printer(op="step", direction="FWD", count=args.row_steps + 1,
                                       inter_step_us=args.row_step_us, coil_on_us=args.coil_on_us)
-                    print(f"printed row {y + 1}/{SQUARE_SIZE}")
+                    print(f"printed row {y + 1}/{SQUARE_SIZE}; fed {args.row_steps} phase transitions")
                 if args.tail_steps:
                     # No shift/latch/heat during this final feed: move only the paper.
                     # N requested transitions require N+1 phase entries in PSTEP.
