@@ -105,8 +105,8 @@ def parse_args():
 
     if not 1 <= count <= MAX_HALF_STEPS:
         parser.error(f"total half-step transitions must be 1..{MAX_HALF_STEPS}")
-    if not 1 <= args.rate <= 1000:
-        parser.error("--rate must be 1..1000 half-steps per second")
+    if not 1 <= args.rate <= 5000:
+        parser.error("--rate must be 1..5000 half-steps per second")
     if not 0 <= args.coil_on_us <= 60_000_000:
         parser.error("--coil-on-us must be 0..60000000")
 
@@ -141,7 +141,7 @@ async def run(args, count, count_description, period_us, gap_us):
                 f"requested period={period_us} us; coil dwell={args.coil_on_us} us; "
                 f"inter-step gap={gap_us} us"
             )
-            print("Note: firmware timing resolution is 1 ms; actual motor speed is not hardware-verified.")
+            print("Note: --rate accepts up to 5000, but current firmware timing resolution is 1 ms (about 1000 transitions/s maximum); higher requests need a firmware timing change and reflash. Actual motor speed is not hardware-verified.")
             if args.dry_run:
                 print("dry run: no motor phase or step commands sent")
                 return
