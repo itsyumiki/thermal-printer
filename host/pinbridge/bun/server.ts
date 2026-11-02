@@ -133,6 +133,8 @@ class PrinterLink {
     this.connectWanted = true;
     if (this.mock) {
       this.path = "MOCK";
+      // A HELLO starts a fresh protocol session; the first subsequent command is id 02.
+      this.nextId = 2;
       this.info = {
         version: 1,
         buildId: "MOCK-DEV",
