@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print a centered 24x24 black/white checkerboard, then feed blank paper.
+"""Print 24 solid-black rows across all 384 printhead dots, then feed blank paper.
 
 Requires Pinbridge WebUI running at ws://127.0.0.1:8765/ws and the printer
 connected. The printhead data polarity (1=black) follows the current experimental
@@ -19,8 +19,7 @@ MOTOR_PINS = ("PA9", "PA10", "PC3", "PC2")
 OK_TYPES = {"raw", "result", "connected"}
 FAIL_TYPES = {"error", "confirm_required"}
 HEAD_DOTS = 384
-SQUARE_SIZE = 24
-SQUARE_START = (HEAD_DOTS - SQUARE_SIZE) // 2
+ROW_COUNT = 24
 
 
 class Console:
@@ -44,15 +43,10 @@ class Console:
         return await self.call(action="printer", confirm="printer", **kwargs)
 
 
-def make_row(y: int) -> bytes:
-    """Return 48 bytes; checkerboard square is centered in the 384-dot head."""
-    bits = [0] * HEAD_DOTS  # 0=white, based on the current polarity hypothesis
-    for x in range(SQUARE_START, SQUARE_START + SQUARE_SIZE):
-        bits[x] = int((x - SQUARE_START + y) % 2 == 0)  # 1=black
-    return bytes(
-        sum(bits[base + bit] << bit for bit in range(8))
-        for base in range(0, HEAD_DOTS, 8)
-    )
+def make_row(y: int = 0) -> bytes:
+    """Return 48 bytes with all 384 dots selected as black (1 bits)."""
+    del y  # Keep the row argument for callers; every row is identical.
+    return b"\xff" * (HEAD_DOTS // 8)
 
 
 def parse_args():
@@ -62,7 +56,7 @@ def parse_args():
     parser.add_argument("--bit-us", type=int, default=2)
     parser.add_argument("--hold-us", type=int, default=1)
     parser.add_argument("--latch-us", type=int, default=2)
-    parser.add_argument("--heat-us", type=int, default=1500,
+    parser.add_argument("--heat-us", type=int, default=6000,
                         help="PB11 high pulse per row (0..6000 us; not a safety guarantee)")
     parser.add_argument("--row-steps", type=int, default=8,
                         help="actual motor phase transitions after each printed row (default: 8)")
@@ -102,12 +96,11 @@ async def run(args):
                 status = await con.raw("STA " + " ".join(HEAD_PINS + MOTOR_PINS))
 
             print("pins before:", status.get("reply"))
-            print(f"plan: {SQUARE_SIZE}x{SQUARE_SIZE} checkerboard centered at x={SQUARE_START}..{SQUARE_START + SQUARE_SIZE - 1}; ")
-            print(f"24 heated rows at {args.heat_us} us per row, {args.row_steps} phase transitions after each; then {args.tail_steps} unheated {args.tail_direction} phase transitions of blank-paper feed")
+            print(f"plan: {ROW_COUNT} solid-black rows across all {HEAD_DOTS} dots (48 bytes of 0xFF per row)")
+            print(f"{ROW_COUNT} heated rows at {args.heat_us} us per row, {args.row_steps} phase transitions after each; then {args.tail_steps} unheated {args.tail_direction} phase transitions of blank-paper feed")
             print("Reminder: phase transitions do not map to mm until calibrated; row timing is experimental.")
             if args.dry_run:
-                for y in range(SQUARE_SIZE):
-                    print("".join("##" if ((x + y) % 2 == 0) else "  " for x in range(SQUARE_SIZE)))
+                print(f"dry-run row payload: {make_row().hex()} ({len(make_row())} bytes, all bits set)")
                 print("dry run: no GPIO, printhead, heater, or step commands sent")
                 return
             if not args.yes:
@@ -124,7 +117,7 @@ async def run(args):
                 # Leaving PB8 at the mode-command default (LOW) can expose shifting
                 # data continuously instead of holding the completed 384-bit row.
                 await con.raw("SET PB8=1 PB9=0 PB10=0 PB11=0")
-                for y in range(SQUARE_SIZE):
+                for y in range(ROW_COUNT):
                     row = make_row(y)
                     await con.printer(op="shift", data_hex=row.hex(), bit_delay_us=args.bit_us, data_hold_us=args.hold_us)
                     await con.printer(op="latch", pulse_us=args.latch_us)
