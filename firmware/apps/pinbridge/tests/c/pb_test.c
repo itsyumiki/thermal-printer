@@ -216,6 +216,15 @@ int main(int argc, char **argv) {
                 writes = 0;
                 continue;
             }
+            if (!strcmp(s, "@writes-reset")) {
+                writes = 0;
+                continue;
+            }
+            if (!strcmp(s, "@writes-zero")) {
+                if (writes != 0)
+                    fail(ln, "expected no write_port calls");
+                continue;
+            }
             if (!strncmp(s, "@reboot", 7)) {
                 pb_init(&c, &h);
                 continue;
@@ -227,6 +236,11 @@ int main(int argc, char **argv) {
                 if (sscanf(s + 6, "\"%511[^\"]\"", raw) != 1)
                     fail(ln, "bad @send");
                 pb_rx(&c, (unsigned char *)raw, strlen(raw));
+                continue;
+            }
+            if (!strncmp(s, "@embedded-cr", 12)) {
+                const unsigned char raw[] = {'0','1','0','1','\r','G','G','\n'};
+                pb_rx(&c, raw, sizeof raw);
                 continue;
             }
             if (sscanf(s, "@long %u", &a) == 1) {

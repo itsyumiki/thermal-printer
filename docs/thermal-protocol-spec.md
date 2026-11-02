@@ -48,7 +48,7 @@ One frame per line. Same layout in both directions.
 | CRC16 | 2 bytes | CRC-16/CCITT-FALSE over ID, OP, LEN and DATA (poly `0x1021`, init `0xFFFF`, no reflection, xorout `0`). |
 
 - A frame is 5 + LEN bytes, so 10 + 2·LEN hex characters, then `\n` (`0x0A`). Maximum wire line length is 521 characters including `\n` (520 hex characters plus LF). Implementations must allocate an additional NUL byte if using C strings; this storage byte is not part of the wire limit.
-- Receivers ignore a `\r` before `\n` and ignore empty lines. Spaces, odd digit counts and non-hex characters are a format error. In the firmware receiver, a malformed line with at least four leading hex characters is treated as a TBP candidate and returns `ERR FORMAT`; word-led legacy commands (including `ADC`) remain on the legacy parser path.
+- Receivers ignore a `\r` immediately before `\n` and ignore empty lines. An embedded `\r`, spaces, odd digit counts and non-hex characters are a format error. In the firmware receiver, a malformed line with at least four leading hex characters is treated as a TBP candidate and returns `ERR FORMAT`; word-led legacy commands (including `ADC`) remain on the legacy parser path.
 - CRC check value: CRC of the ASCII string `123456789` is `0x29B1`.
 - The CRC does not make anything safe. Safety is enforced by firmware limits regardless of frame validity (section 9).
 

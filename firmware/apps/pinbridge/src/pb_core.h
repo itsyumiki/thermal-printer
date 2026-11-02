@@ -769,9 +769,11 @@ static void pb_rx(pb_core *c, const uint8_t *data, size_t len) {
     size_t i;
     for (i = 0; i < len; i++) {
         char x = (char)data[i];
-        if (x == '\r')
-            continue;
         if (x == '\n') {
+            /* CR is permitted only as the final byte before LF (CRLF).
+             * Keeping embedded CR in the line lets the format parser reject it. */
+            if (!c->discard && c->llen && c->line[c->llen - 1] == '\r')
+                c->llen--;
             if (c->discard) {
                 pb_reply(c, "err len");
                 c->discard = 0;
