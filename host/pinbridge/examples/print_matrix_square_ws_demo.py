@@ -115,6 +115,11 @@ def parse_args():
     parser.add_argument("--tail-direction", choices=("FWD", "REV"), default="FWD")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="time each command's round trip (blank row, 0 us heat, no motion) and exit",
+    )
+    parser.add_argument(
         "--yes", action="store_true", help="skip typed PRINT confirmation"
     )
     args = parser.parse_args()
@@ -214,6 +219,50 @@ async def print_row(con, args, row_index, state):
         )
 
 
+async def profile(con, args, count=20):
+    """Time each command alone. Nothing is heated (blank data, 0 us pulse) and the motor does not move."""
+    import time
+
+    blank = b"\x00" * 48
+    probes = [
+        ("PSTEPSTAT (bare round trip)", dict(action="raw", command="PSTEPSTAT")),
+        (
+            "shift 384 bits",
+            dict(
+                action="printer",
+                confirm="printer",
+                op="shift",
+                data_hex=blank.hex(),
+                bit_delay_us=args.bit_us,
+                data_hold_us=args.hold_us,
+            ),
+        ),
+        (
+            "latch",
+            dict(action="printer", confirm="printer", op="latch", pulse_us=args.latch_us),
+        ),
+        (
+            "heat 0 us",
+            dict(action="printer", confirm="printer", op="heat", pulse_us=0),
+        ),
+        ("PSTEP count 0 (no motion)", dict(action="raw", command="PSTEP FWD 0 0 1000")),
+    ]
+    print(f"profile: {count} runs per command")
+    for name, msg in probes:
+        times = []
+        for _ in range(count):
+            t = time.perf_counter()
+            await con.call(**msg)
+            times.append((time.perf_counter() - t) * 1000)
+        times.sort()
+        print(
+            f"  {name:30s} min {times[0]:7.1f}  median {times[len(times) // 2]:7.1f}  max {times[-1]:7.1f} ms"
+        )
+    t = time.perf_counter()
+    await con.batch([m for _, m in probes[1:]])
+    print(f"  4 commands pipelined in one batch: {(time.perf_counter() - t) * 1000:.1f} ms")
+
+
 async def run(args):
     inter_us, coil_us = step_timing_us(args.event_ms)
     total_events = ROW_COUNT * EVENTS_PER_ROW
@@ -251,6 +300,21 @@ async def run(args):
                 print(f"dry-run row 0: {make_row(0).hex()}")
                 print(f"dry-run row {BOX_PX}: {make_row(BOX_PX).hex()}")
                 print("dry run: no GPIO, printhead, heater, or step commands sent")
+                return
+            if args.profile:
+                configured = False
+                try:
+                    for pin in HEAD_PINS + MOTOR_PINS:
+                        await con.call(action="mode", pin=pin, mode="lo", confirm=pin)
+                    configured = True
+                    await con.raw("SET PB8=1 PB9=0 PB10=0 PB11=0")
+                    await profile(con, args)
+                finally:
+                    if configured:
+                        await con.raw(
+                            "SET PB8=1 PB9=0 PB10=0 PB11=0 "
+                            + " ".join(f"{pin}=0" for pin in MOTOR_PINS)
+                        )
                 return
             if not args.yes:
                 print(
