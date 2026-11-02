@@ -112,7 +112,7 @@ The printer records one byte of terminal state per accepted id for the current H
 ### 4.3 Host retry rules
 
 - If no ACK, ERR or STATUS arrives for a frame within the ack timeout (suggested 200 ms USB, 1000 ms BLE), resend the **identical frame with the same id**. Duplicates are safe.
-- On `ERR SEQ` (arg = `e`): resend, in order, every unfinished frame from id `e` onward.
+- On `ERR SEQ` (arg = `e`): the rejected frame was not accepted. Resynchronize at `e` and retry the same command payload there; because the current printer advertises a one-command window, serialize host transactions and do not have later frames in flight. Then assign following commands from the updated expected ID.
 - On `ERR CRC`: do not trust the id. The next in-sequence frame will produce `ERR SEQ`, or the ack timeout will fire; recover through those.
 - On any other `ERR` (`LEN`, `RANGE`, `BUSY`, `QFULL`, `BADOP`): the command was not accepted and its id is still expected. The host must stop sending later frames, fix the cause and resend from that id. It must not reuse the id for a different command until the old one is accepted.
 - Three consecutive ack timeouts: treat the link as down. Send `FF` repeatedly (it is idempotent) until it is acknowledged, then start a new session with `HELLO`.

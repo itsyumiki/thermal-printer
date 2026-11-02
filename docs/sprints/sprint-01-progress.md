@@ -20,10 +20,10 @@ Status: **in progress; not accepted as complete**.
 
 ## Remaining Sprint 1 work
 
-- Host ERR SEQ recovery is deliberately conservative when the printer reports an expected ID different from the current command. The current command API serializes transactions, so there is no durable multi-frame in-flight queue to replay; safe recovery across an ID gap requires explicit operation semantics rather than blindly renumbering potentially non-idempotent ROW/MOVE commands.
+- Host transactions are now serialized to match the current one-command printer window. On `ERR SEQ`, the host retries the rejected payload at the reported expected ID; a concurrent mismatch fails closed. Fake-transport tests cover both same-ID retry and recovery to a different expected ID.
 - Add deterministic fake-transport tests for lost ACK, lost terminal STATUS, retry exhaustion, and reconnect/session reset. The terminal retry code path is fixed but not yet covered by a transport-level test.
 - C transcripts assert duplicate COILS-on, heat ROW, and MOVE do not repeat hardware writes. The C harness advances the stepper tick during simulated delay, enabling deterministic motion replay checks without physical hardware.
-- Overlong-line discard/resync still needs explicit boundary tests against both the 520-character wire limit and legacy command path.
+- Overlong-line discard/resync is covered at 521 characters followed by a valid HELLO, and a dedicated 520-character valid-length frame proves the exact maximum is parsed rather than discarded.
 - Resolve ESTOP ID/ACK details and make HELLO/session error handling fully consistent. Do not start executor refactoring here; that is Sprint 2.
 
 ## Evidence boundary

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { PrinterLink } from "./server.ts";
-import { encode, KIND, OP, STATE } from "./tbp.ts";
+import { decode, encode, KIND, OP, STATE } from "./tbp.ts";
 
 const links: PrinterLink[] = [];
 function fakeLink(
@@ -68,6 +68,65 @@ describe("TBP fake-transport retry behavior", () => {
     expect(sent[0]).toBe(sent[1]);
   });
 
+  test("serializes concurrent commands so only one frame is outstanding", async () => {
+    const sent: string[] = [];
+    const { link, count } = fakeLink((wire) => sent.push(wire));
+    const first = link.transact(OP.STAT, new Uint8Array(), true, 100);
+    const second = link.transact(OP.STAT, new Uint8Array(), true, 100);
+    await Promise.resolve();
+    expect(count()).toBe(1);
+    ack(link, 1);
+    done(link, 1);
+    await first;
+    await Promise.resolve();
+    expect(count()).toBe(2);
+    expect(decode(sent[0]).id).toBe(1);
+    expect(decode(sent[1]).id).toBe(2);
+    ack(link, 2);
+    done(link, 2);
+    await second;
+    expect(link.nextId).toBe(3);
+  });
+
+  test("retries a rejected sequence at the printer's expected ID", async () => {
+    const sent: string[] = [];
+    const { link, count } = fakeLink((wire, n, current) => {
+      sent.push(wire);
+      setTimeout(() => {
+        if (n === 1) {
+          current.onLine(encode(1, KIND.ERR, Uint8Array.of(6, 5)).trim());
+        } else {
+          ack(current, 5);
+          done(current, 5);
+        }
+      }, 0);
+    });
+    const result = await link.transact(OP.STAT, new Uint8Array(), true, 30);
+    expect(result.id).toBe(5);
+    expect(decode(sent[0]).id).toBe(1);
+    expect(decode(sent[1]).id).toBe(5);
+    expect(link.nextId).toBe(6);
+    expect(count()).toBe(2);
+  });
+
+  test("same-ID ERR SEQ retry advances the next ID after success", async () => {
+    const sent: string[] = [];
+    const { link } = fakeLink((wire, n, current) => {
+      sent.push(wire);
+      setTimeout(() => {
+        if (n === 1)
+          current.onLine(encode(1, KIND.ERR, Uint8Array.of(6, 1)).trim());
+        else {
+          ack(current, 1);
+          done(current, 1);
+        }
+      }, 0);
+    });
+    await link.transact(OP.STAT, new Uint8Array(), true, 30);
+    expect(sent[0]).toBe(sent[1]);
+    expect(link.nextId).toBe(2);
+  });
+
   test("stops after three sends and enters reconnecting state", async () => {
     const { link, count } = fakeLink(() => {});
     await expect(
@@ -92,6 +151,7 @@ describe("TBP fake-transport retry behavior", () => {
   test("disconnect rejects pending work and clears its timer/state", async () => {
     const { link } = fakeLink(() => {});
     const pending = link.transact(OP.STAT, new Uint8Array(), true, 1000);
+    await Promise.resolve();
     expect(link.pending.size).toBe(1);
     link.drop("simulated reconnect");
     await expect(pending).rejects.toThrow("simulated reconnect");

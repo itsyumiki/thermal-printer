@@ -30,7 +30,7 @@ type Pending = {
   waitTerminal: boolean;
   timer?: ReturnType<typeof setTimeout>;
   retries: number;
-  retry?: () => void;
+  retry?: (expectedId?: number) => void;
 };
 export class PrinterLink {
   serial: SerialPort | null = null;
@@ -43,6 +43,7 @@ export class PrinterLink {
   lastError = "";
   nextId = 1;
   pending = new Map<number, Pending>();
+  transactionTail: Promise<void> = Promise.resolve();
   clients = new Set<Client>();
   reconnectTimer: any = null;
   keepaliveTimer: any = null;
@@ -300,18 +301,19 @@ export class PrinterLink {
       const code = f.data[0] ?? 0,
         arg = f.data[1] ?? 0;
       if (p.timer) clearTimeout(p.timer);
-      // ERR SEQ with this same id means the printer still expects this
-      // command. Retry the exact frame; never rewrite a motion command's ID
-      // or payload in place. If it expects another ID, fail closed and let
-      // the caller decide whether it is safe to resubmit the operation.
-      if (code === 6) {
-        this.nextId = arg || 1;
-        if (arg === f.id && p.retry) {
-          p.acked = false;
-          p.retry();
+      // ERR SEQ is an explicit rejection: this frame was not accepted. Retry
+      // the same payload at the printer's expected ID, but only when no other
+      // transaction could be invalidated by that resynchronization.
+      if (code === 6 && arg >= 1 && arg <= 255 && p.retry) {
+        if (arg !== f.id && this.pending.size > 1) {
+          this.drop("TBP sequence mismatch with concurrent commands");
           return;
         }
-      } else this.nextId = f.id || this.nextId;
+        p.acked = false;
+        p.retry(arg);
+        return;
+      }
+      if (code !== 6) this.nextId = f.id || this.nextId;
       const error = new Error(
         `TBP ERR 0x${code.toString(16).padStart(2, "0")} (arg ${arg})`,
       );
@@ -357,7 +359,21 @@ export class PrinterLink {
       flags: b[12],
     };
   }
-  async transact(
+  transact(
+    op: number,
+    data = new Uint8Array(),
+    waitTerminal = true,
+    timeout = 1200,
+  ): Promise<any> {
+    const run = () => this.transactNow(op, data, waitTerminal, timeout);
+    const result = this.transactionTail.then(run, run);
+    this.transactionTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+  private async transactNow(
     op: number,
     data = new Uint8Array(),
     waitTerminal = true,
@@ -385,7 +401,7 @@ export class PrinterLink {
       id = this.nextId;
       if (id === 0) id = 1;
     }
-    const wire = encode(id, op, data);
+    let wire = encode(id, op, data);
     const promise = new Promise<any>((resolve, reject) => {
       const p: Pending = {
         id,
@@ -397,7 +413,15 @@ export class PrinterLink {
         retries: 0,
       };
       this.pending.set(id, p);
-      const attempt = () => {
+      const attempt = (expectedId?: number) => {
+        if (expectedId !== undefined && expectedId !== id) {
+          this.pending.delete(id);
+          id = expectedId;
+          p.id = id;
+          wire = encode(id, op, data);
+          this.pending.set(id, p);
+        }
+        if (op !== OP.ESTOP) this.nextId = id >= 255 ? 1 : id + 1;
         if (!this.pending.has(id)) return;
         if (p.retries >= 3) {
           this.pending.delete(id);
