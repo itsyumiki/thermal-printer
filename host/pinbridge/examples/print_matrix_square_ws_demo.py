@@ -3,7 +3,7 @@
 
 Requires Pinbridge WebUI running at ws://127.0.0.1:8765/ws and the printer
 connected. The printhead data polarity (1=black) follows the current experimental
-hypothesis. This is a low-level demo, not the stock four-phase row scheduler.
+hypothesis. PB8 is an active-low latch and must idle high during shifting. This is a low-level demo, not the stock four-phase row scheduler.
 Paper-feed distance is mechanism-dependent: --tail-steps is phase transitions,
 not millimetres. The firmware PSTEP count includes the initial phase, so one
 actual transition requires count=2. Calibrate feed distance before relying on mm.
@@ -120,6 +120,10 @@ async def run(args):
                 for pin in HEAD_PINS + MOTOR_PINS:
                     await con.call(action="mode", pin=pin, mode="lo", confirm=pin)
                 configured = True
+                # The head latch is active-low and must idle HIGH while bits shift.
+                # Leaving PB8 at the mode-command default (LOW) can expose shifting
+                # data continuously instead of holding the completed 384-bit row.
+                await con.raw("SET PB8=1 PB9=0 PB10=0 PB11=0")
                 for y in range(SQUARE_SIZE):
                     row = make_row(y)
                     await con.printer(op="shift", data_hex=row.hex(), bit_delay_us=args.bit_us, data_hold_us=args.hold_us)
