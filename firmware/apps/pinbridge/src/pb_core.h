@@ -397,8 +397,19 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             break;
         }
     }
-    if (!allhex)
+    if (!allhex) {
+        /* Legacy commands are word-led. A line with four leading hex digits
+         * is treated as a TBP candidate, so mixed-hex corruption cannot fall
+         * through into the legacy command parser with a misleading error. */
+        if (chars >= 4 && pb_tbp_hexval(line[0]) >= 0 &&
+            pb_tbp_hexval(line[1]) >= 0 && pb_tbp_hexval(line[2]) >= 0 &&
+            pb_tbp_hexval(line[3]) >= 0) {
+            uint8_t id = (uint8_t)((pb_tbp_hexval(line[0]) << 4) | pb_tbp_hexval(line[1]));
+            pb_tbp_err(c, id, 2, 0);
+            return 1;
+        }
         return 0;
+    }
     if ((chars & 1u) || chars < 10u || chars > 520u) {
         pb_tbp_err(c, 0, 2, 0);
         return 1;
