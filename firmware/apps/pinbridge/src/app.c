@@ -20,8 +20,6 @@ static OS_SEM rx_sem, tx_sem;
 static volatile u8 detached;
 static u8 ring[PB_RING];
 static volatile u16 wr, rd;
-static volatile u32 drops;
-static u32 last_hook;
 static JL_PORT_FLASH_TypeDef *ports[4] = {JL_PORTA, JL_PORTB, JL_PORTC, JL_PORTD};
 static void pb_wakeup(void *dev) {
     (void)dev;
@@ -124,10 +122,8 @@ static int hal_tx(void *ctx, const char *s, size_t n) {
     u16 free_space;
     (void)ctx;
     free_space = (u16)((rd + PB_RING - wr - 1) % PB_RING);
-    if (n > free_space) {
-        drops++;
+    if (n > free_space)
         return -1;
-    }
     for (i = 0; i < n; i++) {
         ring[wr] = (u8)s[i];
         wr = (u16)((wr + 1) % PB_RING);
@@ -145,8 +141,7 @@ static void tx_task(void *priv) {
             rd = (u16)((rd + 1) % PB_RING);
         }
         if (n) {
-            if (!cdc_write_data(PB_USB, b, n)) {
-            }
+            (void)cdc_write_data(PB_USB, b, n);
         } else
             os_sem_pend(&tx_sem, 1);
     }
@@ -158,7 +153,15 @@ static void pb_step_timer(void *priv) {
 static void command_task(void *priv) {
     u8 b[64];
     unsigned n, ticks = 0;
-    pb_hal h = {0, hal_mode, hal_write, hal_read, hal_adc, 0, hal_ms, hal_tx, hal_delay_us};
+    const pb_hal h = {
+        .set_mode = hal_mode,
+        .write_port = hal_write,
+        .read_port = hal_read,
+        .adc_read = hal_adc,
+        .millis = hal_ms,
+        .tx_write = hal_tx,
+        .delay_us = hal_delay_us,
+    };
     (void)priv;
     pb_init(&core, &h);
     sys_s_hi_timer_add(NULL, pb_step_timer, 1);

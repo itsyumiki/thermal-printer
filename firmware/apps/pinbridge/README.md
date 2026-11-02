@@ -6,7 +6,7 @@ Boot does not intentionally configure GPIO; only SDK startup behavior remains. N
 
 # pinbridge
 
-An experimental jlpin v2 text pin server for JieLi AC6956C / AC635N (BR23), over USB CDC. Firmware source is `src/app.c`; portable protocol core is `src/pb_core.h`; the generated real pin table is `src/pb_pins.h`.
+An experimental jlpin v2 text pin server for JieLi AC6956C / AC635N (BR23), over USB CDC. `src/app.c` owns the SDK-facing GPIO/ADC and USB tasks. `src/pb_core.h` owns wire framing, reply construction, shared state and watchdog polling; its internal modules `src/pb_commands.h` and `src/pb_printer.h` handle GPIO/ADC commands and the printer/stepper respectively. The real pin table `src/pb_pins.h` is generated from `pins.toml`.
 
 ## Build (does not flash)
 
