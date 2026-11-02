@@ -28,12 +28,41 @@
 > PSTEPSTAT
 < ok done
 @hw PA9=lo PA10=hi PC3=hi PC2=lo
+# Phase persists: count 1 is only the initial phase, so the phase is still 0 (not 7 as before).
 > PSTEP REV 1 5000 1000
 < ok started
 @advance 30
 < !step done
 > PSTEPSTAT
 < ok done
+@hw PA9=lo PA10=hi PC3=hi PC2=lo
+# Resume from phase 0: FWD 3 = two transitions -> phase 2 {0,1,0,1}.
+> PSTEP FWD 3 1000 1000
+< ok started
+@advance 30
+< !step done
+@hw PA9=lo PA10=hi PC3=lo PC2=hi
+# A new command continues from phase 2, not from 0: FWD 2 -> phase 3 {0,0,0,1}.
+> PSTEP FWD 2 1000 1000
+< ok started
+@advance 30
+< !step done
+@hw PA9=lo PA10=lo PC3=lo PC2=hi
+# REV 3 -> two transitions back: phase 1 {0,1,0,0}.
+> PSTEP REV 3 1000 1000
+< ok started
+@advance 30
+< !step done
+@hw PA9=lo PA10=hi PC3=lo PC2=lo
+# REV 2 wraps below 0 -> phase 0, REV 2 again -> phase 7 {0,0,1,0}.
+> PSTEP REV 2 1000 1000
+< ok started
+@advance 30
+< !step done
+> PSTEP REV 2 1000 1000
+< ok started
+@advance 30
+< !step done
 @hw PA9=lo PA10=lo PC3=hi PC2=lo
 > PHEAT 6001
 < ok

@@ -63,8 +63,9 @@ typedef struct {
   char reply[128];
   size_t rlen;
   volatile uint8_t step_active, step_reverse, step_stage, step_done_pending;
+  volatile uint8_t step_phase; /* persistent half-step phase 0..7; survives PSTEP commands, reset by pb_init */
   volatile uint32_t step_remaining, step_wait_ms;
-  uint32_t step_gap_ms, step_dwell_ms, step_index;
+  uint32_t step_gap_ms, step_dwell_ms;
   int scratch_p[PB_MAX_PINS];
   char *scratch_v[17];
 } pb_core;
@@ -277,7 +278,6 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
        continue during motion. Host-side code owns duration/range policy. */
     c->step_reverse = (uint8_t)pb_eq(v[1], "REV");
     c->step_remaining = count;
-    c->step_index = 0;
     c->step_gap_ms = (uint32_t)(((uint64_t)a + 999u) / 1000u);
     c->step_dwell_ms = (uint32_t)(((uint64_t)b + 999u) / 1000u);
     c->step_stage = 0;
@@ -286,7 +286,7 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
     c->step_active = count != 0;
     c->last_feed = pb_now(c);
     if (count) {
-      phase = c->step_reverse ? 7u : 0u;
+      phase = c->step_phase & 7u; /* resume from the remembered phase */
       for (k = 0; k < 4; k++) (void)pb_printer_pin(c, motorpins[k], phases[phase][k]);
       pb_reply(c, "ok started");
     } else pb_reply(c, "ok halfsteps");
@@ -708,8 +708,8 @@ static inline void pb_step_tick(pb_core *c) {
     c->step_done_pending = 1;
     return;
   }
-  c->step_index++;
-  phase = c->step_reverse ? (7u - (c->step_index & 7u)) : (c->step_index & 7u);
+  phase = c->step_reverse ? ((c->step_phase + 7u) & 7u) : ((c->step_phase + 1u) & 7u);
+  c->step_phase = (uint8_t)phase;
   for (k = 0; k < 4; k++) (void)pb_printer_pin(c, pins[k], seq[phase][k]);
   c->step_stage = 0;
   c->step_wait_ms = c->step_dwell_ms;
