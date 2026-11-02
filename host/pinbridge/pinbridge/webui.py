@@ -319,7 +319,7 @@ class WebBackend:
             except Exception as exc:
                 return {"type": "error", "message": f"Power sequence failed: {exc}"}
         if action == "printer":
-            # Explicit high-level WebSocket facade over bounded MCU-timed primitives.
+            # Explicit high-level WebSocket facade; host-side validation bounds demo commands.
             if not self.board:
                 return {"type": "error", "message": "Connect to a device first."}
             if msg.get("confirm") != "printer":

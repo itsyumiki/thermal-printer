@@ -36,6 +36,26 @@
 < ok done
 @hw PA9=lo PA10=lo PC3=hi PC2=lo
 > PHEAT 6001
-< err arg PHEAT
+< ok
+> PLATCH 1001
+< ok
+> PHEAD 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 1001 1001
+< ok bits=384
+> PSTEP FWD 60001 1 1
+< ok started
+> PSTEPSTAT
+< ok busy
+@reboot
+> MOD PA9 lo
+< ok
+> MOD PA10 lo
+< ok
+> MOD PC3 lo
+< ok
+> MOD PC2 lo
+< ok
+> PSTEP FWD 1 60000001 1
+< ok started
+@reboot
 > PSTEP SIDE 1 1 1
 < err arg PSTEP

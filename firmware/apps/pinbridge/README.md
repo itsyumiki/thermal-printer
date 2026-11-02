@@ -65,10 +65,10 @@ By default the server binds to localhost only. Do not expose it to an untrusted 
 
 The portable command core includes MCU-timed experimental commands, also exposed by the WebSocket `action: "printer"` facade (`confirm: "printer"`):
 
-- `PHEAD <96 hex chars> <clock-half-period-us> <data-setup-us>` — shifts 48 bytes, LSB-first. Requires PB8–PB11 configured as outputs; delays each capped at 1000 us.
-- `PLATCH <pulse-us>` — PB8 low pulse then high; cap 1000 us.
-- `PHEAT <pulse-us>` — one PB11 high pulse then low; cap 6000 us. This is **not** the stock timer ISR and the cap is not a thermal safety guarantee.
-- `PSTEP <FWD|REV> <count> <inter-step-us> <coil-on-us>` — official eight-state half-step sequence on PA9/PA10/PC3/PC2. Runs asynchronously on a 1 ms high-priority timer so USB command handling and software watchdog polling continue while the motor moves. Use `PSTEPSTAT` to query `ok busy` / `ok done`. Maximum requested run duration is 60 seconds (up to 60,000 transitions at the 1 ms scheduler floor); sub-millisecond timing is rounded up and is not supported. The first state is phase 0 forward or phase 7 reverse. Coil state remains at the last phase until changed/coasted.
+- `PHEAD <96 hex chars> <clock-half-period-us> <data-setup-us>` — shifts 48 bytes, LSB-first. Requires PB8–PB11 configured as outputs. Timing range policy is host-side; firmware accepts any unsigned 32-bit timing value.
+- `PLATCH <pulse-us>` — PB8 low pulse then high. Timing range policy is host-side.
+- `PHEAT <pulse-us>` — one PB11 high pulse then low. Timing range policy is host-side; this is **not** the stock timer ISR and there is no firmware-side thermal safety cutoff.
+- `PSTEP <FWD|REV> <count> <inter-step-us> <coil-on-us>` — official eight-state half-step sequence on PA9/PA10/PC3/PC2. Runs asynchronously on a 1 ms high-priority timer so USB command handling and software watchdog polling continue while the motor moves. Use `PSTEPSTAT` to query `ok busy` / `ok done`. No firmware-side count or total-duration cap; count and duration policy belongs to the host. The current 1 ms scheduler still rounds timing up and does not support sub-millisecond transitions. The first state is phase 0 forward or phase 7 reverse. Coil state remains at the last phase until changed/coasted.
 
   Static analysis found that the official firmware uses an eight-state sequence and a software loop with argument 1000 after each phase. Separately, its nominal 2 ms callback posts print/feed events at a minimum divider of 3 (nominally 6 ms between event posts). These are **not** a calibrated step period. Pinbridge now schedules steps asynchronously at 1 ms resolution; actual motor speed, torque limits, and wiring remain hardware-dependent and unverified.
 

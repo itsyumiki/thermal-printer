@@ -93,7 +93,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     if not (0 <= args.bit_us <= 1000 and 0 <= args.hold_us <= 1000 and 0 <= args.latch_us <= 1000 and 0 <= args.heat_us <= 6000):
-        sys.exit("timings outside firmware limits")
+        sys.exit("timings outside this demo's host-side limits")
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:

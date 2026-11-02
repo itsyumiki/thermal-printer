@@ -242,7 +242,7 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
   uint32_t a, b, count, i, j; char *hex;
   if (!c->h.delay_us) { pb_error(c, "bsy", "delay"); return; }
   if (pb_eq(v[0], "PHEAD")) {
-    if (n != 4 || strlen(v[1]) != 96 || !pb_u32(v[2], &a) || !pb_u32(v[3], &b) || a > 1000 || b > 1000 || !pb_all_outputs(c, headpins, 4)) { pb_error(c, "arg", "PHEAD"); return; }
+    if (n != 4 || strlen(v[1]) != 96 || !pb_u32(v[2], &a) || !pb_u32(v[3], &b) || !pb_all_outputs(c, headpins, 4)) { pb_error(c, "arg", "PHEAD"); return; }
     hex = v[1];
     for (i = 0; i < 48; i++) {
       unsigned byte;
@@ -260,26 +260,26 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
     pb_reply(c, "ok bits=384"); c->last_feed = pb_now(c); return;
   }
   if (pb_eq(v[0], "PLATCH")) {
-    if (n != 2 || !pb_u32(v[1], &a) || a > 1000 || !pb_all_outputs(c, headpins, 4)) { pb_error(c, "arg", "PLATCH"); return; }
+    if (n != 2 || !pb_u32(v[1], &a) || !pb_all_outputs(c, headpins, 4)) { pb_error(c, "arg", "PLATCH"); return; }
     (void)pb_printer_pin(c, "PB8", 0); pb_wait_us(c, (unsigned)a);
     (void)pb_printer_pin(c, "PB8", 1); pb_reply(c, "ok"); c->last_feed = pb_now(c); return;
   }
   if (pb_eq(v[0], "PHEAT")) {
-    /* Single bounded pulse only; 6 ms is the inferred stock firmware cutoff, not a safety guarantee. */
-    if (n != 2 || !pb_u32(v[1], &a) || a > 6000 || !pb_all_outputs(c, headpins, 4)) { pb_error(c, "arg", "PHEAT"); return; }
+    /* Experimental single pulse. Duration policy belongs to the host-side demo. */
+    if (n != 2 || !pb_u32(v[1], &a) || !pb_all_outputs(c, headpins, 4)) { pb_error(c, "arg", "PHEAT"); return; }
     (void)pb_printer_pin(c, "PB11", 1); pb_wait_us(c, (unsigned)a);
     (void)pb_printer_pin(c, "PB11", 0); pb_reply(c, "ok"); c->last_feed = pb_now(c); return;
   }
   if (pb_eq(v[0], "PSTEP")) {
     unsigned phase, k;
-    if (n != 5 || (!pb_eq(v[1], "FWD") && !pb_eq(v[1], "REV")) || !pb_u32(v[2], &count) || !pb_u32(v[3], &a) || !pb_u32(v[4], &b) || count > 60000u || a > 60000000u || b > 60000000u || (uint64_t)count * (((uint64_t)a+999u)/1000u + ((((uint64_t)b+999u)/1000u) ? (((uint64_t)b+999u)/1000u) : 1u)) > 60000u || !pb_all_outputs(c, motorpins, 4) || c->step_active) { pb_error(c, "arg", "PSTEP"); return; }
+    if (n != 5 || (!pb_eq(v[1], "FWD") && !pb_eq(v[1], "REV")) || !pb_u32(v[2], &count) || !pb_u32(v[3], &a) || !pb_u32(v[4], &b) || !pb_all_outputs(c, motorpins, 4) || c->step_active) { pb_error(c, "arg", "PSTEP"); return; }
     /* Nonblocking 1 ms scheduler: USB command handling and watchdog polling
-       continue during motion. Timing resolution is 1 ms, not microseconds. */
+       continue during motion. Host-side code owns duration/range policy. */
     c->step_reverse = (uint8_t)pb_eq(v[1], "REV");
     c->step_remaining = count;
     c->step_index = 0;
-    c->step_gap_ms = (a + 999u) / 1000u;
-    c->step_dwell_ms = (b + 999u) / 1000u;
+    c->step_gap_ms = (uint32_t)(((uint64_t)a + 999u) / 1000u);
+    c->step_dwell_ms = (uint32_t)(((uint64_t)b + 999u) / 1000u);
     c->step_stage = 0;
     c->step_wait_ms = c->step_dwell_ms;
     if (c->step_wait_ms == 0) c->step_wait_ms = 1;
