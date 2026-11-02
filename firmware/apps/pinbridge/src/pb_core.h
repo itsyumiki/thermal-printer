@@ -383,6 +383,24 @@ static int pb_tbp_hexval(char x) {
         return x - 'A' + 10;
     return -1;
 }
+static inline int pb_tbp_fast_estop_line(const char *line, size_t chars, uint8_t *id) {
+    uint8_t raw[5];
+    uint16_t crc;
+    size_t i;
+    if (chars && line[chars - 1u] == '\r') chars--;
+    if (chars != 10u) return 0;
+    for (i = 0; i < 5u; i++) {
+        int hi = pb_tbp_hexval(line[i * 2u]);
+        int lo = pb_tbp_hexval(line[i * 2u + 1u]);
+        if (hi < 0 || lo < 0) return 0;
+        raw[i] = (uint8_t)((hi << 4) | lo);
+    }
+    if (raw[1] != 0xFFu || raw[2] != 0u) return 0;
+    crc = pb_tbp_crc(raw, 3u);
+    if (crc != (uint16_t)(((uint16_t)raw[3] << 8) | raw[4])) return 0;
+    if (id) *id = raw[0];
+    return 1;
+}
 static void pb_tbp_status(pb_core *c, uint8_t id, uint8_t state, const uint8_t *body, uint8_t n) {
     uint8_t d[64];
     d[0] = state;

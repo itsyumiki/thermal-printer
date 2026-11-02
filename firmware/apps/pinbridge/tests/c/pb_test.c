@@ -155,7 +155,7 @@ int main(int argc, char **argv) {
         }
         if (*s == '@') {
             unsigned a, b;
-            char pin[16], val[16];
+            char pin[16], val[16], frame[521];
             if (sscanf(s, "@accept %u", &a) == 1) {
                 if (a < 1 || a > 255)
                     fail(ln, "bad @accept id");
@@ -222,6 +222,17 @@ int main(int argc, char **argv) {
                 if (writes != a)
                     fail(ln, "write_port call count mismatch");
                 writes = 0;
+                continue;
+            }
+            if (sscanf(s, "@fast-estop-valid %u %520s", &a, frame) == 2) {
+                uint8_t id = 0;
+                if (!pb_tbp_fast_estop_line(frame, strlen(frame), &id) || id != a)
+                    fail(ln, "fast ESTOP validation failed");
+                continue;
+            }
+            if (sscanf(s, "@fast-estop-invalid %520s", frame) == 1) {
+                if (pb_tbp_fast_estop_line(frame, strlen(frame), 0))
+                    fail(ln, "invalid fast ESTOP frame accepted");
                 continue;
             }
             if (!strcmp(s, "@abort-fast")) {

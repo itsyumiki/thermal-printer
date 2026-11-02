@@ -1,0 +1,7 @@
+# Fast RX accepts only a CRC-valid, zero-payload ESTOP frame.
+@fast-estop-valid 255 FFFF000000
+@fast-estop-valid 255 ffff000000
+@fast-estop-invalid FFFF000001
+@fast-estop-invalid 0101000000
+@fast-estop-invalid FFFF0100000000
+@fast-estop-invalid FFZ0000000

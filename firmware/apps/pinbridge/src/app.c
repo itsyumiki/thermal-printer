@@ -78,9 +78,14 @@ static int fast_tbp_frame(const char *line, unsigned chars, u8 *raw, unsigned ex
 static void fast_control_line(void) {
     u8 raw[6];
     unsigned len = fast_line_len;
-    if (len && fast_line[len - 1u] == '\r') len--;
-    if (len == 10u && fast_tbp_frame(fast_line, len, raw, 5u) && raw[1] == 0xFFu && raw[2] == 0u) {
+    if (pb_tbp_fast_estop_line(fast_line, len, &raw[0])) {
         request_fast_abort(raw[0]);
+    } else if (len && fast_line[len - 1u] == '\r') {
+        len--;
+        if (len == 12u && fast_tbp_frame(fast_line, len, raw, 6u) &&
+               raw[1] == 0x01u && raw[2] == 1u && raw[3] == 1u) {
+            hello_fast_clear_requested = 1;
+        }
     } else if (len == 12u && fast_tbp_frame(fast_line, len, raw, 6u) &&
                raw[1] == 0x01u && raw[2] == 1u && raw[3] == 1u) {
         hello_fast_clear_requested = 1;
