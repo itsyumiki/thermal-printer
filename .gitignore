@@ -2,6 +2,7 @@ out/
 build/
 *.pyc
 __pycache__/
+node_modules/
 
 # Local CI build scratch.
 .ci/

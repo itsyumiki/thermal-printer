@@ -15,6 +15,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  host-check:
+    name: Check Bun TBP host
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install pinned host dependencies
+        working-directory: host/pinbridge/bun
+        run: bun install --frozen-lockfile
+      - name: Format-check and test Bun host
+        working-directory: host/pinbridge/bun
+        run: bun run check
+      - name: Syntax-check the host server
+        working-directory: host/pinbridge/bun
+        run: bun build --target=bun --external serialport --external @serialport/parser-readline --outdir "$RUNNER_TEMP/pinbridge-host-check" server.ts
+
   firmware:
     name: Build and package app.bin
     runs-on: ubuntu-24.04

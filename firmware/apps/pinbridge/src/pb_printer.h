@@ -60,6 +60,18 @@ static void pb_drive_motor_phase(pb_core *c, unsigned phase) {
         (void)pb_printer_pin(c, pb_motor_pins[i], pb_motor_phases[phase][i]);
 }
 
+/* The motor stepper writes its ports from interrupt context, so a head port that shares a port
+   with a motor pin must keep using the interrupt-safe write. */
+static int pb_port_free_of_motor(unsigned port) {
+    unsigned i;
+    for (i = 0; i < 4; i++) {
+        int k = pb_pin(pb_motor_pins[i]);
+        if (k >= 0 && pb_defs[k].port == port)
+            return 0;
+    }
+    return 1;
+}
+
 /* Shift one fully validated 384-bit row without repeated GPIO name lookups. */
 static void pb_shift_head_row(pb_core *c, const char *hex, unsigned clock_delay_us,
                               unsigned data_delay_us) {
@@ -69,16 +81,19 @@ static void pb_shift_head_row(pb_core *c, const char *hex, unsigned clock_delay_
     uint16_t dmask = (uint16_t)(1u << pb_defs[pin_data].bit);
     uint16_t cmask = (uint16_t)(1u << pb_defs[pin_clk].bit);
     unsigned last = 0;
+    void (*wr)(void *, unsigned, uint16_t, uint16_t) = c->h.write_port;
+    if (c->h.write_port_fast && pb_port_free_of_motor(dport) && pb_port_free_of_motor(cport))
+        wr = c->h.write_port_fast; /* ~10x cheaper per write: no irq disable/enable */
     for (i = 0; i < 48; i++) {
         unsigned byte;
         (void)pb_hexbyte(hex + i * 2, &byte);
         for (j = 0; j < 8; j++) {
             last = (byte >> j) & 1u;
-            c->h.write_port(c->h.ctx, dport, dmask, last ? dmask : 0);
+            wr(c->h.ctx, dport, dmask, last ? dmask : 0);
             pb_wait_us(c, data_delay_us); /* data setup / hold */
-            c->h.write_port(c->h.ctx, cport, cmask, cmask);
+            wr(c->h.ctx, cport, cmask, cmask);
             pb_wait_us(c, clock_delay_us);
-            c->h.write_port(c->h.ctx, cport, cmask, 0);
+            wr(c->h.ctx, cport, cmask, 0);
             pb_wait_us(c, clock_delay_us);
         }
     }
@@ -86,6 +101,32 @@ static void pb_shift_head_row(pb_core *c, const char *hex, unsigned clock_delay_
     c->pins[pin_data].mode = (uint8_t)(last ? PB_HI : PB_LO);
     c->pins[pin_clk].level = 0;
     c->pins[pin_clk].mode = PB_LO;
+}
+
+static int pb_hex_row_ok(const char *hex) {
+    uint32_t i;
+    unsigned byte;
+    for (i = 0; i < 48; i++)
+        if (!pb_hexbyte(hex + i * 2, &byte))
+            return 0;
+    return 1;
+}
+
+/* Start the nonblocking stepper: count includes the initial phase (N transitions = N+1). */
+static void pb_step_start(pb_core *c, int reverse, uint32_t count, uint32_t gap_us,
+                          uint32_t dwell_us) {
+    c->step_reverse = (uint8_t)reverse;
+    c->step_remaining = count;
+    c->step_gap_ms = (uint32_t)(((uint64_t)gap_us + 999u) / 1000u);
+    c->step_dwell_ms = (uint32_t)(((uint64_t)dwell_us + 999u) / 1000u);
+    c->step_stage = 0;
+    c->step_wait_ms = c->step_dwell_ms;
+    if (c->step_wait_ms == 0)
+        c->step_wait_ms = 1;
+    c->step_active = count != 0;
+    c->last_feed = pb_now(c);
+    if (count)
+        pb_drive_motor_phase(c, c->step_phase & 7u); /* resume from the remembered phase */
 }
 
 static void pb_printer_command(pb_core *c, char **v, int n) {
@@ -103,12 +144,9 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
             return;
         }
         hex = v[1];
-        for (i = 0; i < 48; i++) {
-            unsigned byte;
-            if (!pb_hexbyte(hex + i * 2, &byte)) {
-                pb_error(c, "hex", "PHEAD");
-                return;
-            }
+        if (!pb_hex_row_ok(hex)) {
+            pb_error(c, "hex", "PHEAD");
+            return;
         }
         if (!c->h.write_port) {
             pb_error(c, "mod", "PB10");
@@ -145,7 +183,6 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
         return;
     }
     if (pb_eq(v[0], "PSTEP")) {
-        unsigned phase;
         if (n != 5 || (!pb_eq(v[1], "FWD") && !pb_eq(v[1], "REV")) || !pb_u32(v[2], &count) ||
             !pb_u32(v[3], &a) || !pb_u32(v[4], &b) || !pb_all_outputs(c, pb_motor_pins, 4) ||
             c->step_active) {
@@ -154,22 +191,48 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
         }
         /* Nonblocking 1 ms scheduler: USB command handling and watchdog polling
            continue during motion. Host-side code owns duration/range policy. */
-        c->step_reverse = (uint8_t)pb_eq(v[1], "REV");
-        c->step_remaining = count;
-        c->step_gap_ms = (uint32_t)(((uint64_t)a + 999u) / 1000u);
-        c->step_dwell_ms = (uint32_t)(((uint64_t)b + 999u) / 1000u);
-        c->step_stage = 0;
-        c->step_wait_ms = c->step_dwell_ms;
-        if (c->step_wait_ms == 0)
-            c->step_wait_ms = 1;
-        c->step_active = count != 0;
+        pb_step_start(c, pb_eq(v[1], "REV"), count, a, b);
+        pb_reply(c, count ? "ok started" : "ok halfsteps");
+        return;
+    }
+    if (pb_eq(v[0], "PEVENT")) {
+        /* One stock-style print event in a single round trip:
+           PEVENT <96 hex> <bit_us> <hold_us> <latch_us> <heat_us> <steps>
+           shift -> latch pulse -> heater pulse -> <steps> forward half-steps (async). */
+        uint32_t latch_us, heat_us;
+        if (n != 7 || strlen(v[1]) != 96 || !pb_u32(v[2], &a) || !pb_u32(v[3], &b) ||
+            !pb_u32(v[4], &latch_us) || !pb_u32(v[5], &heat_us) || !pb_u32(v[6], &count) ||
+            a > 1000 || b > 1000 || latch_us > 1000 || heat_us > 6000 || count > 8 ||
+            !pb_all_outputs(c, headpins, 4) || (count && !pb_all_outputs(c, pb_motor_pins, 4))) {
+            pb_error(c, "arg", "PEVENT");
+            return;
+        }
+        if (!pb_hex_row_ok(v[1])) {
+            pb_error(c, "hex", "PEVENT");
+            return;
+        }
+        if (!c->h.write_port) {
+            pb_error(c, "mod", "PB10");
+            return;
+        }
+        /* A previous event's short step burst may still be running; wait up to 50 ms. */
+        for (i = 0; c->step_active && i < 100; i++)
+            pb_wait_us(c, 500);
+        if (c->step_active) {
+            pb_error(c, "bsy", "PSTEP");
+            return;
+        }
+        pb_shift_head_row(c, v[1], (unsigned)a, (unsigned)b);
+        (void)pb_printer_pin(c, "PB8", 0);
+        pb_wait_us(c, (unsigned)latch_us);
+        (void)pb_printer_pin(c, "PB8", 1);
+        (void)pb_printer_pin(c, "PB11", 1);
+        pb_wait_us(c, (unsigned)heat_us);
+        (void)pb_printer_pin(c, "PB11", 0);
+        if (count)
+            pb_step_start(c, 0, count + 1u, 0, 1000); /* 1 ms per transition, no gap */
         c->last_feed = pb_now(c);
-        if (count) {
-            phase = c->step_phase & 7u; /* resume from the remembered phase */
-            pb_drive_motor_phase(c, phase);
-            pb_reply(c, "ok started");
-        } else
-            pb_reply(c, "ok halfsteps");
+        pb_reply(c, "ok event");
         return;
     }
     if (pb_eq(v[0], "PSTEPSTAT")) {

@@ -73,7 +73,7 @@ static void consume(unsigned line, const char *expect) {
 }
 int main(int argc, char **argv) {
     pb_core c;
-    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, delay_us};
+    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, delay_us, wr}; /* wr doubles as the fast writer */
     FILE *f;
     char line[2048];
     unsigned ln = 0;
@@ -234,6 +234,42 @@ int main(int argc, char **argv) {
     fclose(f);
     if (used)
         fail(ln, "unexpected extra output");
+    /* Local power button: boot hold must latch power on without being
+       mistaken for a second hold, then a fresh one-second hold powers off. */
+    {
+        int bi, pi;
+        unsigned bp, bb, pp, pb;
+        memset(outs, 0, sizeof outs);
+        memset(pads, 0, sizeof pads);
+        now_ms = 0;
+        pb_init(&c, &h);
+        bi = pb_pin("PB1");
+        pi = pb_pin("PA1");
+        if (bi < 0 || pi < 0)
+            fail(ln, "power control pins missing");
+        bp = pb_defs[bi].port; bb = pb_defs[bi].bit;
+        pp = pb_defs[pi].port; pb = pb_defs[pi].bit;
+        outs[bp] &= (uint16_t)~(1u << bb); /* active-low button held */
+        pb_power_led_poll(&c, 0);
+        now_ms = 1000;
+        pb_power_led_poll(&c, now_ms);
+        if (!c.power_ready || !(outs[pp] & (1u << pb)))
+            fail(ln, "one-second boot hold did not latch power on");
+        now_ms = 1001;
+        pb_power_led_poll(&c, now_ms);
+        if (!c.power_ready || !(outs[pp] & (1u << pb)))
+            fail(ln, "boot hold incorrectly triggered immediate shutdown");
+        outs[bp] |= (uint16_t)(1u << bb); /* release before the next hold */
+        now_ms = 1002;
+        pb_power_led_poll(&c, now_ms);
+        outs[bp] &= (uint16_t)~(1u << bb);
+        now_ms = 1100;
+        pb_power_led_poll(&c, now_ms);
+        now_ms = 2100;
+        pb_power_led_poll(&c, now_ms);
+        if (c.power_ready || (outs[pp] & (1u << pb)))
+            fail(ln, "one-second runtime hold did not cut power");
+    }
     printf("PASS %s\n", argv[1]);
     return 0;
 }

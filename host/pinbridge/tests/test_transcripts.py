@@ -78,7 +78,7 @@ class TranscriptTests(unittest.TestCase):
             with self.subTest(transcript=case.name):
                 runner = (
                     self.real_binary
-                    if case.name in {"real-table.txt", "printer-low-level.txt"}
+                    if case.name in {"real-table.txt", "printer-low-level.txt", "printer-event.txt"}
                     else self.binary
                 )
                 subprocess.run(

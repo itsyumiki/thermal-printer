@@ -118,6 +118,33 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(malformed["type"], "error")
         self.assertIn("96 hexadecimal", malformed["message"])
 
+    async def test_event_action_builds_single_pevent_command_and_bounds_args(self):
+        await self.send({"action": "connect"})
+        commands = []
+
+        async def command(line):
+            commands.append(line)
+            return ["event"]
+
+        self.backend._command = command
+        row = "00" * 48
+        result = await self.send({
+            "action": "printer", "confirm": "printer", "op": "event", "data_hex": row,
+            "bit_delay_us": 2, "data_hold_us": 1, "latch_us": 2, "heat_us": 2000, "steps": 2,
+        })
+        self.assertEqual(result["type"], "raw")
+        self.assertEqual(commands, [f"PEVENT {row} 2 1 2 2000 2"])
+        for key, value in (("heat_us", 6001), ("steps", 9), ("latch_us", 1001)):
+            bad = {
+                "action": "printer", "confirm": "printer", "op": "event", "data_hex": row,
+                "bit_delay_us": 2, "data_hold_us": 1, "latch_us": 2, "heat_us": 2000, "steps": 2,
+            }
+            bad[key] = value
+            rejected = await self.send(bad)
+            self.assertEqual(rejected["type"], "error", key)
+            self.assertIn(key, rejected["message"])
+        self.assertEqual(len(commands), 1)
+
     async def test_stepper_action_waits_for_async_firmware_completion(self):
         await self.send({"action": "connect"})
         commands = []

@@ -62,6 +62,10 @@ static void hal_write(void *ctx, unsigned port, uint16_t mask, uint16_t vals) {
     ports[port]->OUT = (ports[port]->OUT & ~mask) | (vals & mask);
     local_irq_enable();
 }
+static void hal_write_fast(void *ctx, unsigned port, uint16_t mask, uint16_t vals) {
+    (void)ctx;
+    ports[port]->OUT = (ports[port]->OUT & ~mask) | (vals & mask);
+}
 static uint16_t hal_read(void *ctx, unsigned port) {
     (void)ctx;
     return (uint16_t)ports[port]->IN;
@@ -156,6 +160,7 @@ static void command_task(void *priv) {
     const pb_hal h = {
         .set_mode = hal_mode,
         .write_port = hal_write,
+        .write_port_fast = hal_write_fast,
         .read_port = hal_read,
         .adc_read = hal_adc,
         .millis = hal_ms,
@@ -170,6 +175,15 @@ static void command_task(void *priv) {
         if (detached) {
             detached = 0;
             pb_safe_state(&core);
+            core.tbp_active = 0;
+            core.led_mode = 0;
+            core.led_phase = 0;
+            core.led_change_ms = pb_now(&core);
+            /* Keep the local power controls alive across USB detach. */
+            { int k = pb_pin("PB1"); if (k >= 0) { (void)hal_mode(0,pb_defs[k].port,pb_defs[k].bit,PB_UP,1); core.pins[k].mode=PB_UP; } }
+            { int k = pb_pin("PA1"); unsigned v=core.power_ready?1u:0u; if (k >= 0) { (void)hal_mode(0,pb_defs[k].port,pb_defs[k].bit,v?PB_HI:PB_LO,v); core.pins[k].mode=(uint8_t)(v?PB_HI:PB_LO); core.pins[k].level=(uint8_t)v; } }
+            { int k = pb_pin("PC7"); if (k >= 0) { (void)hal_mode(0,pb_defs[k].port,pb_defs[k].bit,PB_LO,0); core.pins[k].mode=PB_LO; core.pins[k].level=0; } }
+            { int k = pb_pin("PB11"); if (k >= 0) { (void)hal_mode(0,pb_defs[k].port,pb_defs[k].bit,PB_LO,0); core.pins[k].mode=PB_LO; core.pins[k].level=0; } }
         }
         for (n = 0; n < 32; n++) {
             u32 got = usb_g_bulk_read(PB_USB, CDC_DATA_EP_OUT, b, sizeof b, 0);

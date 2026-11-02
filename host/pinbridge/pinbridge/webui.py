@@ -338,6 +338,17 @@ class WebBackend:
                     bit_us = integer("bit_delay_us", 0, 1000)
                     hold_us = integer("data_hold_us", 0, 1000)
                     line = f"PHEAD {data} {bit_us} {hold_us}"
+                elif op == "event":
+                    # One round trip: shift + latch + heat + async forward half-steps.
+                    data = str(msg.get("data_hex", ""))
+                    if len(data) != 96 or any(ch not in "0123456789abcdefABCDEF" for ch in data):
+                        raise ValueError("data_hex must contain exactly 96 hexadecimal characters (48 bytes)")
+                    bit_us = integer("bit_delay_us", 0, 1000)
+                    hold_us = integer("data_hold_us", 0, 1000)
+                    latch_us = integer("latch_us", 0, 1000)
+                    heat_us = integer("heat_us", 0, 6000)
+                    steps = integer("steps", 0, 8)
+                    line = f"PEVENT {data} {bit_us} {hold_us} {latch_us} {heat_us} {steps}"
                 elif op == "latch":
                     line = f"PLATCH {integer('pulse_us', 0, 1000)}"
                 elif op == "heat":
@@ -365,7 +376,7 @@ class WebBackend:
                                 raise TimeoutError("stepper did not finish within 65 seconds")
                             await asyncio.sleep(0.01)
                 else:
-                    raise ValueError("op must be shift, latch, heat, or step")
+                    raise ValueError("op must be shift, latch, heat, step, or event")
                 return {"type": "raw", "command": line, "reply": await self._command(line)}
             except ValueError as exc:
                 return {"type": "error", "message": str(exc)}

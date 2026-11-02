@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en" class="theme-dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#111312" />
+    <title>Pinbridge · Thermal Control</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/"
+          ><span class="brand-mark">P</span
+          ><span>PINBRIDGE<small>THERMAL CONTROL</small></span></a
+        >
+        <div class="top-status">
+          <span class="status-led" id="statusLed"></span
+          ><span id="connectionLabel">Searching for printer</span
+          ><span class="mono muted" id="portLabel">UART · AUTO</span>
+        </div>
+        <div class="top-actions">
+          <button class="btn btn-quiet" id="refreshPorts">Refresh ports</button
+          ><select id="portSelect" aria-label="UART device">
+            <option value="">Auto-detect UART</option></select
+          ><button class="btn btn-primary" id="connectBtn">Connect</button>
+        </div>
+      </header>
+      <main>
+        <section class="hero">
+          <div>
+            <p class="eyebrow">
+              DEVICE OVERVIEW <span class="live-pill"><i></i> LIVE LINK</span>
+            </p>
+            <h1>Thermal <em>workbench.</em></h1>
+            <p class="hero-copy">
+              A direct, low-latency control surface for the 384-dot printhead
+              and feed mechanism.
+            </p>
+          </div>
+          <div class="hero-chip">
+            <span class="chip-icon">⌁</span>
+            <div>
+              <b id="deviceState">RECONNECTING</b
+              ><small id="deviceSub">Waiting for USB CDC</small>
+            </div>
+          </div>
+        </section>
+        <section class="metrics" aria-label="Printer telemetry">
+          <article class="metric">
+            <div class="metric-head">
+              HEAD TEMPERATURE <span class="metric-dot" id="tempDot"></span>
+            </div>
+            <div class="metric-value" id="tempValue">— <small>raw</small></div>
+            <div class="metric-foot" id="tempFoot">Sensor not available</div>
+          </article>
+          <article class="metric">
+            <div class="metric-head">
+              BATTERY <span class="metric-dot" id="batteryDot"></span>
+            </div>
+            <div class="metric-value" id="batteryValue">
+              — <small>mV</small>
+            </div>
+            <div class="metric-foot" id="batteryFoot">
+              Waiting for telemetry
+            </div>
+          </article>
+          <article class="metric">
+            <div class="metric-head">
+              JOB QUEUE <span class="metric-dot"></span>
+            </div>
+            <div class="metric-value">
+              <span id="queueValue">—</span
+              ><small id="queueCapacity">slots</small>
+            </div>
+            <div class="metric-foot" id="queueFoot">No active session</div>
+          </article>
+          <article class="metric">
+            <div class="metric-head">
+              PAPER SENSOR <span class="metric-dot" id="paperDot"></span>
+            </div>
+            <div class="metric-value" id="paperValue">Unknown</div>
+            <div class="metric-foot" id="paperFoot">Status not reported</div>
+          </article>
+        </section>
+        <section class="workspace">
+          <div class="panel print-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">01 / PRINT</p>
+                <h2>Solid field test</h2>
+              </div>
+              <span class="panel-icon">▦</span>
+            </div>
+            <p class="panel-copy">
+              Print a full-width black field to verify dot alignment and feed.
+              Each row is queued as a self-contained TBP command.
+            </p>
+            <div class="field-grid">
+              <label
+                >Rows
+                <input
+                  id="rowCount"
+                  type="number"
+                  min="1"
+                  max="500"
+                  value="24" /></label
+              ><label
+                >Burn time
+                <span class="input-with-unit"
+                  ><input
+                    id="burnUs"
+                    type="number"
+                    min="0"
+                    max="6000"
+                    value="1500"
+                  /><small>µs</small></span
+                ></label
+              ><label
+                >Feed steps / row
+                <input
+                  id="rowSteps"
+                  type="number"
+                  min="-127"
+                  max="127"
+                  value="8" /></label
+              ><label
+                >Step period
+                <span class="input-with-unit"
+                  ><input
+                    id="periodUs"
+                    type="number"
+                    min="1000"
+                    max="65000"
+                    value="6000"
+                  /><small>µs</small></span
+                ></label
+              >
+            </div>
+            <div class="notice">
+              <span>i</span>
+              <p>
+                Start with conservative burn times. Heater limits are
+                firmware-enforced; increase only after validating print density
+                and temperature.
+              </p>
+            </div>
+            <div class="progress-wrap hidden" id="progressWrap">
+              <div>
+                <span id="progressLabel">Queueing rows</span
+                ><b id="progressPct">0%</b>
+              </div>
+              <div class="progress"><i id="progressBar"></i></div>
+            </div>
+            <button class="btn btn-primary btn-wide" id="printBtn" disabled>
+              <span>Queue solid-black print</span><b>↗</b>
+            </button>
+          </div>
+          <div class="panel motion-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">02 / MOTION</p>
+                <h2>Feed control</h2>
+              </div>
+              <span class="panel-icon">↕</span>
+            </div>
+            <p class="panel-copy">
+              Move the platen using half-steps from the stock eight-state phase
+              sequence.
+            </p>
+            <div class="motion-readout">
+              <div>
+                <span class="eyebrow">DISTANCE</span
+                ><strong id="moveStepsReadout">+80</strong
+                ><small>half-steps</small>
+              </div>
+              <input id="moveSteps" type="range" min="1" max="500" value="80" />
+              <div class="motion-directions">
+                <button class="btn btn-secondary" id="reverseBtn" disabled>
+                  ← Retract</button
+                ><button class="btn btn-secondary" id="feedBtn" disabled>
+                  Feed →
+                </button>
+              </div>
+            </div>
+            <div class="divider"></div>
+            <div class="field-grid two">
+              <label
+                >Step period
+                <span class="input-with-unit"
+                  ><input
+                    id="movePeriod"
+                    type="number"
+                    min="1000"
+                    max="65000"
+                    value="3000"
+                  /><small>µs</small></span
+                ></label
+              ><label
+                >Hold coils
+                <select id="coilMode">
+                  <option value="hold">Hold after movement</option>
+                  <option value="release">Release after movement</option>
+                </select></label
+              >
+            </div>
+            <button
+              class="btn btn-quiet btn-wide"
+              id="releaseCoilsBtn"
+              disabled
+            >
+              Release stepper coils
+            </button>
+          </div>
+        </section>
+        <section class="bottom-grid">
+          <div class="panel job-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">03 / JOB CONTROL</p>
+                <h2>Queue & session</h2>
+              </div>
+              <span class="panel-icon">◷</span>
+            </div>
+            <div class="job-state">
+              <span class="state-ring" id="jobRing"></span>
+              <div>
+                <b id="jobState">Idle</b
+                ><small id="jobDescription"
+                  >Connect to inspect the printer queue.</small
+                >
+              </div>
+            </div>
+            <div class="job-actions">
+              <button class="btn btn-secondary" id="refreshStatus" disabled>
+                Refresh status</button
+              ><button class="btn btn-secondary" id="flushBtn" disabled>
+                Flush queue</button
+              ><button class="btn btn-danger" id="estopBtn" disabled>
+                <span>■</span> Stop after current operation
+              </button>
+            </div>
+            <p class="microcopy">
+              The current firmware finishes its active row or move before it can
+              process the stop request.
+            </p>
+          </div>
+          <div class="panel session-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">04 / SESSION</p>
+                <h2>Link details</h2>
+              </div>
+              <span class="panel-icon">⌘</span>
+            </div>
+            <div class="detail-list">
+              <div>
+                <span>Protocol</span><b id="protocolValue">TBP v1 · pending</b>
+              </div>
+              <div><span>Firmware build</span><b id="buildValue">—</b></div>
+              <div>
+                <span>Device UID</span><b id="uidValue" class="mono">—</b>
+              </div>
+              <div>
+                <span>Link retries</span><b id="retryValue">Automatic</b>
+              </div>
+            </div>
+            <div class="session-actions">
+              <button class="btn btn-quiet" id="disconnectBtn">
+                Disconnect</button
+              ><span class="microcopy">Reconnect is automatic by default.</span>
+            </div>
+          </div>
+        </section>
+        <section class="panel console-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">DIAGNOSTICS</p>
+              <h2>Event stream</h2>
+            </div>
+            <div class="console-tools">
+              <label class="check-label"
+                ><input type="checkbox" id="autoScroll" checked />
+                Auto-scroll</label
+              ><button class="btn btn-quiet btn-small" id="clearLog">
+                Clear log
+              </button>
+            </div>
+          </div>
+          <div class="log" id="log" aria-live="polite">
+            <div class="log-entry muted">
+              <time>BOOT</time
+              ><span>Host UI ready. Looking for a UART printer.</span>
+            </div>
+          </div>
+        </section>
+        <footer>
+          <span>PINBRIDGE <b>TBP / V1</b></span
+          ><span
+            >Built for direct USB CDC <i class="footer-led" id="footerLed"></i
+          ></span>
+        </footer>
+      </main>
+    </div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

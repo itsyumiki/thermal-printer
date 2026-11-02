@@ -1,5 +1,10 @@
 import argparse
+import os
+import subprocess
 import sys
+import time
+import webbrowser
+from pathlib import Path
 
 from .board import Board
 
@@ -11,7 +16,7 @@ def main(argv=None):
     r.add_argument("--port")
     r.add_argument("--timeout", type=float, default=0.5)
     for name in ("gui", "webui"):
-        g = sub.add_parser(name, help="launch the local browser-based GPIO console")
+        g = sub.add_parser(name, help="launch the local thermal printer control UI")
         gg = g.add_mutually_exclusive_group()
         gg.add_argument("--port", help="serial device path")
         gg.add_argument(
@@ -35,19 +40,30 @@ def main(argv=None):
         )
     a = p.parse_args(argv)
     if a.cmd in ("gui", "webui"):
+        # Production UI, protocol, UART manager and the development mock all
+        # live in the Bun host so the browser never has a separate Python path.
+        bun_dir = Path(__file__).resolve().parents[1] / "bun"
+        env = os.environ.copy()
+        env["PINBRIDGE_HOST"] = a.host
+        env["PINBRIDGE_PORT"] = str(a.http_port)
+        if a.mock:
+            env["PINBRIDGE_MOCK"] = "1"
+        if a.port:
+            env["PINBRIDGE_UART"] = a.port
         try:
-            from .webui import run_webui
-        except ImportError as e:
+            child = subprocess.Popen(["bun", "run", "server.ts"], cwd=bun_dir, env=env)
+        except FileNotFoundError:
             p.error(
-                f"WebUI dependencies unavailable; reinstall pinbridge with its declared dependencies: {e}"
+                "Bun is required for the production WebUI. Install Bun and run `bun install` in host/pinbridge/bun."
             )
-        run_webui(
-            a.port,
-            a.mock,
-            host=a.host,
-            http_port=a.http_port,
-            open_browser=not a.no_browser,
-        )
+        if not a.no_browser:
+            time.sleep(0.8)
+            webbrowser.open(f"http://{a.host}:{a.http_port}")
+        try:
+            child.wait()
+        except KeyboardInterrupt:
+            child.terminate()
+            child.wait(timeout=5)
         return
     with Board(a.port, timeout=a.timeout) as b:
         print("jlpin v2 connected; type protocol commands, Ctrl-D to quit")
