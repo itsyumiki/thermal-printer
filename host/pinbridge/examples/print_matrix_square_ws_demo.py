@@ -7,20 +7,21 @@ PB8 is an active-low latch and must idle high while shifting.
 
 This mimics the *stock* row scheduler as closely as a host script can:
   * one logical row = 4 print events with the same 48 bytes each
-    (shift -> latch -> ~2 ms heater pulse), and exactly one motor half-step
-    per event, issued as a single-transition PSTEP;
+    (shift -> latch -> ~2 ms heater pulse), then --steps-per-event motor
+    half-steps (default 2) issued as one short PSTEP;
   * events are paced at the stock minimum event period of 6 ms
     (2 ms timer tick * divider 3).
 
 Requires pinbridge firmware where PSTEP keeps the half-step phase in firmware
 RAM and resumes from it (step_phase). On older firmware every PSTEP restarts at
-phase 0, so single-transition steps would only toggle phases 0/1 and the paper
-would not advance.
+phase 0, so short steps would only toggle between the first phases and the paper
+would not advance properly.
 
 Limits (read these):
   * Head events are paced by the host clock, not the MCU. If the host cannot keep
     up with --event-ms, printing just runs slower (the motor still moves once per
     event, so dots stay in the right place); the worst lag is reported.
+  * The step burst takes (steps-per-event + 1) ms and must finish inside one event.
   * Stock timings are static-analysis-derived, not measured. No thermal
     interlocks exist here. Not hardware-tested.
 """
@@ -100,6 +101,12 @@ def parse_args():
         help="print event / half-step period in ms (stock minimum: 2 ms tick x 3 = 6)",
     )
     parser.add_argument(
+        "--steps-per-event",
+        type=int,
+        default=2,
+        help="motor half-step transitions after each print event (default: 2; stock is 1)",
+    )
+    parser.add_argument(
         "--tail-steps",
         type=int,
         default=24,
@@ -121,6 +128,12 @@ def parse_args():
     if args.heat_us > args.event_ms * 1000 // 2:
         parser.error(
             "--heat-us must be at most half of --event-ms (heater must not fill the whole event)"
+        )
+    if not 1 <= args.steps_per_event <= 8:
+        parser.error("--steps-per-event must be 1..8")
+    if args.steps_per_event + 1 > args.event_ms:
+        parser.error(
+            "step burst ((steps-per-event + 1) ms) must fit inside --event-ms"
         )
     if not 0 <= args.tail_steps <= 60000:
         parser.error("--tail-steps must be 0..60000")
@@ -169,8 +182,8 @@ async def print_row(con, args, row_index, state):
         # Next event is due one period after this one was due (or now, if late).
         state["next_due"] = max(due, now) + event_s
         # Head work first, then the half-step, like the stock event handler.
-        # PSTEP count includes the initial phase: 2 = exactly one transition.
-        # coil_on 1 ms + gap 0: the transition lands ~1 ms after the command.
+        # PSTEP count includes the initial phase: N transitions need N+1.
+        # coil_on 1 ms + gap 0: one transition per ms, the first ~1 ms after the command.
         await con.batch(
             [
                 dict(
@@ -193,7 +206,10 @@ async def print_row(con, args, row_index, state):
                     op="heat",
                     pulse_us=args.heat_us,
                 ),
-                dict(action="raw", command="PSTEP FWD 2 0 1000"),
+                dict(
+                    action="raw",
+                    command=f"PSTEP FWD {args.steps_per_event + 1} 0 1000",
+                ),
             ]
         )
 
@@ -221,11 +237,11 @@ async def run(args):
             print(preview())
             print(
                 f"{ROW_COUNT} rows x {EVENTS_PER_ROW} events = {total_events} print events "
-                f"(shift+latch+{args.heat_us} us heat, one half-step each), event period {args.event_ms} ms "
+                f"(shift+latch+{args.heat_us} us heat, {args.steps_per_event} half-step(s) each), event period {args.event_ms} ms "
                 f"-> about {total_events * args.event_ms / 1000:.1f} s of nominal pacing"
             )
             print(
-                f"motor: one single-transition PSTEP per event ({total_events} half-steps, phase kept in firmware), "
+                f"motor: one {args.steps_per_event}-transition PSTEP per event ({total_events * args.steps_per_event} half-steps total, phase kept in firmware), "
                 f"then {args.tail_steps} blank {args.tail_direction} half-steps"
             )
             print(
