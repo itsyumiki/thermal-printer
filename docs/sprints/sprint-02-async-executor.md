@@ -11,6 +11,25 @@
 - Existing watchdog and local PB1/PA1/PC7 state machine
 - Sprint 1 handoff and the C transcript harness
 
+## Current progress — 2026-11-02
+
+Status: **in progress; do not mark Sprint 2 complete yet.**
+
+Implemented in the current working tree:
+
+- Static four-command FIFO; INFO advertises `queue_depth=4`, `max_window=4`, and STAT reports actual queue usage/depth.
+- ROW head shifting is chunked across poll iterations; MOVE and DWELL are poll-driven and do not wait for full duration in `pb_tbp_line`.
+- Accepted jobs receive immediate ACK. QUEUED is emitted after 1000 ms of waiting and repeated each second; long jobs emit RUNNING and 1-second PROGRESS updates. Duplicate history follows QUEUED/RUNNING and terminal states.
+- FLUSH and CRC-valid ESTOP cancel the active and queued jobs with reasoned CANCELLED statuses. ESTOP bypasses session/sequence checks and enters STOPPED; the watchdog cancels active/queued work instead of allowing a stale executor to finish later.
+- Host supports four accepted outstanding commands while sending only one not-yet-ACKed frame at a time. It uses advertised credits, resets credits on terminal states, discards unsent later IDs after a rejection, and fails closed on an ambiguous ERR SEQ after ACK.
+- C transcripts cover FIFO ordering/credit recovery, queue full, delayed QUEUED, long DWELL/MOVE progress, FLUSH/ESTOP cancellation, duplicate ROW/MOVE side-effect suppression, watchdog cancellation, and the fast-abort gate. Bun fake-transport tests cover queue credits, rejection backpressure, retry recovery and sequence-error safety.
+
+Known acceptance gaps before completion:
+
+- A higher-priority RX task now scans complete CRC-valid TBP ESTOP lines, cuts PB11 low directly, and raises an executor-abort flag; the step timer stops at its next tick. The command task later emits the protocol ACK/DONE/CANCELLED sequence. C tests exercise the executor-abort gate, but the USB scanner itself is only compile-validated and its physical latency remains unmeasured.
+- Review FLUSH cancellation timing against the intended step-boundary contract. A C transcript now cancels a running MOVE and advances simulated time to prove it does not later emit DONE.
+- Verify the SDK firmware build on the final commit and inspect the task-priority/stack changes. No firmware has been flashed and no physical ESTOP latency has been measured.
+
 ## Tasks
 
 1. Define one bounded FIFO and one explicit running-command record. Advertise the actual queue depth and maximum outstanding window in INFO; never report capacity that the firmware does not have.

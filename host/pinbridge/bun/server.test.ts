@@ -10,6 +10,7 @@ function fakeLink(
   links.push(link);
   link.mock = false;
   link.state = "connected";
+  link.info = { maxWindow: 4, queueDepth: 4 };
   let writes = 0;
   link.serial = {
     isOpen: true,
@@ -68,24 +69,64 @@ describe("TBP fake-transport retry behavior", () => {
     expect(sent[0]).toBe(sent[1]);
   });
 
-  test("serializes concurrent commands so only one frame is outstanding", async () => {
+  test("fills advertised window and releases one credit on terminal status", async () => {
     const sent: string[] = [];
     const { link, count } = fakeLink((wire) => sent.push(wire));
-    const first = link.transact(OP.STAT, new Uint8Array(), true, 100);
-    const second = link.transact(OP.STAT, new Uint8Array(), true, 100);
+    const jobs = [1, 2, 3, 4].map(() =>
+      link.transact(OP.STAT, new Uint8Array(), true, 100),
+    );
+    const fifth = link.transact(
+      OP.MOVE,
+      Uint8Array.of(0, 0, 0, 1, 3, 232),
+      true,
+      100,
+    );
     await Promise.resolve();
     expect(count()).toBe(1);
+    expect([...link.pending.keys()]).toEqual([1, 2, 3, 4]);
     ack(link, 1);
-    done(link, 1);
-    await first;
-    await Promise.resolve();
     expect(count()).toBe(2);
-    expect(decode(sent[0]).id).toBe(1);
     expect(decode(sent[1]).id).toBe(2);
-    ack(link, 2);
-    done(link, 2);
-    await second;
-    expect(link.nextId).toBe(3);
+    done(link, 1);
+    await jobs[0];
+    await Promise.resolve();
+    expect(link.pending.size).toBe(4);
+    for (const id of [2, 3, 4, 5]) {
+      ack(link, id);
+      done(link, id);
+    }
+    expect(count()).toBe(5);
+    expect(decode(sent[4]).id).toBe(5);
+    await Promise.all(jobs.slice(1));
+    await fifth;
+    expect(link.nextId).toBe(6);
+    expect(link.pending.size).toBe(0);
+  });
+
+  test("does not transmit later IDs after an earlier command is rejected", async () => {
+    const { link, count } = fakeLink((wire, _n, current) => {
+      const id = decode(wire).id;
+      if (id === 1) {
+        setTimeout(() => {
+          current.onLine(encode(1, KIND.ERR, Uint8Array.of(5, 0)).trim());
+        }, 0);
+      }
+    });
+    const first = link.transact(OP.ROW, new Uint8Array(54), true, 100);
+    const second = link.transact(
+      OP.MOVE,
+      Uint8Array.of(0, 0, 0, 1, 3, 232),
+      true,
+      100,
+    );
+    const secondResult = second.catch((error) => error);
+    await expect(first).rejects.toThrow("TBP ERR 0x05");
+    expect((await secondResult).message).toBe(
+      "Blocked by preceding TBP command rejection",
+    );
+    expect(count()).toBe(1);
+    expect(link.pending.size).toBe(0);
+    expect(link.state).toBe("connected");
   });
 
   test("retries a rejected sequence at the printer's expected ID", async () => {
@@ -107,6 +148,45 @@ describe("TBP fake-transport retry behavior", () => {
     expect(decode(sent[1]).id).toBe(5);
     expect(link.nextId).toBe(6);
     expect(count()).toBe(2);
+  });
+
+  test("rejects callers waiting for credit when the active command is rejected", async () => {
+    const { link, count } = fakeLink((_wire, _n, current) => {
+      setTimeout(() => {
+        current.onLine(encode(1, KIND.ERR, Uint8Array.of(5, 0)).trim());
+      }, 0);
+    });
+    link.info.maxWindow = 1;
+    const first = link.transact(OP.STAT, new Uint8Array(), true, 100);
+    const second = link.transact(
+      OP.MOVE,
+      Uint8Array.of(0, 0, 0, 1, 3, 232),
+      true,
+      100,
+    );
+    const secondResult = second.catch((error) => error);
+    await expect(first).rejects.toThrow("TBP ERR 0x05");
+    expect((await secondResult).message).toBe("UART is not connected");
+    expect(count()).toBe(1);
+    expect(link.state).toBe("reconnecting");
+  });
+
+  test("does not renumber an operation after ACK when terminal history is ambiguous", async () => {
+    const { link } = fakeLink((_wire, _n, current) => {
+      setTimeout(() => ack(current, 1), 0);
+    });
+    const pending = link.transact(
+      OP.MOVE,
+      Uint8Array.of(0, 0, 0, 1, 3, 232),
+      true,
+      100,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    ack(link, 1);
+    link.onLine(encode(1, KIND.ERR, Uint8Array.of(6, 5)).trim());
+    await expect(pending).rejects.toThrow("execution status is ambiguous");
+    expect(link.state).toBe("reconnecting");
   });
 
   test("same-ID ERR SEQ retry advances the next ID after success", async () => {
@@ -148,20 +228,13 @@ describe("TBP fake-transport retry behavior", () => {
     expect(link.nextId).toBe(2);
   });
 
-  test("disconnect clears pending work and prevents queued stale commands", async () => {
+  test("disconnect rejects pending work and clears its timer/state", async () => {
     const { link, count } = fakeLink(() => {});
     const pending = link.transact(OP.STAT, new Uint8Array(), true, 1000);
-    const queued = link.transact(
-      OP.MOVE,
-      Uint8Array.of(0, 0, 0, 1, 3, 232),
-      true,
-      1000,
-    );
     await Promise.resolve();
     expect(link.pending.size).toBe(1);
     link.drop("simulated reconnect");
     await expect(pending).rejects.toThrow("simulated reconnect");
-    await expect(queued).rejects.toThrow("UART is not connected");
     expect(count()).toBe(1);
     expect(link.pending.size).toBe(0);
     expect(link.info).toBeNull();

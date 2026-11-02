@@ -31,6 +31,8 @@ typedef struct {
     uint8_t mode, level, listen, last;
 } pb_pin_state;
 #define PB_MAX_PINS 16u
+#define PB_TBP_QUEUE_DEPTH 4u
+#define PB_TBP_DATA_MAX 54u
 typedef struct {
     void *ctx;
     int (*set_mode)(void *, unsigned, unsigned, unsigned, unsigned);
@@ -45,13 +47,26 @@ typedef struct {
     void (*write_port_fast)(void *, unsigned, uint16_t, uint16_t);
 } pb_hal;
 typedef struct {
+    uint8_t id, op, len, queued_status_sent;
+    uint32_t enqueued_at, last_queued_status_at;
+    uint8_t data[PB_TBP_DATA_MAX];
+} pb_tbp_command;
+typedef struct {
     pb_hal h;
     pb_pin_state pins[PB_NPINS];
     char line[523]; /* TBP v1 maximum: 520 hex chars plus NUL */
     unsigned llen, discard, dbg, wdg;
     uint8_t tbp_active, tbp_next_id, tbp_last_id, tbp_last_state, tbp_last_valid;
+    uint8_t tbp_last_terminal_id, tbp_last_terminal_valid;
     /* Zero means no accepted command is recorded for this id in this session. */
     uint8_t tbp_history[256];
+    pb_tbp_command tbp_queue[PB_TBP_QUEUE_DEPTH];
+    uint8_t tbp_qhead, tbp_qcount, tbp_running, tbp_stopped;
+    volatile uint8_t emergency_abort_requested;
+    pb_tbp_command tbp_current;
+    uint8_t tbp_exec_stage, tbp_exec_slice;
+    uint16_t tbp_exec_bit;
+    uint32_t tbp_exec_deadline, tbp_exec_progress_at;
     uint32_t last_feed;
     unsigned pollport;
     char reply[128];
@@ -380,12 +395,259 @@ static void pb_tbp_accept(pb_core *c, uint8_t id) {
     c->tbp_last_id = id;
     c->tbp_last_state = 3;
     c->tbp_last_valid = 1;
+    c->tbp_last_terminal_id = id;
+    c->tbp_last_terminal_valid = 1;
     c->tbp_history[evict] = 0;
     c->tbp_history[id] = c->tbp_last_state;
     c->tbp_next_id = (uint8_t)(id + 1u);
     if (!c->tbp_next_id)
         c->tbp_next_id = 1;
 }
+static void pb_tbp_record_state(pb_core *c, uint8_t id, uint8_t state) {
+    c->tbp_history[id] = state;
+    if (c->tbp_last_valid && c->tbp_last_id == id)
+        c->tbp_last_state = state;
+}
+static uint8_t pb_tbp_used(const pb_core *c) {
+    return (uint8_t)(c->tbp_qcount + (c->tbp_running ? 1u : 0u));
+}
+static int pb_tbp_enqueue(pb_core *c, uint8_t id, uint8_t op, const uint8_t *data, uint8_t len) {
+    unsigned tail;
+    uint8_t ack;
+    pb_tbp_command *q;
+    uint8_t previous_terminal_id = c->tbp_last_terminal_id;
+    uint8_t previous_terminal_valid = c->tbp_last_terminal_valid;
+    if (len > PB_TBP_DATA_MAX || pb_tbp_used(c) >= PB_TBP_QUEUE_DEPTH)
+        return 0;
+    tail = ((unsigned)c->tbp_qhead + c->tbp_qcount) % PB_TBP_QUEUE_DEPTH;
+    q = &c->tbp_queue[tail];
+    q->id = id;
+    q->op = op;
+    q->len = len;
+    q->enqueued_at = pb_now(c);
+    q->last_queued_status_at = q->enqueued_at;
+    q->queued_status_sent = 0;
+    if (len) memcpy(q->data, data, len);
+    c->tbp_qcount++;
+    pb_tbp_accept(c, id);
+    c->tbp_last_terminal_id = previous_terminal_id;
+    c->tbp_last_terminal_valid = previous_terminal_valid;
+    pb_tbp_record_state(c, id, 1u);
+    ack = pb_tbp_used(c);
+    pb_tbp_send(c, id, 0x81u, &ack, 1);
+    return 1;
+}
+static void pb_tbp_terminal(pb_core *c, uint8_t state, const uint8_t *body, uint8_t len) {
+    pb_tbp_status(c, c->tbp_current.id, state, body, len);
+    pb_tbp_record_state(c, c->tbp_current.id, state);
+    c->tbp_last_terminal_id = c->tbp_current.id;
+    c->tbp_last_terminal_valid = 1;
+    c->tbp_running = 0;
+    c->tbp_exec_stage = 0;
+}
+static void pb_tbp_cancel_work(pb_core *c, uint8_t reason) {
+    uint8_t i, body[1] = {reason};
+    if (c->tbp_running) {
+        if (c->tbp_current.op == 0x10u && c->tbp_exec_stage >= 2u)
+            (void)pb_printer_pin(c, "PB11", 0);
+        pb_tbp_terminal(c, 5u, body, sizeof body);
+    }
+    for (i = 0; i < c->tbp_qcount; i++) {
+        uint8_t at = (uint8_t)((c->tbp_qhead + i) % PB_TBP_QUEUE_DEPTH);
+        pb_tbp_status(c, c->tbp_queue[at].id, 5u, body, sizeof body);
+        pb_tbp_record_state(c, c->tbp_queue[at].id, 5u);
+        c->tbp_last_terminal_id = c->tbp_queue[at].id;
+        c->tbp_last_terminal_valid = 1;
+    }
+    c->tbp_qhead = 0;
+    c->tbp_qcount = 0;
+    c->tbp_running = 0;
+    c->tbp_exec_stage = 0;
+    c->step_active = 0;
+    c->step_done_pending = 0;
+    (void)pb_printer_pin(c, "PB11", 0);
+}
+static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
+    pb_tbp_command *cmd = &c->tbp_current;
+    uint8_t result[12] = {3, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0};
+    unsigned qi;
+    if (c->emergency_abort_requested) {
+        (void)pb_printer_pin(c, "PB11", 0);
+        c->step_active = 0;
+        c->step_done_pending = 0;
+        return;
+    }
+    for (qi = 0; qi < c->tbp_qcount; qi++) {
+        pb_tbp_command *waiting = &c->tbp_queue[(c->tbp_qhead + qi) % PB_TBP_QUEUE_DEPTH];
+        if ((uint32_t)(now - waiting->enqueued_at) >= 1000u &&
+            (!waiting->queued_status_sent || (uint32_t)(now - waiting->last_queued_status_at) >= 1000u)) {
+            uint8_t queued[2] = {(uint8_t)qi, pb_tbp_used(c)};
+            pb_tbp_status(c, waiting->id, 1u, queued, sizeof queued);
+            pb_tbp_record_state(c, waiting->id, 1u);
+            waiting->queued_status_sent = 1;
+            waiting->last_queued_status_at = now;
+        }
+    }
+    if (!c->tbp_running) {
+        if (!c->tbp_qcount) return;
+        c->tbp_current = c->tbp_queue[c->tbp_qhead];
+        c->tbp_qhead = (uint8_t)((c->tbp_qhead + 1u) % PB_TBP_QUEUE_DEPTH);
+        c->tbp_qcount--;
+        c->tbp_running = 1;
+        c->tbp_exec_stage = 0;
+        c->tbp_exec_bit = 0;
+        c->tbp_exec_slice = 0;
+        c->tbp_exec_progress_at = now + 1000u;
+    }
+    cmd = &c->tbp_current;
+    if (cmd->op == 0x12u) {
+        uint16_t ms = (uint16_t)(((uint16_t)cmd->data[0] << 8) | cmd->data[1]);
+        if (!c->tbp_exec_stage) {
+            c->tbp_exec_stage = 1;
+            c->tbp_exec_deadline = now + ms;
+            if (ms >= 250u) {
+                pb_tbp_status(c, cmd->id, 2u, 0, 0);
+                pb_tbp_record_state(c, cmd->id, 2u);
+            }
+        }
+        if ((int32_t)(now - c->tbp_exec_deadline) < 0) {
+            if ((int32_t)(now - c->tbp_exec_progress_at) >= 0) {
+                uint32_t rem = c->tbp_exec_deadline - now;
+                uint8_t p[4] = {(uint8_t)(rem >> 24), (uint8_t)(rem >> 16), (uint8_t)(rem >> 8), (uint8_t)rem};
+                pb_tbp_status(c, cmd->id, 6u, p, sizeof p);
+                c->tbp_exec_progress_at = now + 1000u;
+            }
+            return;
+        }
+        { uint8_t done[1] = {3}; pb_tbp_terminal(c, 3u, done, sizeof done); }
+        return;
+    }
+    if (cmd->op == 0x11u) {
+        int32_t steps = (int32_t)(((uint32_t)cmd->data[0] << 24) | ((uint32_t)cmd->data[1] << 16) | ((uint32_t)cmd->data[2] << 8) | cmd->data[3]);
+        uint16_t period = (uint16_t)(((uint16_t)cmd->data[4] << 8) | cmd->data[5]);
+        if (!c->tbp_exec_stage) {
+            uint32_t duration = (uint32_t)(steps < 0 ? -steps : steps) * period / 1000u;
+            if (c->emergency_abort_requested) return;
+            c->tbp_exec_stage = 1;
+            if (!pb_all_outputs(c, pb_motor_pins, 4)) pb_motor_outputs_init(c);
+            if (!pb_all_outputs(c, pb_motor_pins, 4)) {
+                uint8_t err[2] = {9, 0};
+                pb_tbp_terminal(c, 4u, err, sizeof err);
+                return;
+            }
+            if (c->emergency_abort_requested) return;
+            if (duration >= 250u) { pb_tbp_status(c, cmd->id, 2u, 0, 0); pb_tbp_record_state(c, cmd->id, 2u); }
+            pb_step_start(c, steps < 0, (unsigned)(steps < 0 ? -steps : steps) + 1u, 0, period);
+        }
+        if (c->step_active) {
+            if ((int32_t)(now - c->tbp_exec_progress_at) >= 0) {
+                uint32_t rem = c->step_remaining;
+                uint8_t p[4] = {(uint8_t)(rem >> 24), (uint8_t)(rem >> 16), (uint8_t)(rem >> 8), (uint8_t)rem};
+                pb_tbp_status(c, cmd->id, 6u, p, sizeof p);
+                c->tbp_exec_progress_at = now + 1000u;
+            }
+            return;
+        }
+        { uint32_t pe = (((uint32_t)period + 999u) / 1000u) * 1000u; uint8_t done[3] = {3, (uint8_t)(pe >> 8), (uint8_t)pe}; pb_tbp_terminal(c, 3u, done, sizeof done); }
+        return;
+    }
+    if (cmd->op == 0x10u) {
+        static const char *const hp[] = {"PB10", "PB9", "PB8", "PB11"};
+        static const char *const mp[] = {"PA9", "PA10", "PC3", "PC2"};
+        unsigned i, bit;
+        uint16_t burn = (uint16_t)(((uint16_t)cmd->data[48] << 8) | cmd->data[49]);
+        int steps = (int8_t)cmd->data[50];
+        uint16_t period = (uint16_t)(((uint16_t)cmd->data[51] << 8) | cmd->data[52]);
+        uint8_t slices = cmd->data[53];
+        int any = 0;
+        for (i = 0; i < 48; i++) if (cmd->data[i]) { any = 1; break; }
+        if (!c->tbp_exec_stage) {
+            c->tbp_exec_stage = 1;
+            c->tbp_exec_bit = 0;
+            if ((steps ? (uint32_t)(steps < 0 ? -steps : steps) * period / 1000u : 0u) + ((any && burn) ? 40u : 0u) >= 250u) { pb_tbp_status(c, cmd->id, 2u, 0, 0); pb_tbp_record_state(c, cmd->id, 2u); }
+        }
+        if (c->tbp_exec_stage == 1u && (!any || !burn)) c->tbp_exec_stage = 4u;
+        if (c->tbp_exec_stage == 1u) {
+            int pin_data, pin_clk;
+            if (!pb_all_outputs(c, hp, 4)) pb_printer_outputs_init(c);
+            if (!pb_all_outputs(c, hp, 4) || !c->h.write_port) {
+                uint8_t err[2] = {9, 0};
+                pb_tbp_terminal(c, 4u, err, sizeof err);
+                return;
+            }
+            if (c->emergency_abort_requested) return;
+            pin_data = pb_pin("PB10");
+            pin_clk = pb_pin("PB9");
+            unsigned dport = pb_defs[pin_data].port, cport = pb_defs[pin_clk].port;
+            uint16_t dmask = (uint16_t)(1u << pb_defs[pin_data].bit), cmask = (uint16_t)(1u << pb_defs[pin_clk].bit);
+            void (*wr)(void *, unsigned, uint16_t, uint16_t) = c->h.write_port;
+            if (c->h.write_port_fast && pb_port_free_of_motor(dport) && pb_port_free_of_motor(cport)) wr = c->h.write_port_fast;
+            for (i = 0; i < 48u && c->tbp_exec_bit < 384u; i++) {
+                unsigned idx = c->tbp_exec_bit++, byte = cmd->data[idx / 8u];
+                bit = (byte >> (idx & 7u)) & 1u;
+                wr(c->h.ctx, dport, dmask, bit ? dmask : 0);
+                wr(c->h.ctx, cport, cmask, cmask); pb_wait_us(c, 1u);
+                wr(c->h.ctx, cport, cmask, 0); pb_wait_us(c, 1u);
+            }
+            if (c->emergency_abort_requested) return;
+            if (c->tbp_exec_bit < 384u) return;
+            if (pin_data >= 0) { c->pins[pin_data].level = (uint8_t)((cmd->data[47] >> 7) & 1u); c->pins[pin_data].mode = (uint8_t)(c->pins[pin_data].level ? PB_HI : PB_LO); }
+            if (pin_clk >= 0) { c->pins[pin_clk].level = 0; c->pins[pin_clk].mode = PB_LO; }
+            (void)pb_printer_pin(c, "PB8", 0);
+            pb_wait_us(c, 10u);
+            if (c->emergency_abort_requested) { (void)pb_printer_pin(c, "PB8", 0); return; }
+            (void)pb_printer_pin(c, "PB8", 1);
+            c->tbp_exec_slice = 0;
+            c->tbp_exec_stage = 3u;
+            return;
+        }
+        if (c->tbp_exec_stage == 3u) {
+            if (c->emergency_abort_requested) { (void)pb_printer_pin(c, "PB11", 0); return; }
+            if (c->tbp_exec_slice < slices) {
+                unsigned on = (unsigned)burn / slices + (c->tbp_exec_slice < ((unsigned)burn % slices));
+                c->tbp_exec_slice++;
+                if (on) {
+                    if (c->emergency_abort_requested) return;
+                    (void)pb_printer_pin(c, "PB11", 1);
+                    if (c->emergency_abort_requested) { (void)pb_printer_pin(c, "PB11", 0); return; }
+                    pb_wait_us(c, on);
+                    (void)pb_printer_pin(c, "PB11", 0);
+                }
+                if (c->tbp_exec_slice < slices) pb_wait_us(c, 100u);
+                return;
+            }
+            (void)pb_printer_pin(c, "PB11", 0);
+            c->tbp_exec_stage = 4u;
+        }
+        if (c->tbp_exec_stage == 4u) {
+            if (steps) {
+                if (c->emergency_abort_requested) return;
+                if (!pb_all_outputs(c, mp, 4)) pb_motor_outputs_init(c);
+                if (!pb_all_outputs(c, mp, 4)) { uint8_t err[2] = {9, 0}; pb_tbp_terminal(c, 4u, err, sizeof err); return; }
+                if (c->emergency_abort_requested) return;
+                pb_step_start(c, steps < 0, (unsigned)(steps < 0 ? -steps : steps) + 1u, 0, period);
+                c->tbp_exec_stage = 5u;
+                return;
+            }
+            c->tbp_exec_stage = 6u;
+        }
+        if (c->tbp_exec_stage == 5u && c->step_active) {
+            if ((int32_t)(now - c->tbp_exec_progress_at) >= 0) {
+                uint32_t rem = c->step_remaining; uint8_t p[4] = {(uint8_t)(rem >> 24), (uint8_t)(rem >> 16), (uint8_t)(rem >> 8), (uint8_t)rem};
+                pb_tbp_status(c, cmd->id, 6u, p, sizeof p); c->tbp_exec_progress_at = now + 1000u;
+            }
+            return;
+        }
+        if (c->tbp_exec_stage == 5u && !c->step_active) c->tbp_exec_stage = 6u;
+        if (c->tbp_exec_stage == 6u) {
+            result[7] = (uint8_t)(burn >> 8); result[8] = (uint8_t)burn;
+            { uint32_t pe = steps ? (((uint32_t)period + 999u) / 1000u) * 1000u : 0u; if (pe > 65535u) pe = 65535u; result[9] = (uint8_t)(pe >> 8); result[10] = (uint8_t)pe; }
+            pb_tbp_terminal(c, 3u, result, sizeof result);
+        }
+        return;
+    }
+}
+
 static int pb_tbp_line(pb_core *c, const char *line) {
     uint8_t raw[260], id, op, len, body[48];
     size_t chars = strlen(line), n, i;
@@ -431,19 +693,22 @@ static int pb_tbp_line(pb_core *c, const char *line) {
     }
     c->last_feed = pb_now(c);
     if (op == 0x01u) {
-        uint8_t info[38] = {1,    0,    0,    0,    0,    1,    0x80, 1,    1,    0x03,
-                            0xE8, 0x03, 0xE8, 0,    1,    0x17, 0x70, 0,    100,  0x03,
-                            0xE8, 0x75, 0x30, 0x0B, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0,
-                            0,    0,    0,    0,    0,    0,    0,    0};
+        uint8_t info[38] = {1, 0, 0, 0, 0, 1, 0x80, PB_TBP_QUEUE_DEPTH, PB_TBP_QUEUE_DEPTH, 0x03,
+                            0xE8, 0x03, 0xE8, 0, 1, 0x17, 0x70, 0, 100, 0x03, 0xE8, 0x75,
+                            0x30, 0x0B, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0};
         if (len != 1 || raw[3] != 1) {
             pb_tbp_err(c, id, 4, 1);
             return 1;
         }
+        pb_tbp_cancel_work(c, 5u);
+        c->tbp_stopped = 0;
+        c->emergency_abort_requested = 0;
         c->tbp_active = 1;
         c->tbp_next_id = (uint8_t)(id + 1u);
         if (!c->tbp_next_id)
             c->tbp_next_id = 1;
         c->tbp_last_valid = 0;
+        c->tbp_last_terminal_valid = 0;
         memset(c->tbp_history, 0, sizeof c->tbp_history);
         c->step_active = 0;
         pb_printer_outputs_init(c);
@@ -459,23 +724,29 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         return 1;
     }
     if (op == 0xFFu) {
-        if (!id || len) {
+        uint8_t ack, done[2] = {3u, pb_tbp_used(c)};
+        if (len) {
             pb_tbp_err(c, id, 4, 0);
             return 1;
         }
-        {
-            uint8_t ack = 0;
-            pb_tbp_send(c, id, 0x81u, &ack, 1);
-        }
+        ack = pb_tbp_used(c);
+        pb_tbp_send(c, id, 0x81u, &ack, 1);
+        c->tbp_stopped = 1;
+        c->emergency_abort_requested = 1;
         (void)pb_printer_pin(c, "PB11", 0);
         c->step_active = 0;
-        for (i = 0; i < 4; i++) {
-            int k = pb_pin(pb_motor_pins[i]);
-            if (k >= 0)
-                pb_safe_pin(c, (unsigned)k);
-        }
-        body[0] = 3;
-        pb_tbp_status(c, id, 3, body, 1);
+        c->step_done_pending = 0;
+        pb_tbp_status(c, id, 3u, done, sizeof done);
+        pb_tbp_cancel_work(c, 2u);
+        return 1;
+    }
+    if (op != 0x00u && op != 0x01u && op != 0x02u && op != 0x03u && op != 0x04u &&
+        op != 0x10u && op != 0x11u && op != 0x12u && op != 0x20u) {
+        pb_tbp_err(c, id, 3, op);
+        return 1;
+    }
+    if (c->tbp_stopped && op != 0x01u && op != 0x02u) {
+        pb_tbp_err(c, id, 8, 0);
         return 1;
     }
     if (!c->tbp_active) {
@@ -487,7 +758,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
          * only replay one when it was accepted in this HELLO session. */
         unsigned delta = ((unsigned)id + 255u - c->tbp_next_id) % 255u;
         if (delta >= 128u && c->tbp_history[id]) {
-            uint8_t ack = 0;
+            uint8_t ack = pb_tbp_used(c);
             pb_tbp_send(c, id, 0x81u, &ack, 1);
             pb_tbp_status(c, id, c->tbp_history[id], 0, 0);
             return 1;
@@ -497,16 +768,19 @@ static int pb_tbp_line(pb_core *c, const char *line) {
     }
     if (op == 0x02u) {
         uint8_t stat[13] = {0, 0, 1, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0};
-        uint8_t lastid = c->tbp_last_valid ? c->tbp_last_id : 0;
+        uint8_t lastid = c->tbp_last_terminal_valid ? c->tbp_last_terminal_id : 0;
         if (len) {
             pb_tbp_err(c, id, 4, 0);
             return 1;
         }
         pb_tbp_accept(c, id);
         {
-            uint8_t ack = 0;
+            uint8_t ack = pb_tbp_used(c);
             pb_tbp_send(c, id, 0x81u, &ack, 1);
         }
+        stat[0] = c->tbp_stopped ? 3u : (pb_tbp_used(c) ? 2u : 1u);
+        stat[1] = pb_tbp_used(c);
+        stat[2] = PB_TBP_QUEUE_DEPTH;
         stat[4] = lastid;
         if (pb_all_outputs(c, pb_motor_pins, 4))
             stat[12] |= 4u;
@@ -514,20 +788,14 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         return 1;
     }
     if (op == 0x03u) {
-        if (len) {
-            pb_tbp_err(c, id, 4, 0);
-            return 1;
-        }
+        uint8_t ack, done[2] = {3u, pb_tbp_used(c)};
+        if (len) { pb_tbp_err(c, id, 4, 0); return 1; }
         pb_tbp_accept(c, id);
-        {
-            uint8_t ack = 0;
-            pb_tbp_send(c, id, 0x81u, &ack, 1);
-        }
+        ack = pb_tbp_used(c);
+        pb_tbp_send(c, id, 0x81u, &ack, 1);
         (void)pb_printer_pin(c, "PB11", 0);
-        c->step_active = 0;
-        body[0] = 3;
-        body[1] = 0;
-        pb_tbp_status(c, id, 3, body, 2);
+        pb_tbp_status(c, id, 3u, done, sizeof done);
+        pb_tbp_cancel_work(c, 1u);
         return 1;
     }
     if (op == 0x04u) {
@@ -545,7 +813,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         }
         pb_tbp_accept(c, id);
         {
-            uint8_t ack = 0;
+            uint8_t ack = pb_tbp_used(c);
             pb_tbp_send(c, id, 0x81u, &ack, 1);
         }
         body[0] = 3;
@@ -560,13 +828,13 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             pb_tbp_err(c, id, 4, 1);
             return 1;
         }
-        if (c->step_active) {
+        if (pb_tbp_used(c)) {
             pb_tbp_err(c, id, 9, 0);
             return 1;
         }
         pb_tbp_accept(c, id);
         {
-            uint8_t ack = 0;
+            uint8_t ack = pb_tbp_used(c);
             pb_tbp_send(c, id, 0x81u, &ack, 1);
         }
         if (raw[3]) {
@@ -586,12 +854,10 @@ static int pb_tbp_line(pb_core *c, const char *line) {
     if (op == 0x10u) {
         static const char *const hp[] = {"PB10", "PB9", "PB8", "PB11"};
         static const char *const mp[] = {"PA9", "PA10", "PC3", "PC2"};
-        char hex[97];
         uint16_t burn, period;
         int steps;
         unsigned j, slices;
         int any = 0;
-        uint8_t result[12] = {3, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0};
         if (len != 54) {
             pb_tbp_err(c, id, 4, 54);
             return 1;
@@ -606,65 +872,28 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             pb_tbp_err(c, id, 5, steps ? 51 : 48);
             return 1;
         }
-        if (steps && !pb_all_outputs(c, mp, 4))
-            pb_motor_outputs_init(c);
-        if (steps && !pb_all_outputs(c, mp, 4)) {
+        for (j = 0; j < 48; j++) if (raw[3 + j]) any = 1;
+        if (pb_tbp_used(c) >= PB_TBP_QUEUE_DEPTH) {
+            pb_tbp_err(c, id, 7, PB_TBP_QUEUE_DEPTH);
+            return 1;
+        }
+        if (steps && !pb_output_pins_available(c, mp, 4)) {
             pb_tbp_err(c, id, 9, 0);
             return 1;
         }
-        for (j = 0; j < 48; j++) {
-            if (raw[3 + j])
-                any = 1;
-            hex[j * 2] = "0123456789ABCDEF"[raw[3 + j] >> 4];
-            hex[j * 2 + 1] = "0123456789ABCDEF"[raw[3 + j] & 15u];
-        }
-        hex[96] = 0;
-        if (any && burn && !pb_all_outputs(c, hp, 4)) {
+        if (any && burn && (!pb_output_pins_available(c, hp, 4) || !c->h.write_port)) {
             pb_tbp_err(c, id, 9, 0);
             return 1;
         }
-        pb_tbp_accept(c, id);
-        {
-            uint8_t ack = 0;
-            pb_tbp_send(c, id, 0x81u, &ack, 1);
+        if (!pb_tbp_enqueue(c, id, op, raw + 3, len)) {
+            pb_tbp_err(c, id, 7, PB_TBP_QUEUE_DEPTH);
+            return 1;
         }
-        if (any && burn) {
-            pb_shift_head_row(c, hex, 1, 0);
-            (void)pb_printer_pin(c, "PB8", 0);
-            pb_wait_us(c, 10);
-            (void)pb_printer_pin(c, "PB8", 1);
-            for (j = 0; j < slices; j++) {
-                unsigned on = (unsigned)burn / slices + (j < ((unsigned)burn % slices));
-                if (on) {
-                    (void)pb_printer_pin(c, "PB11", 1);
-                    pb_wait_us(c, on);
-                    (void)pb_printer_pin(c, "PB11", 0);
-                }
-                if (j + 1u < slices)
-                    pb_wait_us(c, 100u);
-            }
-        }
-        if (steps) {
-            pb_step_start(c, steps < 0, (unsigned)(steps < 0 ? -steps : steps) + 1u, 0, period);
-            while (c->step_active)
-                pb_wait_us(c, 1000u);
-        }
-        result[7] = (uint8_t)(burn >> 8);
-        result[8] = (uint8_t)burn;
-        {
-            uint32_t pe = steps ? (((uint32_t)period + 999u) / 1000u) * 1000u : 0u;
-            if (pe > 65535u)
-                pe = 65535u;
-            result[9] = (uint8_t)(pe >> 8);
-            result[10] = (uint8_t)pe;
-        }
-        pb_tbp_status(c, id, 3, result, sizeof result);
         return 1;
     }
     if (op == 0x11u) {
         int32_t steps;
         uint16_t period;
-        uint8_t result[3] = {3, 0, 0};
         if (len != 6) {
             pb_tbp_err(c, id, 4, 6);
             return 1;
@@ -676,28 +905,18 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             pb_tbp_err(c, id, 5, 0);
             return 1;
         }
-        if (!pb_all_outputs(c, pb_motor_pins, 4))
-            pb_motor_outputs_init(c);
-        if (!pb_all_outputs(c, pb_motor_pins, 4)) {
+        if (pb_tbp_used(c) >= PB_TBP_QUEUE_DEPTH) {
+            pb_tbp_err(c, id, 7, PB_TBP_QUEUE_DEPTH);
+            return 1;
+        }
+        if (!pb_output_pins_available(c, pb_motor_pins, 4)) {
             pb_tbp_err(c, id, 9, 0);
             return 1;
         }
-        pb_tbp_accept(c, id);
-        {
-            uint8_t ack = 0;
-            pb_tbp_send(c, id, 0x81u, &ack, 1);
+        if (!pb_tbp_enqueue(c, id, op, raw + 3, len)) {
+            pb_tbp_err(c, id, 7, PB_TBP_QUEUE_DEPTH);
+            return 1;
         }
-        pb_step_start(c, steps < 0, (unsigned)(steps < 0 ? -steps : steps) + 1u, 0, period);
-        while (c->step_active)
-            pb_wait_us(c, 1000u);
-        {
-            uint32_t pe = (((uint32_t)period + 999u) / 1000u) * 1000u;
-            if (pe > 65535u)
-                pe = 65535u;
-            result[1] = (uint8_t)(pe >> 8);
-            result[2] = (uint8_t)pe;
-        }
-        pb_tbp_status(c, id, 3, result, sizeof result);
         return 1;
     }
     if (op == 0x12u) {
@@ -711,15 +930,10 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             pb_tbp_err(c, id, 5, 0);
             return 1;
         }
-        pb_tbp_accept(c, id);
-        {
-            uint8_t ack = 0;
-            pb_tbp_send(c, id, 0x81u, &ack, 1);
+        if (!pb_tbp_enqueue(c, id, op, raw + 3, len)) {
+            pb_tbp_err(c, id, 7, PB_TBP_QUEUE_DEPTH);
+            return 1;
         }
-        while (ms--)
-            pb_wait_us(c, 1000u);
-        body[0] = 3;
-        pb_tbp_status(c, id, 3, body, 1);
         return 1;
     }
     pb_tbp_err(c, id, 3, op);
@@ -809,8 +1023,9 @@ static void pb_poll(pb_core *c) {
     pb_power_led_poll(c, now);
     if (c->step_done_pending) {
         c->step_done_pending = 0;
-        pb_reply(c, "!step done");
+        if (!c->tbp_running) pb_reply(c, "!step done");
     }
+    pb_tbp_exec_poll(c, now);
     unsigned i, port = c->pollport++ % 4;
     int anyout = 0;
     for (i = 0; i < PB_NPINS; i++) {
@@ -833,6 +1048,7 @@ static void pb_poll(pb_core *c) {
         }
     }
     if (c->wdg && anyout && (uint32_t)(now - c->last_feed) >= c->wdg) {
+        pb_tbp_cancel_work(c, 3u);
         pb_safe_state(c);
         c->tbp_active=0; c->led_mode=0; c->led_phase=0; c->led_change_ms=now;
         if (c->dbg)

@@ -1,11 +1,11 @@
 # Thermal Printer Binary Protocol (TBP) — v1 draft
 
-Status: **design draft v0.1, 2026-11-02; partially implemented in Pinbridge, not firmware-built, flashed, or hardware-tested.**
+Status: **design draft v0.1, 2026-11-02; Sprint 2 executor work in progress. Firmware CI builds are not hardware verification.**
 Values marked **TBD** are owner decisions or need measurement. Section 14 lists every unverified assumption.
 
 ### Current implementation boundary
 
-The Bun host implements TBP frame encoding/decoding, CRC validation, command IDs, reconnect, and ROW/MOVE/DWELL payloads. The C firmware now recognizes the hex-line frame format and handles HELLO, STAT, CONFIG echo, FLUSH, ROW, MOVE, DWELL, COILS, and ESTOP. This is an integration baseline, **not full v1 conformance**: MCU job execution is synchronous with an advertised queue depth of one; there is no real look-ahead queue, continuous motion between rows, heartbeat/event stream, sensor gating, duty-budget enforcement, or complete result/duplicate history. Sensor values are reported unavailable. Host/C tests pass, but the firmware has not been built by GitHub Actions for this change or tested on hardware yet.
+The Bun host implements TBP framing/CRC, sequential IDs, bounded retry recovery, a credit-gated four-command outstanding window, and ROW/MOVE/DWELL payloads. The C core advertises `queue_depth=4` and `max_window=4`, has a fixed four-command FIFO, and advances ROW shifting, MOVE and DWELL from the poll loop rather than waiting for the full operation in the parser. QUEUED/RUNNING/PROGRESS/terminal states, FIFO cancellation, ESTOP queue clearing, and watchdog cancellation have C transcript coverage. This is still **not full v1 conformance**: the full parser and executor share the command task, although a higher-priority USB RX task independently scans CRC-valid ESTOP frames, cuts PB11 low and requests an executor abort before parser-side cancellation. ROW heat slices still use a calibrated software busy-wait (up to 6000 us); the RX task should preempt it, but the actual latency has not been measured on hardware. There is no dedicated heater timer, sensor gating, duty-budget enforcement, heartbeat/event stream, idle-hold timeout, or hardware measurement of cancellation/ESTOP latency. Sensor values remain unavailable. Host/C tests and remote builds do not establish hardware safety.
 
 This replaces the G-code-style idea in `thermal-design-doc.md` (still untracked, not edited). The queue and look-ahead
 goals of that document are kept; the text syntax, the `R`/`P` staging commands and printer-side calibration are dropped.

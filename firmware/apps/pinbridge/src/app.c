@@ -16,14 +16,128 @@ extern u32 adc_get_value(u32 ch);
 #define PB_USB 0
 #define PB_RING 1024
 static pb_core core;
-static OS_SEM rx_sem, tx_sem;
-static volatile u8 detached;
-static u8 ring[PB_RING];
-static volatile u16 wr, rd;
+static OS_SEM rx_sem, cmd_sem, tx_sem;
+static volatile u8 detached, rx_overflow, estop_fast_requested, hello_fast_clear_requested, fast_estop_id;
+static u8 ring[PB_RING], usb_rx_ring[PB_RING];
+static volatile u16 wr, rd, usb_rx_wr, usb_rx_rd;
+static char fast_line[521];
+static unsigned fast_line_len;
+static u8 fast_line_discard;
 static JL_PORT_FLASH_TypeDef *ports[4] = {JL_PORTA, JL_PORTB, JL_PORTC, JL_PORTD};
+static int hal_mode(void *ctx, unsigned port, unsigned bit, unsigned mode, unsigned level);
 static void pb_wakeup(void *dev) {
     (void)dev;
     os_sem_post(&rx_sem);
+}
+static unsigned rx_ring_pop(u8 *dst, unsigned cap) {
+    unsigned n = 0;
+    local_irq_disable();
+    while (usb_rx_rd != usb_rx_wr && n < cap) {
+        dst[n++] = usb_rx_ring[usb_rx_rd];
+        usb_rx_rd = (u16)((usb_rx_rd + 1u) % PB_RING);
+    }
+    local_irq_enable();
+    return n;
+}
+static void rx_ring_push(const u8 *src, unsigned count) {
+    unsigned i;
+    local_irq_disable();
+    for (i = 0; i < count; i++) {
+        u16 next = (u16)((usb_rx_wr + 1u) % PB_RING);
+        if (next == usb_rx_rd) {
+            rx_overflow = 1;
+            break;
+        }
+        usb_rx_ring[usb_rx_wr] = src[i];
+        usb_rx_wr = next;
+    }
+    local_irq_enable();
+    os_sem_post(&cmd_sem);
+}
+static void request_fast_abort(u8 id) {
+    int k;
+    estop_fast_requested = 1;
+    fast_estop_id = id;
+    core.emergency_abort_requested = 1;
+    k = pb_pin("PB11");
+    if (k >= 0) (void)hal_mode(0, pb_defs[k].port, pb_defs[k].bit, PB_LO, 0);
+}
+static int fast_tbp_frame(const char *line, unsigned chars, u8 *raw, unsigned expected_bytes) {
+    unsigned i;
+    u16 crc;
+    if (chars != expected_bytes * 2u) return 0;
+    for (i = 0; i < expected_bytes; i++) {
+        int hi = pb_tbp_hexval(line[i * 2u]);
+        int lo = pb_tbp_hexval(line[i * 2u + 1u]);
+        if (hi < 0 || lo < 0) return 0;
+        raw[i] = (u8)((hi << 4) | lo);
+    }
+    crc = pb_tbp_crc(raw, expected_bytes - 2u);
+    return crc == (u16)(((u16)raw[expected_bytes - 2u] << 8) | raw[expected_bytes - 1u]);
+}
+static void fast_control_line(void) {
+    u8 raw[6];
+    unsigned len = fast_line_len;
+    if (len && fast_line[len - 1u] == '\r') len--;
+    if (len == 10u && fast_tbp_frame(fast_line, len, raw, 5u) && raw[1] == 0xFFu && raw[2] == 0u) {
+        request_fast_abort(raw[0]);
+    } else if (len == 12u && fast_tbp_frame(fast_line, len, raw, 6u) &&
+               raw[1] == 0x01u && raw[2] == 1u && raw[3] == 1u) {
+        hello_fast_clear_requested = 1;
+    }
+}
+static void fast_scan_bytes(const u8 *src, unsigned count) {
+    unsigned i;
+    for (i = 0; i < count; i++) {
+        u8 ch = src[i];
+        if (ch == '\n') {
+            if (!fast_line_discard && fast_line_len) fast_control_line();
+            fast_line_len = 0;
+            fast_line_discard = 0;
+        } else if (!fast_line_discard) {
+            if (fast_line_len < sizeof fast_line) fast_line[fast_line_len++] = (char)ch;
+            else { fast_line_len = 0; fast_line_discard = 1; }
+        }
+    }
+}
+static void force_estop_after_rx_overflow(void) {
+    static const char hx[] = "0123456789ABCDEF";
+    u8 raw[5];
+    char line[11];
+    u16 crc;
+    unsigned i;
+    if (!estop_fast_requested || detached || core.tbp_stopped) return;
+    raw[0] = fast_estop_id;
+    raw[1] = 0xFFu;
+    raw[2] = 0;
+    crc = pb_tbp_crc(raw, 3u);
+    raw[3] = (u8)(crc >> 8);
+    raw[4] = (u8)crc;
+    for (i = 0; i < sizeof raw; i++) {
+        line[i * 2u] = hx[raw[i] >> 4];
+        line[i * 2u + 1u] = hx[raw[i] & 15u];
+    }
+    line[10] = 0;
+    (void)pb_tbp_line(&core, line);
+}
+static void rx_task(void *priv) {
+    u8 b[64];
+    (void)priv;
+    for (;;) {
+        os_sem_pend(&rx_sem, 1);
+        if (detached) {
+            fast_line_len = 0;
+            fast_line_discard = 0;
+            os_sem_post(&cmd_sem);
+            continue;
+        }
+        for (unsigned nread = 0; nread < 32; nread++) {
+            u32 got = usb_g_bulk_read(PB_USB, CDC_DATA_EP_OUT, b, sizeof b, 0);
+            if (!got) break;
+            fast_scan_bytes(b, got);
+            rx_ring_push(b, got);
+        }
+    }
 }
 static int hal_mode(void *ctx, unsigned port, unsigned bit, unsigned mode, unsigned level) {
     JL_PORT_FLASH_TypeDef *p = ports[port];
@@ -152,7 +266,10 @@ static void tx_task(void *priv) {
 }
 static void pb_step_timer(void *priv) {
     (void)priv;
-    pb_step_tick(&core);
+    if (estop_fast_requested) {
+        core.step_active = 0;
+        core.step_done_pending = 0;
+    } else pb_step_tick(&core);
 }
 static void command_task(void *priv) {
     u8 b[64];
@@ -169,11 +286,19 @@ static void command_task(void *priv) {
     };
     (void)priv;
     pb_init(&core, &h);
+    if (estop_fast_requested) core.emergency_abort_requested = 1;
     sys_s_hi_timer_add(NULL, pb_step_timer, 1);
     for (;;) {
-        os_sem_pend(&rx_sem, 1);
+        os_sem_pend(&cmd_sem, 1);
         if (detached) {
+            local_irq_disable();
             detached = 0;
+            usb_rx_rd = usb_rx_wr;
+            rx_overflow = 0;
+            local_irq_enable();
+            core.llen = 0;
+            core.discard = 0;
+            pb_tbp_cancel_work(&core, 4u);
             pb_safe_state(&core);
             core.tbp_active = 0;
             core.led_mode = 0;
@@ -185,11 +310,21 @@ static void command_task(void *priv) {
             { int k = pb_pin("PC7"); if (k >= 0) { (void)hal_mode(0,pb_defs[k].port,pb_defs[k].bit,PB_LO,0); core.pins[k].mode=PB_LO; core.pins[k].level=0; } }
             { int k = pb_pin("PB11"); if (k >= 0) { (void)hal_mode(0,pb_defs[k].port,pb_defs[k].bit,PB_LO,0); core.pins[k].mode=PB_LO; core.pins[k].level=0; } }
         }
-        for (n = 0; n < 32; n++) {
-            u32 got = usb_g_bulk_read(PB_USB, CDC_DATA_EP_OUT, b, sizeof b, 0);
-            if (!got)
-                break;
-            pb_rx(&core, b, got);
+        if (rx_overflow) {
+            local_irq_disable();
+            rx_overflow = 0;
+            usb_rx_rd = usb_rx_wr;
+            local_irq_enable();
+            core.llen = 0;
+            core.discard = 0;
+            force_estop_after_rx_overflow();
+        }
+        while ((n = rx_ring_pop(b, sizeof b)) != 0) {
+            pb_rx(&core, b, n);
+            if (hello_fast_clear_requested && !core.tbp_stopped && !core.emergency_abort_requested) {
+                estop_fast_requested = 0;
+                hello_fast_clear_requested = 0;
+            }
         }
         pb_poll(&core);
         if (++ticks >= 10) {
@@ -201,8 +336,12 @@ static void command_task(void *priv) {
 static int idle_event_handler(struct application *app, struct sys_event *event) {
     (void)app;
     if (event->type == SYS_DEVICE_EVENT && event->arg == (void *)DEVICE_EVENT_FROM_OTG &&
-        event->u.dev.event == DEVICE_EVENT_OUT)
+        event->u.dev.event == DEVICE_EVENT_OUT) {
         detached = 1;
+        request_fast_abort(0);
+        os_sem_post(&rx_sem);
+        os_sem_post(&cmd_sem);
+    }
     return 0;
 }
 static int idle_state_machine(struct application *app, enum app_state state, struct intent *it) {
@@ -212,15 +351,20 @@ static int idle_state_machine(struct application *app, enum app_state state, str
         if (it && it->action == ACTION_IDLE_MAIN) {
             clk_set("sys", BT_NORMAL_HZ);
             os_sem_create(&rx_sem, 0);
+            os_sem_create(&cmd_sem, 0);
             os_sem_create(&tx_sem, 0);
             usb_start();
             cdc_set_wakeup_handler(pb_wakeup);
             os_task_create(command_task, 0, 2, 768, 0, "pb_cmd");
+            os_task_create(rx_task, 0, 3, 768, 0, "pb_rx");
             os_task_create(tx_task, 0, 1, 512, 0, "pb_tx");
         }
         break;
     case APP_STA_DESTROY:
         detached = 1;
+        request_fast_abort(0);
+        os_sem_post(&rx_sem);
+        os_sem_post(&cmd_sem);
         break;
     default:
         break;

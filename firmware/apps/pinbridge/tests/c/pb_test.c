@@ -224,6 +224,12 @@ int main(int argc, char **argv) {
                 writes = 0;
                 continue;
             }
+            if (!strcmp(s, "@abort-fast")) {
+                c.emergency_abort_requested = 1;
+                c.step_active = 0;
+                c.step_done_pending = 0;
+                continue;
+            }
             if (!strcmp(s, "@writes-reset")) {
                 writes = 0;
                 continue;

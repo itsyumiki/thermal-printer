@@ -55,6 +55,15 @@ static int pb_all_outputs(pb_core *c, const char *const *pins, unsigned n) {
     }
     return 1;
 }
+static int pb_output_pins_available(pb_core *c, const char *const *pins, unsigned n) {
+    unsigned i;
+    if (!c->h.set_mode) return 0;
+    for (i = 0; i < n; i++) {
+        int k = pb_pin(pins[i]);
+        if (k < 0 || !(pb_defs[k].caps & PB_CAP_OUT)) return 0;
+    }
+    return 1;
+}
 static void pb_drive_motor_phase(pb_core *c, unsigned phase) {
     for (unsigned i = 0; i < 4; i++)
         (void)pb_printer_pin(c, pb_motor_pins[i], pb_motor_phases[phase][i]);

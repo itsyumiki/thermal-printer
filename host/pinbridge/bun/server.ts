@@ -30,6 +30,7 @@ type Pending = {
   waitTerminal: boolean;
   timer?: ReturnType<typeof setTimeout>;
   retries: number;
+  timeout: number;
   retry?: (expectedId?: number) => void;
 };
 export class PrinterLink {
@@ -43,7 +44,10 @@ export class PrinterLink {
   lastError = "";
   nextId = 1;
   pending = new Map<number, Pending>();
-  transactionTail: Promise<void> = Promise.resolve();
+  creditWaiters: Array<() => void> = [];
+  creditReservations = 0;
+  activeSendId: number | null = null;
+  outbound: Array<{ id: number; send: () => void }> = [];
   clients = new Set<Client>();
   reconnectTimer: any = null;
   keepaliveTimer: any = null;
@@ -141,8 +145,8 @@ export class PrinterLink {
         version: 1,
         buildId: "MOCK-DEV",
         dots: 384,
-        queueDepth: 1,
-        maxWindow: 1,
+        queueDepth: 4,
+        maxWindow: 4,
         minPeriodUs: 1000,
         stepTickUs: 1000,
         burnTickUs: 1,
@@ -159,7 +163,7 @@ export class PrinterLink {
       this.status = {
         state: 0,
         queueUsed: 0,
-        queueDepth: 1,
+        queueDepth: 4,
         runningId: 0,
         lastTerminalId: 0,
         headTempRaw: 310,
@@ -250,6 +254,41 @@ export class PrinterLink {
       this.drop("UART closed");
     }
   }
+  private async waitForCredit() {
+    while (
+      this.pending.size + this.creditReservations >=
+      Math.max(1, Number(this.info?.maxWindow ?? 1))
+    ) {
+      await new Promise<void>((resolve) => this.creditWaiters.push(resolve));
+    }
+    this.creditReservations++;
+  }
+  private wakeCreditWaiters(all = false) {
+    if (all) {
+      for (const resolve of this.creditWaiters.splice(0)) resolve();
+    } else {
+      this.creditWaiters.shift()?.();
+    }
+  }
+  private queueSend(id: number, send: () => void, priority = false) {
+    if (priority) this.outbound.unshift({ id, send });
+    else this.outbound.push({ id, send });
+    this.dispatchSend();
+  }
+  private dispatchSend() {
+    if (this.activeSendId !== null) return;
+    while (this.outbound.length) {
+      const next = this.outbound.shift()!;
+      if (!this.pending.has(next.id)) continue;
+      this.activeSendId = next.id;
+      next.send();
+      return;
+    }
+  }
+  private releaseSend(id: number, dispatch = true) {
+    if (this.activeSendId === id) this.activeSendId = null;
+    if (dispatch) this.dispatchSend();
+  }
   drop(reason: string) {
     this.stopKeepalive();
     this.generation++;
@@ -258,6 +297,9 @@ export class PrinterLink {
       p.reject(new Error(reason));
     }
     this.pending.clear();
+    this.outbound = [];
+    this.activeSendId = null;
+    this.wakeCreditWaiters(true);
     this.info = null;
     this.status = null;
     this.setState("reconnecting");
@@ -289,11 +331,18 @@ export class PrinterLink {
       return;
     }
     if (f.op === KIND.ACK) {
+      if (!p.acked) p.retries = 0;
       p.acked = true;
+      this.releaseSend(f.id);
       this.emit("ack", { id: f.id, opcode: p.op, queueUsed: f.data[0] ?? 0 });
       if (!p.waitTerminal) {
         if (p.timer) clearTimeout(p.timer);
+        this.pending.delete(f.id);
+        this.wakeCreditWaiters();
         p.resolve({ id: f.id, op: KIND.ACK, data: f.data });
+      } else {
+        if (p.timer) clearTimeout(p.timer);
+        p.timer = setTimeout(() => p.retry?.(), p.timeout);
       }
       return;
     }
@@ -301,29 +350,59 @@ export class PrinterLink {
       const code = f.data[0] ?? 0,
         arg = f.data[1] ?? 0;
       if (p.timer) clearTimeout(p.timer);
+      if (p.acked) {
+        this.drop("TBP ERR after ACK; execution status is ambiguous");
+        return;
+      }
       // ERR SEQ is an explicit rejection: this frame was not accepted. Retry
       // the same payload at the printer's expected ID, but only when no other
       // transaction could be invalidated by that resynchronization.
       if (code === 6 && arg >= 1 && arg <= 255 && p.retry) {
+        if (p.acked) {
+          this.drop(
+            "TBP sequence error after ACK; execution status is ambiguous",
+          );
+          return;
+        }
         if (arg !== f.id && this.pending.size > 1) {
           this.drop("TBP sequence mismatch with concurrent commands");
           return;
         }
+        this.releaseSend(f.id, false);
         p.acked = false;
         p.retry(arg);
         return;
       }
+      this.releaseSend(f.id, false);
       if (code !== 6) this.nextId = f.id || this.nextId;
+      const hasWaitingForCredit = this.creditWaiters.length > 0;
       const error = new Error(
         `TBP ERR 0x${code.toString(16).padStart(2, "0")} (arg ${arg})`,
       );
       this.pending.delete(f.id);
+      this.wakeCreditWaiters();
       p.reject(error);
       this.emit("command-error", { id: f.id, message: error.message });
+      // Later IDs stay local until the preceding frame is ACKed. If it is
+      // rejected, discard unsent work so the rejected ID can be retried safely.
+      for (const queued of this.outbound.splice(0)) {
+        const later = this.pending.get(queued.id);
+        if (!later) continue;
+        if (later.timer) clearTimeout(later.timer);
+        this.pending.delete(queued.id);
+        later.reject(new Error("Blocked by preceding TBP command rejection"));
+      }
+      this.wakeCreditWaiters(true);
+      if (hasWaitingForCredit)
+        this.drop("TBP command rejected while commands are waiting for credit");
+      else this.dispatchSend();
       return;
     }
     if (f.op === KIND.STATUS) {
       const state = f.data[0];
+      p.acked = true; // STATUS also proves acceptance if the ACK was lost.
+      this.releaseSend(f.id);
+      p.retries = 0;
       this.emit("job-status", { id: f.id, state, body: [...f.data.slice(1)] });
       if (
         state === STATE.DONE ||
@@ -332,6 +411,8 @@ export class PrinterLink {
       ) {
         if (p.timer) clearTimeout(p.timer);
         this.pending.delete(f.id);
+        this.wakeCreditWaiters();
+        this.releaseSend(f.id);
         if (state === STATE.FAILED) {
           const error = new Error(
             `Printer job ${f.id} failed: ${f.data[1] ?? 0}`,
@@ -341,6 +422,9 @@ export class PrinterLink {
         } else {
           p.resolve(f);
         }
+      } else {
+        if (p.timer) clearTimeout(p.timer);
+        p.timer = setTimeout(() => p.retry?.(), p.timeout);
       }
     }
   }
@@ -365,13 +449,7 @@ export class PrinterLink {
     waitTerminal = true,
     timeout = 1200,
   ): Promise<any> {
-    const run = () => this.transactNow(op, data, waitTerminal, timeout);
-    const result = this.transactionTail.then(run, run);
-    this.transactionTail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
+    return this.transactNow(op, data, waitTerminal, timeout);
   }
   private async transactNow(
     op: number,
@@ -384,7 +462,7 @@ export class PrinterLink {
       if (op !== OP.HELLO && op !== OP.ESTOP)
         this.nextId = id >= 255 ? 1 : id + 1;
       if (op === OP.STAT) {
-        const body = Uint8Array.of(3, 0, 1, 0, 0, 1, 54, 2, 0, 14, 216, 1, 0);
+        const body = Uint8Array.of(3, 0, 4, 0, 0, 1, 54, 2, 0, 14, 216, 1, 0);
         return {
           id,
           op: KIND.STATUS,
@@ -395,6 +473,15 @@ export class PrinterLink {
     }
     if (!this.serial?.isOpen || (this.state !== "connected" && op !== OP.HELLO))
       throw new Error("UART is not connected");
+    await this.waitForCredit();
+    this.creditReservations--;
+    if (
+      !this.serial?.isOpen ||
+      (this.state !== "connected" && op !== OP.HELLO)
+    ) {
+      this.wakeCreditWaiters();
+      throw new Error("UART is not connected");
+    }
     let id = this.nextId;
     if (op === OP.HELLO) id = 1;
     else {
@@ -411,6 +498,7 @@ export class PrinterLink {
         acked: false,
         waitTerminal,
         retries: 0,
+        timeout,
       };
       this.pending.set(id, p);
       const attempt = (expectedId?: number) => {
@@ -429,31 +517,32 @@ export class PrinterLink {
           this.drop("TBP timeout");
           return;
         }
-        p.retries++;
-        this.serial?.write(wire, (e) => {
-          if (e) {
-            this.drop(e.message);
-            return;
-          }
-        });
-        p.timer = setTimeout(() => {
-          if (p.acked) {
-            if (!waitTerminal) {
-              this.pending.delete(id);
-              resolve({ id, op, data: new Uint8Array() });
-            } else {
-              // STATUS may be lost after ACK. Retry the exact same wire frame
-              // so the printer can replay its recorded terminal state.
-              attempt();
+        const sendFrame = () => {
+          p.retries++;
+          this.serial?.write(wire, (e) => {
+            if (e) {
+              this.drop(e.message);
+              return;
             }
-          } else attempt();
-        }, timeout);
+          });
+          if (p.timer) clearTimeout(p.timer);
+          if (this.pending.has(id)) {
+            p.timer = setTimeout(() => {
+              if (p.acked && !waitTerminal) {
+                this.pending.delete(id);
+                this.wakeCreditWaiters();
+                this.releaseSend(id);
+                resolve({ id, op, data: new Uint8Array() });
+              } else attempt();
+            }, timeout);
+          }
+        };
+        if (p.acked || this.activeSendId === id) sendFrame();
+        else this.queueSend(id, sendFrame, expectedId !== undefined);
       };
       p.retry = attempt;
       attempt();
     });
-    if (op === OP.HELLO) this.nextId = 2;
-    else if (op !== OP.ESTOP) this.nextId = id >= 255 ? 1 : id + 1;
     const frame = await promise;
     return frame;
   }
