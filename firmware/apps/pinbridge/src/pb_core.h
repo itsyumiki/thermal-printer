@@ -63,8 +63,8 @@ typedef struct {
   char reply[128];
   size_t rlen;
   volatile uint8_t step_active, step_reverse, step_stage, step_done_pending;
-  volatile uint32_t step_remaining, step_wait_ms;
-  uint32_t step_gap_ms, step_dwell_ms, step_index;
+  volatile uint32_t step_remaining, step_wait_ticks;
+  uint32_t step_gap_ticks, step_dwell_ticks, step_index;
   int scratch_p[PB_MAX_PINS];
   char *scratch_v[17];
 } pb_core;
@@ -273,16 +273,15 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
   if (pb_eq(v[0], "PSTEP")) {
     unsigned phase, k;
     if (n != 5 || (!pb_eq(v[1], "FWD") && !pb_eq(v[1], "REV")) || !pb_u32(v[2], &count) || !pb_u32(v[3], &a) || !pb_u32(v[4], &b) || !pb_all_outputs(c, motorpins, 4) || c->step_active) { pb_error(c, "arg", "PSTEP"); return; }
-    /* Nonblocking 1 ms scheduler: USB command handling and watchdog polling
-       continue during motion. Host-side code owns duration/range policy. */
+    /* Hardware timer runs at 100 us per tick; the host owns range policy. */
     c->step_reverse = (uint8_t)pb_eq(v[1], "REV");
     c->step_remaining = count;
     c->step_index = 0;
-    c->step_gap_ms = (uint32_t)(((uint64_t)a + 999u) / 1000u);
-    c->step_dwell_ms = (uint32_t)(((uint64_t)b + 999u) / 1000u);
+    c->step_gap_ticks = (uint32_t)(((uint64_t)a + 99u) / 100u);
+    c->step_dwell_ticks = (uint32_t)(((uint64_t)b + 99u) / 100u);
     c->step_stage = 0;
-    c->step_wait_ms = c->step_dwell_ms;
-    if (c->step_wait_ms == 0) c->step_wait_ms = 1;
+    c->step_wait_ticks = c->step_dwell_ticks;
+    if (c->step_wait_ticks == 0) c->step_wait_ticks = 1;
     c->step_active = count != 0;
     c->last_feed = pb_now(c);
     if (count) {
@@ -694,26 +693,26 @@ static inline void pb_step_tick(pb_core *c) {
   unsigned k, phase;
   if (!c->step_active) return;
   c->last_feed = pb_now(c);
-  if (c->step_wait_ms > 1) { c->step_wait_ms--; return; }
-  c->step_wait_ms = 0;
+  if (c->step_wait_ticks > 1) { c->step_wait_ticks--; return; }
+  c->step_wait_ticks = 0;
   if (!c->step_stage) {
     c->step_stage = 1;
-    if (c->step_gap_ms) { c->step_wait_ms = c->step_gap_ms; return; }
-    /* Zero gap: advance phase in this same 1 ms tick. */
+    if (c->step_gap_ticks) { c->step_wait_ticks = c->step_gap_ticks; return; }
+    /* Zero gap: advance phase on this 100 us timer tick. */
   } else {
     c->step_stage = 0;
   }
+  c->step_index++;
+  phase = c->step_reverse ? (7u - (c->step_index & 7u)) : (c->step_index & 7u);
+  for (k = 0; k < 4; k++) (void)pb_printer_pin(c, pins[k], seq[phase][k]);
   if (--c->step_remaining == 0) {
     c->step_active = 0;
     c->step_done_pending = 1;
     return;
   }
-  c->step_index++;
-  phase = c->step_reverse ? (7u - (c->step_index & 7u)) : (c->step_index & 7u);
-  for (k = 0; k < 4; k++) (void)pb_printer_pin(c, pins[k], seq[phase][k]);
   c->step_stage = 0;
-  c->step_wait_ms = c->step_dwell_ms;
-  if (!c->step_wait_ms) c->step_wait_ms = 1;
+  c->step_wait_ticks = c->step_dwell_ticks;
+  if (!c->step_wait_ticks) c->step_wait_ticks = 1;
 }
 
 static void pb_poll(pb_core *c) {

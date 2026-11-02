@@ -58,8 +58,20 @@ static uint32_t hal_ms(void *ctx){(void)ctx;return jiffies*10u;}
 static void hal_delay_us(void *ctx,unsigned us){volatile unsigned n;(void)ctx;for(n=0;n<us*12u;n++){__asm__ volatile("nop");}}
 static int hal_tx(void *ctx,const char *s,size_t n){size_t i;u16 free_space;(void)ctx;free_space=(u16)((rd+PB_RING-wr-1)%PB_RING);if(n>free_space){drops++;return -1;}for(i=0;i<n;i++){ring[wr]=(u8)s[i];wr=(u16)((wr+1)%PB_RING);}return (int)n;}
 static void tx_task(void *priv){u8 b[64];(void)priv;for(;;){unsigned n=0;while(rd!=wr&&n<sizeof b){b[n++]=ring[rd];rd=(u16)((rd+1)%PB_RING);}if(n){if(!cdc_write_data(PB_USB,b,n)){} }else os_time_dly(1);}}
-static void pb_step_timer(void *priv){(void)priv;pb_step_tick(&core);}
-static void command_task(void *priv){u8 b[64];unsigned n,ticks=0;pb_hal h={0,hal_mode,hal_write,hal_read,hal_adc,0,hal_ms,hal_tx,hal_delay_us};(void)priv;pb_init(&core,&h);sys_s_hi_timer_add(NULL,pb_step_timer,1);for(;;){os_sem_pend(&rx_sem,1);if(detached){detached=0;pb_safe_state(&core);}for(n=0;n<32;n++){u32 got=usb_g_bulk_read(PB_USB,CDC_DATA_EP_OUT,b,sizeof b,0);if(!got)break;pb_rx(&core,b,got);}pb_poll(&core);if(++ticks>=10){ticks=0;cdc_set_wakeup_handler(pb_wakeup);}}}
+/* Timer1 is unused by this Pinbridge board configuration. Drive step phases
+ * from its hardware IRQ at 10 kHz (100 us resolution), not the 1 ms OS timer. */
+static ___interrupt void pb_step_timer(void){
+    JL_TIMER1->CON |= BIT(14);
+    pb_step_tick(&core);
+}
+static void pb_step_timer_init(void){
+    JL_TIMER1->CON = BIT(14);
+    JL_TIMER1->CNT = 0;
+    JL_TIMER1->PRD = (u32)clk_get("lsb") / 10000u;
+    request_irq(IRQ_TIME1_IDX, 5, pb_step_timer, 0);
+    JL_TIMER1->CON = BIT(0) | BIT(1);
+}
+static void command_task(void *priv){u8 b[64];unsigned n,ticks=0;pb_hal h={0,hal_mode,hal_write,hal_read,hal_adc,0,hal_ms,hal_tx,hal_delay_us};(void)priv;pb_init(&core,&h);pb_step_timer_init();for(;;){os_sem_pend(&rx_sem,1);if(detached){detached=0;pb_safe_state(&core);}for(n=0;n<32;n++){u32 got=usb_g_bulk_read(PB_USB,CDC_DATA_EP_OUT,b,sizeof b,0);if(!got)break;pb_rx(&core,b,got);}pb_poll(&core);if(++ticks>=10){ticks=0;cdc_set_wakeup_handler(pb_wakeup);}}}
 static int idle_event_handler(struct application *app,struct sys_event *event){(void)app;if(event->type==SYS_DEVICE_EVENT&&event->arg==(void*)DEVICE_EVENT_FROM_OTG&&event->u.dev.event==DEVICE_EVENT_OUT)detached=1;return 0;}
 static int idle_state_machine(struct application *app,enum app_state state,struct intent *it){(void)app;switch(state){case APP_STA_START:if(it&&it->action==ACTION_IDLE_MAIN){clk_set("sys",BT_NORMAL_HZ);os_sem_create(&rx_sem,0);usb_start();cdc_set_wakeup_handler(pb_wakeup);os_task_create(command_task,0,2,768,0,"pb_cmd");os_task_create(tx_task,0,1,512,0,"pb_tx");}break;case APP_STA_DESTROY:detached=1;break;default:break;}return 0;}
 static const struct application_operation app_idle_ops={.state_machine=idle_state_machine,.event_handler=idle_event_handler};

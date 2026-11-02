@@ -21,20 +21,20 @@
 < ok
 > PHEAT 100
 < ok
-> PSTEP FWD 1 5000 1000
+> PSTEP FWD 2 0 500
 < ok started
-@advance 30
+@advance 1
 < !step done
 > PSTEPSTAT
 < ok done
-@hw PA9=lo PA10=hi PC3=hi PC2=lo
-> PSTEP REV 1 5000 1000
+@hw PA9=lo PA10=hi PC3=lo PC2=hi
+> PSTEP REV 2 0 500
 < ok started
-@advance 30
+@advance 1
 < !step done
 > PSTEPSTAT
 < ok done
-@hw PA9=lo PA10=lo PC3=hi PC2=lo
+@hw PA9=hi PA10=lo PC3=lo PC2=lo
 > PHEAT 6001
 < ok
 > PLATCH 1001

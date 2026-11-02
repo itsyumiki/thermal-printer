@@ -349,8 +349,8 @@ class WebBackend:
                     count = integer("count", 0, 60000)
                     inter = integer("inter_step_us", 0, 60000000)
                     dwell = integer("coil_on_us", 0, 60000000)
-                    if count * (((inter + 999) // 1000) + max(1, (dwell + 999) // 1000)) > 60000:
-                        raise ValueError("rounded 1 ms step timing must be <= 60,000 ms")
+                    if count * (((inter + 99) // 100) + max(1, (dwell + 99) // 100)) > 600000:
+                        raise ValueError("rounded 100 us step timing must be <= 60,000 ms")
                     line = f"PSTEP {direction} {count} {inter} {dwell}"
                     started = await self._command(line)
                     if started and started[0] == "started":
