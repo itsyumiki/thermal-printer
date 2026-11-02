@@ -37,3 +37,5 @@ The current stepper8 build is published in the shared public folder as `pinbridg
 - 2026-11-02: Changed `print_matrix_square_ws_demo.py` into a solid-black full-width test: each row sends 48 bytes of `0xFF` (all 384 dots selected), for 24 rows. Default heater pulse set to the user's observed 6000 us trial value; this is experimental and not a safety guarantee. Python syntax, 48-byte/all-bits-set row assertion, and `git diff --check` passed. Not hardware-tested.
 
 - 2026-11-02: Fixed a stale `SQUARE_SIZE` reference in the full-width solid-black print demo progress message; it now uses `ROW_COUNT`. Host-side validation only.
+
+- 2026-11-02: Added `docs/stock-print-scheduler-handoff.md` documenting the bursty row-by-row Pinbridge demo, stock firmware timer/event findings, firmware-side coordinated scheduler direction, acceptance criteria, and unresolved timing questions. Documentation only; no code, build, flash, or hardware test.

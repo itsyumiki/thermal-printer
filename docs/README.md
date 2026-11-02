@@ -9,6 +9,7 @@
 | [flashing.md](flashing.md) | Getting the chip into UBOOT mode, the exact write/read-back/restore commands, what is and isn't verified |
 | [image-patcher.md](image-patcher.md) | How `tools/patch_app.py` works, what was checked, and its limits |
 | [troubleshooting.md](troubleshooting.md) | Every failure hit so far, with cause and fix |
+| [stock-print-scheduler-handoff.md](stock-print-scheduler-handoff.md) | Recovered stock print/stepper cadence, implementation direction, acceptance criteria, and next-agent handoff |
 | [journal.md](journal.md) | What was tried, in order, including dead ends, and what is not done yet |
 | [archive/](archive/) | Early research notes, superseded |
 
