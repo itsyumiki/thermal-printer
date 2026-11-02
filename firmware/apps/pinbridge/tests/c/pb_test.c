@@ -212,6 +212,8 @@ int main(int argc, char **argv) {
                     if (!strcmp(state, "in") && m != PB_IN && m != PB_UP && m != PB_DN &&
                         m != PB_HIZ)
                         fail(ln, "@hw expected input");
+                    if (!strcmp(state, "hiz") && m != PB_HIZ)
+                        fail(ln, "@hw expected high impedance");
                     q += n;
                     while (*q == ' ')
                         q++;

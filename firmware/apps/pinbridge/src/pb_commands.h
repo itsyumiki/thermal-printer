@@ -99,6 +99,10 @@ static void pb_cmd_mode(pb_core *c, char **v, int n, uint32_t now) {
         pb_error(c, "cap", v[1]);
         return;
     }
+    if (pb_eq(pb_defs[i].name, "PB11") && m != PB_LO) {
+        pb_error(c, "bsy", "PB11");
+        return;
+    }
     if (m == PB_PWM && !c->h.pwm_set) {
         pb_error(c, "bsy", v[1]);
         return;
@@ -142,6 +146,10 @@ static void pb_cmd_set(pb_core *c, char **v, int n, uint32_t now) {
         }
         if (!pb_eq(eq, "0") && !pb_eq(eq, "1")) {
             pb_error(c, "arg", eq);
+            return;
+        }
+        if (pb_eq(pb_defs[p[i - 1]].name, "PB11") && *eq == '1') {
+            pb_error(c, "bsy", "PB11");
             return;
         }
         uint16_t pin_bit = (uint16_t)(1u << p[i - 1]);

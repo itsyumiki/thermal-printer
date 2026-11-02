@@ -93,8 +93,9 @@
               <span class="panel-icon">▦</span>
             </div>
             <p class="panel-copy">
-              Print a full-width black field to verify dot alignment and feed.
-              Each row is queued as a self-contained TBP command.
+              Run a heatless row/feed test. Printing remains disabled until
+              temperature, battery and paper sensing plus heater limits are
+              validated.
             </p>
             <div class="field-grid">
               <label
@@ -106,14 +107,15 @@
                   max="500"
                   value="24" /></label
               ><label
-                >Burn time
+                >Burn time (µs)
                 <span class="input-with-unit"
                   ><input
                     id="burnUs"
                     type="number"
                     min="0"
-                    max="6000"
-                    value="1500"
+                    max="0"
+                    value="0"
+                    disabled
                   /><small>µs</small></span
                 ></label
               ><label
@@ -137,12 +139,12 @@
                 ></label
               >
             </div>
-            <div class="notice">
-              <span>i</span>
+            <div class="notice" id="heaterNotice">
+              <span>!</span>
               <p>
-                Start with conservative burn times. Heater limits are
-                firmware-enforced; increase only after validating print density
-                and temperature.
+                Heating disabled: firmware advertises no validated temperature,
+                battery or paper sensors and no calibrated heater/duty limits.
+                Only heatless feed tests are allowed.
               </p>
             </div>
             <div class="progress-wrap hidden" id="progressWrap">
@@ -153,7 +155,7 @@
               <div class="progress"><i id="progressBar"></i></div>
             </div>
             <button class="btn btn-primary btn-wide" id="printBtn" disabled>
-              <span>Queue solid-black print</span><b>↗</b>
+              <span>Queue heatless row test</span><b>↗</b>
             </button>
           </div>
           <div class="panel motion-panel">
@@ -199,9 +201,16 @@
               ><label
                 >Hold coils
                 <select id="coilMode">
-                  <option value="hold">Hold after movement</option>
-                  <option value="release">Release after movement</option>
-                </select></label
+                  <option value="hold" disabled>
+                    Hold after movement (thermal limits unvalidated)
+                  </option>
+                  <option value="release" selected>
+                    Release after movement
+                  </option></select
+                ><small
+                  >Coil hold is disabled until thermal limits are
+                  measured.</small
+                ></label
               >
             </div>
             <button

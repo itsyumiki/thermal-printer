@@ -5,7 +5,7 @@ Values marked **TBD** are owner decisions or need measurement. Section 14 lists 
 
 ### Current implementation boundary
 
-The Bun host implements TBP framing/CRC, sequential IDs, bounded retry recovery, a credit-gated four-command outstanding window, and ROW/MOVE/DWELL payloads. The C core advertises `queue_depth=4` and `max_window=4`, has a fixed four-command FIFO, and advances ROW shifting, MOVE and DWELL from the poll loop rather than waiting for the full operation in the parser. QUEUED/RUNNING/PROGRESS/terminal states, FIFO cancellation, ESTOP queue clearing, and watchdog cancellation have C transcript coverage. This is still **not full v1 conformance**: the full parser and executor share the command task, although a higher-priority USB RX task independently scans CRC-valid ESTOP frames, cuts PB11 low and requests an executor abort before parser-side cancellation. ROW heat slices still use a calibrated software busy-wait (up to 6000 us); the RX task should preempt it, but the actual latency has not been measured on hardware. There is no dedicated heater timer, sensor gating, duty-budget enforcement, heartbeat/event stream, idle-hold timeout, or hardware measurement of cancellation/ESTOP latency. Sensor values remain unavailable. Host/C tests and remote builds do not establish hardware safety.
+The Bun host implements TBP framing/CRC, sequential IDs, bounded retry recovery, a credit-gated four-command outstanding window, and ROW/MOVE/DWELL payloads. The C core advertises `queue_depth=4` and `max_window=4`, has a fixed four-command FIFO, and advances ROW/MOVE/DWELL from the poll loop. QUEUED/RUNNING/PROGRESS/terminal states, FIFO cancellation, ESTOP queue clearing, link-timeout cancellation and watchdog cancellation have C transcript coverage. This is still **not full v1 conformance**: the full parser and executor share the command task, although a higher-priority USB RX task independently scans CRC-valid ESTOP frames, cuts PB11 low and requests an executor abort before parser-side cancellation. Heating is now fail-closed: INFO reports zero heater/duty/shift limits and no sensor capabilities; nonzero ROW burn, legacy PHEAT/heat-bearing PEVENT, and direct PB11-high requests are rejected. PC4/PC5/PB3 are exposed only as unvalidated raw inputs. Heartbeat and link timeout are configurable, while nonzero coil hold is rejected and motor outputs release after motion. No validated temperature/battery/paper sampling, calibrated heater timer, nonzero duty budget, or hardware measurement of cancellation/ESTOP latency is available. Host/C tests and remote builds do not establish hardware safety.
 
 This replaces the G-code-style idea in `thermal-design-doc.md` (still untracked, not edited). The queue and look-ahead
 goals of that document are kept; the text syntax, the `R`/`P` staging commands and printer-side calibration are dropped.
@@ -186,7 +186,7 @@ Every command except `HELLO` and `FF` consumes an id in sequence, whatever its c
 On receipt of a CRC-valid `FF` frame, regardless of queue state, session or id:
 
 1. Heater off immediately; heater timer stopped.
-2. Stepper timer stopped. Coils stay energised until the idle-hold timeout (`idle_hold_ms`), then release.
+2. Stepper timer stopped. In the current build `idle_hold_ms=0`, so coils release immediately after motion; nonzero hold is rejected until coil thermal limits are measured.
 3. Queue discarded. State becomes **STOPPED**.
 4. Reply `ACK`, then `STATUS DONE` with body `[03][flushed u8]`, then `STATUS CANCELLED` (reason `02`) for the running command and each queued command, in id order.
 
@@ -233,24 +233,24 @@ Starts or restarts a session.
 | 8 | max_window | u8 | Max outstanding commands without a terminal status (at most 127) |
 | 9 | min_period_us | u16 | Smallest accepted step period |
 | 11 | step_tick_us | u16 | Step timer resolution; periods are rounded **up** to a multiple of this |
-| 13 | burn_tick_us | u16 | Heater timer resolution; burn times are rounded to the nearest multiple |
-| 15 | burn_max_us | u16 | Maximum `burn_us` per ROW |
-| 17 | guard_us | u16 | Minimum heater-off gap between pulses and before the next latch |
-| 19 | duty_window_ms | u16 | Duty-cycle window length |
-| 21 | duty_max_us | u16 | Maximum total heater-on time per window |
-| 23 | shift_us | u16 | Time to shift one 384-bit row into the head (measured or nominal) |
+| 13 | burn_tick_us | u16 | Heater timer resolution; `0` means no validated heater timer |
+| 15 | burn_max_us | u16 | Maximum `burn_us` per ROW; `0` disables all heating |
+| 17 | guard_us | u16 | Minimum heater-off gap; `0` means unavailable/unvalidated |
+| 19 | duty_window_ms | u16 | Duty-cycle window length; `0` means unavailable |
+| 21 | duty_max_us | u16 | Maximum total heater-on time per window; `0` means unavailable |
+| 23 | shift_us | u16 | Time to shift one 384-bit row; `0` means unmeasured |
 | 25 | temp_limit_raw | u16 | Head temperature gate, raw ADC counts |
 | 27 | batt_min_raw | u16 | Minimum battery, raw ADC counts |
 | 29 | caps | u8 | bit 0 temp sensor valid, bit 1 battery sensor valid, bit 2 battery mV calibrated, bit 3 paper sensor valid |
 | 30 | uid | 8 bytes | Chip unique id if available, else zeros. Hosts use it to select a calibration profile. |
 
-INFO body is 38 bytes, excluding the leading `state` byte in the enclosing STATUS DATA. Thus the full STATUS DATA is 39 bytes. All limits are fixed in firmware and not writable by the host.
+INFO body is 38 bytes, excluding the leading `state` byte in the enclosing STATUS DATA. Thus the full STATUS DATA is 39 bytes. All limits are fixed in firmware and not writable by the host. Until sensor mappings/calibration and thermal limits are validated, this build reports `caps=0`, unavailable raw sensor values, and zero heater/duty/shift fields. Zero heater capability is a fail-closed state, not a nominal operating limit.
 
 ### 7.2 `03` FLUSH
 
 Orderly stop. `DATA` empty.
 
-Heater off at once; the running command is aborted at the next step boundary; all queued commands are discarded. The state returns to IDLE and the session continues. Coils hold for `idle_hold_ms`. Reply: `ACK`, `STATUS DONE` body `[03][flushed u8]`, then `STATUS CANCELLED` (reason `01`) for each command, in id order. The printer does not need a HELLO afterwards.
+Heater off at once; the running command is aborted at the next step boundary; all queued commands are discarded. The state returns to IDLE and the session continues. In the current build coils release immediately because `idle_hold_ms=0`. Reply: `ACK`, `STATUS DONE` body `[03][flushed u8]`, then `STATUS CANCELLED` (reason `01`) for each command, in id order. The printer does not need a HELLO afterwards.
 
 ### 7.3 `02` STAT
 
@@ -275,11 +275,11 @@ Heater off at once; the running command is aborted at the next step boundary; al
 
 | Key | Name | Range | Default |
 |---|---|---|---|
-| `01` | hb_interval_ms | `0` (off) or 100 to 60000 | 1000 |
-| `02` | idle_hold_ms | 0 to 65534, or `FFFF` = hold until COILS release | 2000 (**TBD**; thermal limits of the coils unverified) |
-| `03` | link_timeout_ms | `0` (off) or 500 to 60000 | 0 |
+| `01` | hb_interval_ms | `0` (off) or 100 to 60000 | 0 (off) |
+| `02` | idle_hold_ms | `0` only in current build | 0; nonzero hold rejected until coil thermal limits are measured |
+| `03` | link_timeout_ms | `0` (off) or 500 to 60000 | 0 (off) |
 
-With `link_timeout_ms` set, if no valid frame arrives for that long while work is queued or running, the printer behaves as FLUSH with `CANCELLED` reason `04`. Interface disconnect always has this effect immediately (section 12).
+CONFIG validates and stores effective values. Heartbeat interval and link timeout are applied; heartbeat is opt-in and disabled by default. Key 2 accepts only zero because coil thermal limits are unmeasured. Motor outputs remain high-impedance until motion is requested and release immediately after completion. With `link_timeout_ms` set, if no valid frame arrives for that long while work is queued or running, the printer behaves as FLUSH with `CANCELLED` reason `04`. Interface disconnect always has this effect immediately (section 12).
 
 ### 7.5 `10` ROW — print one row
 
@@ -363,14 +363,14 @@ A stationary burn (`steps = 0`) is legal and is the building block for gray (sec
 
 | Limit | Behaviour |
 |---|---|
-| `burn_max_us` per ROW | Reject at parse (`ERR RANGE`). Reference only: the stock heater ISR allows up to 199 timer ticks, about 6 ms per pulse (derived from code, not measured). The earlier demo's 6000 µs is experimental and not a validated safe value. **TBD by the owner.** |
-| Duty: at most `duty_max_us` heater-on per sliding `duty_window_ms` | Delay the row (DUTY_WAIT). **TBD.** |
-| `guard_us` | Minimum heater-off gap between slices and before the next latch |
-| Head temperature: raw ADC above `temp_limit_raw` | Row start waits (HOT_WAIT). If still hot after 10 s, row `FAILED` `OVERTEMP`. The thermistor lags the dots, so the limit should be conservative. |
-| Battery: raw ADC below `batt_min_raw` | Row with heat `FAILED` `LOWBAT` |
-| Paper: not present | Row with heat `FAILED` `NOPAPER`. MOVE, DWELL and heatless rows are not gated. |
-| Sensor invalid | Row with heat `FAILED` `SENSOR` |
-| Heater on only inside a ROW's heater-timer window | Heater is off in every other state, including STOPPED, IDLE, session loss and boot |
+| `burn_max_us` per ROW | Current value `0` disables heating; any nonzero ROW `burn_us` is rejected at parse with ERR RANGE, offset 48. The historical 6000 µs demo value is not treated as a validated safe limit. |
+| Duty: at most `duty_max_us` heater-on per sliding `duty_window_ms` | Both fields are currently `0` (unavailable). A future nonzero-burn build must configure both; cumulative budget exhaustion waits in DUTY_WAIT and a single row larger than the window budget fails DUTY_LIMIT. |
+| `guard_us` and `burn_tick_us` | Currently `0`; heater timer and pulse gap are unavailable. They must be calibrated before heating can be enabled. |
+| Head temperature: raw ADC above `temp_limit_raw` | No validated sensor capability is advertised. If a reviewed future build enables a burn maximum without temperature sensing, a heat row fails SENSOR and triggers fail-stop cancellation. |
+| Battery: raw ADC below `batt_min_raw` | Battery mapping/calibration is unavailable; a future heat-enabled build must gate on it. |
+| Paper: not present | PB3 mapping is unvalidated; a future heat-enabled build must gate on it. |
+| Sensor invalid | Future heat-enabled build: FAILED SENSOR, heater off, queued jobs CANCELLED reason `03`. Current build rejects all nonzero heat before acceptance. |
+| Heater on only inside a ROW's heater-timer window | Heater is off in every other state, including STOPPED, IDLE, session loss and boot. PHEAT, heat-bearing PEVENT and direct PB11-high are blocked. |
 
 ### 9.2 What the host can and cannot do
 
@@ -455,7 +455,7 @@ The earlier demo sent shift, latch, heat and a finite step command separately fo
 
 ## 12. Link and session behaviour
 
-- USB-CDC disconnect, or a BLE disconnect: heater off immediately, stepper stopped, queue discarded, session ended. Coils release after `idle_hold_ms`. After reconnecting the host must send `HELLO`.
+- USB-CDC disconnect, or a BLE disconnect: heater off immediately, stepper stopped, queue discarded, session ended. In the current build coils release immediately (`idle_hold_ms=0`). After reconnecting the host must send `HELLO`.
 - No heartbeat or other unsolicited traffic before HELLO except `RESET` and `PAPER`/`HOT` events.
 - BLE: frames may be split across writes; reassemble by `\n`. A ROW frame is 119 characters, which fits one write at the measured MTU of 185.
 
@@ -517,10 +517,10 @@ Typical job: `HELLO`, `CONFIG`, several `ROW`s sent until credits or `T_target` 
 2. **Timer resolution.** A 100 µs hardware timer for the stepper was tried (`0dc044c`) and reverted (`c89d965`); the commit does not say why. The step and heater timer resolutions in INFO must be found out before relying on them.
 3. **Dot order and byte order** in the shift register (bit 7 of byte 0 = leftmost dot) is unverified.
 4. **Shift time per row** is unmeasured; `shift_us` in INFO is the number to establish first. It sets the maximum row rate.
-5. **Temperature and battery:** PC4/ADC10 as head thermistor and PC5 as battery divider are static-analysis hypotheses; ADC scaling is unmeasured. Raw counts are reported for that reason. Pinbridge currently has no ADC.
-6. **Paper sensor** PB3 is a presence threshold, not an edge detector.
-7. **Safe numeric limits** (`burn_max_us`, duty, `temp_limit_raw`, `batt_min_raw`, `guard_us`) are all owner decisions.
-8. **Coil hold** thermal limits are unknown; `idle_hold_ms` default is a guess.
+5. **Temperature and battery:** PC4/ADC10 as head thermistor and PC5 as battery divider remain unvalidated hypotheses; raw ADC counts are available but not assigned safety meaning or calibrated.
+6. **Paper sensor** PB3 mapping is unvalidated; raw GPIO level is not advertised as paper presence.
+7. **Safe numeric limits** (`burn_max_us`, duty, `temp_limit_raw`, `batt_min_raw`, `guard_us`) remain unvalidated. The firmware reports zero heater capability until they are measured and reviewed.
+8. **Coil hold** thermal limits are unknown; current `idle_hold_ms=0` releases coils after motion and nonzero values are rejected.
 9. **Slice count:** the stock firmware fires four pulses per row across four phase steps. Whether more or fewer slices improve print quality is untested.
 10. **Queue depth** depends on free RAM. A ROW slot is 54 bytes; 32 slots is about 1.7 KB.
 11. **Throughput:** hex doubles the bytes. At 6 ms per row, about 167 rows/s is about 20 kB/s upstream; fine for USB-CDC, unverified on BLE. If BLE is the bottleneck, a binary-framed variant with the same fields can be added.

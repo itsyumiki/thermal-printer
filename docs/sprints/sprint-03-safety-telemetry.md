@@ -38,3 +38,31 @@ Print-quality tuning, image dithering, and UI feature expansion.
 ## Handoff on completion
 
 List each confirmed pin/sensor mapping, safety constant and evidence, plus remaining hardware-only measurements. Next: Sprint 4 scheduler can rely only on these verified gates.
+
+## Implementation checkpoint — 2026-11-02
+
+Status: **fail-closed software protections implemented; Sprint 3 is not complete**.
+
+### Implemented in the current worktree
+
+- Firmware INFO now truthfully advertises `burn_max_us=0`, zero heater timer/guard/duty/shift limits, sensor capability bits `0`, and unavailable raw temperature/battery values. The current build therefore rejects every nonzero-burn ROW with `ERR RANGE` at payload offset 48 before accepting it.
+- Legacy `PHEAT`, `PEVENT` with nonzero heat, and direct PB11-high paths are blocked in firmware. Generic `MOD PB11` accepts only `lo`; `SET PB11=1` is rejected. Safe-state, ESTOP, FLUSH, watchdog and cancellation paths force PB11 to output-low rather than high impedance.
+- Motor outputs remain released until motion starts and are released after completion. COILS-on and nonzero idle-hold configuration are rejected until coil thermal limits are measured; COILS-off remains available.
+- CONFIG heartbeat interval and link timeout are range-checked, stored, and applied. Heartbeat is opt-in (default off); link timeout cancels running/queued work with reason `04`. STAT reports the running command ID and current output flags.
+- The executor contains fail-stop handling for missing required sensor capabilities and duty-limit violations, plus a rolling-window duty wait. Those paths cannot enable heating in the current build because `burn_max_us=0` and all sensor capabilities are unavailable.
+- Both WebUIs now treat PC4/PC5/PB3 as unvalidated raw inputs rather than claiming temperature, calibrated battery voltage, or paper presence. The Bun UI only permits heatless feed tests; real-mode Python WebUI heat actions and PB11-high requests fail closed.
+
+### Verification in this checkpoint
+
+- Bun host suite: 21 tests / 74 assertions, including no-send rejection for heat-bearing rows and successful heatless-row transport.
+- Python/C suite: 35 tests, including C transcripts for blocked heater paths, CONFIG range/effective values, heartbeat EVENT, link-timeout cancellation, duplicate heatless ROW side effects, and motor output release.
+- `./scripts/check-pinbridge.sh` and `git diff --check` pass.
+
+### Exit blockers — do not enable heat yet
+
+1. Confirm physical pin mapping for the temperature sensor, battery divider, and paper sensor; current PC4/PC5/PB3 assignments remain hypotheses.
+2. Implement actual sensor acquisition, validation, filtering/debounce, and calibrated thresholds. A capability bit must not be enabled until the associated sampling path is real.
+3. Measure and owner-approve heater timer resolution, maximum burn, guard gap, row-shift time, duty window/budget, and motor-coil hold limits.
+4. Add board-specific tests and controlled hardware validation for sensor faults, overtemperature, low battery, paper absent, ESTOP, link loss, and watchdog behavior before changing the zero heater limits.
+
+The present work intentionally disables heater operation; it does not claim that the hardware sensors or safety thresholds are validated. Do not set `PB_TBP_BURN_MAX_US` or sensor capability bits nonzero as a workaround.

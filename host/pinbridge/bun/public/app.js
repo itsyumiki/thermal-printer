@@ -119,6 +119,38 @@ function setConnection(c) {
     "estopBtn",
   ])
     $(id).disabled = !state.connected;
+  const info = state.info;
+  const requiredSensors = 0x01 | 0x02 | 0x08;
+  const heatReady = !!(
+    info &&
+    info.burnMaxUs > 0 &&
+    info.burnTickUs > 0 &&
+    info.guardUs > 0 &&
+    info.dutyWindowMs > 0 &&
+    info.dutyMaxUs > 0 &&
+    info.shiftUs > 0 &&
+    info.tempLimitRaw !== 0xffff &&
+    info.battMinRaw !== 0xffff &&
+    (info.caps & requiredSensors) === requiredSensors
+  );
+  $("burnUs").max = String(heatReady ? info.burnMaxUs : 0);
+  $("burnUs").disabled = !heatReady;
+  if (!heatReady) {
+    $("burnUs").value = "0";
+    $("heaterNotice").querySelector("p").textContent =
+      "Heating disabled: temperature, battery and paper sensors or calibrated heater/duty limits are unavailable. Only heatless feed tests are allowed.";
+  } else {
+    $("heaterNotice").querySelector("p").textContent =
+      `Firmware heater gates available; burn is capped at ${info.burnMaxUs} µs. Physical validation is still required.`;
+  }
+  $("printBtn").textContent = "";
+  const printLabel = document.createElement("span");
+  printLabel.textContent = heatReady
+    ? "Queue solid-black print"
+    : "Queue heatless row test";
+  const printIcon = document.createElement("b");
+  printIcon.textContent = "↗";
+  $("printBtn").append(printLabel, printIcon);
   if (state.connected) {
     $("protocolValue").textContent = `TBP v${state.info?.version ?? 1}`;
     $("buildValue").textContent = state.info?.buildId ?? "Unknown";
@@ -131,14 +163,27 @@ function setConnection(c) {
 function setTelemetry(t) {
   if (!t) return;
   state.telemetry = t;
+  const caps = state.info?.caps ?? 0;
+  const tempValid = !!(caps & 0x01);
+  const batteryValid = !!(caps & 0x02);
+  const batteryMvCalibrated = !!(caps & 0x04);
+  const paperValid = !!(caps & 0x08);
   const temp =
-    t.headTempRaw === 65535 || t.headTempRaw == null ? null : t.headTempRaw;
+    tempValid && t.headTempRaw !== 65535 && t.headTempRaw != null
+      ? t.headTempRaw
+      : null;
   const batt =
-    t.batteryMv === 65535 || t.batteryMv == null ? null : t.batteryMv;
+    batteryValid &&
+    batteryMvCalibrated &&
+    t.batteryMv !== 65535 &&
+    t.batteryMv != null
+      ? t.batteryMv
+      : null;
   $("tempValue").innerHTML =
     temp == null ? "— <small>raw</small>" : `${temp} <small>raw</small>`;
-  $("tempFoot").textContent =
-    t.flags & 1
+  $("tempFoot").textContent = !tempValid
+    ? "Sensor mapping not validated"
+    : t.flags & 1
       ? "Temperature gate active"
       : temp == null
         ? "Sensor not available"
@@ -147,41 +192,65 @@ function setTelemetry(t) {
     "metric-dot " + (temp == null ? "" : t.flags & 1 ? "" : "good");
   $("batteryValue").innerHTML =
     batt == null ? "— <small>mV</small>" : `${batt} <small>mV</small>`;
-  $("batteryFoot").textContent =
-    t.batteryRaw === 65535
-      ? "Battery ADC unavailable"
-      : t.batteryRaw == null
-        ? "Waiting for telemetry"
-        : `Raw ADC ${t.batteryRaw}`;
+  $("batteryFoot").textContent = !batteryValid
+    ? "Sensor mapping not validated"
+    : !batteryMvCalibrated
+      ? "Voltage calibration unavailable"
+      : t.batteryRaw === 65535
+        ? "Battery ADC unavailable"
+        : t.batteryRaw == null
+          ? "Waiting for telemetry"
+          : `Raw ADC ${t.batteryRaw}`;
   $("batteryDot").className = "metric-dot " + (batt == null ? "" : "good");
   $("queueValue").textContent = t.queueUsed ?? "—";
   $("queueCapacity").textContent = `/ ${t.queueDepth ?? "—"} slots`;
   $("queueFoot").textContent = t.runningId
     ? `Running command #${t.runningId}`
     : "No running command";
-  $("paperValue").textContent =
-    t.paper === 1 ? "Present" : t.paper === 0 ? "Absent" : "Unknown";
-  $("paperFoot").textContent =
-    t.paper === 1
+  $("paperValue").textContent = !paperValid
+    ? "Unknown"
+    : t.paper === 1
+      ? "Present"
+      : t.paper === 0
+        ? "Absent"
+        : "Unknown";
+  $("paperFoot").textContent = !paperValid
+    ? "Sensor mapping not validated"
+    : t.paper === 1
       ? "Paper path clear"
       : t.paper === 0
         ? "Check paper roll"
         : "Sensor not reported";
-  $("paperDot").className = "metric-dot " + (t.paper === 1 ? "good" : "");
+  $("paperDot").className =
+    "metric-dot " + (paperValid && t.paper === 1 ? "good" : "");
   const flags = t.flags ?? 0;
+  const heatReady = !!(
+    state.info &&
+    state.info.burnMaxUs > 0 &&
+    state.info.burnTickUs > 0 &&
+    state.info.guardUs > 0 &&
+    state.info.dutyWindowMs > 0 &&
+    state.info.dutyMaxUs > 0 &&
+    state.info.shiftUs > 0 &&
+    state.info.tempLimitRaw !== 0xffff &&
+    state.info.battMinRaw !== 0xffff &&
+    (state.info.caps & 0x0b) === 0x0b
+  );
   $("jobState").textContent =
-    flags & 8
+    heatReady && flags & 8
       ? "Heating"
       : t.runningId
         ? "Printing / moving"
         : t.queueUsed
           ? "Queued"
           : "Idle";
-  $("jobDescription").textContent =
-    `${t.queueUsed ?? 0} queued · ${t.queueDepth ?? 0} capacity · ${flags & 4 ? "stepper coils energised" : "stepper idle"}`;
+  $("jobDescription").textContent = !heatReady
+    ? `${t.queueUsed ?? 0} queued · heater disabled · sensor/limit capabilities unavailable`
+    : `${t.queueUsed ?? 0} queued · ${t.queueDepth ?? 0} capacity · ${flags & 4 ? "stepper coils energised" : "stepper idle"}`;
   $("jobRing").className =
     "state-ring " + (t.runningId || t.queueUsed ? "busy" : "");
 }
+
 function updateProgress(done, total) {
   state.printDone = done;
   state.printTotal = total;
@@ -383,7 +452,7 @@ $("printBtn").onclick = async () => {
     rows < 1 ||
     rows > 500 ||
     burnUs < 0 ||
-    burnUs > 6000 ||
+    burnUs > Number($("burnUs").max) ||
     !Number.isInteger(steps) ||
     steps < -127 ||
     steps > 127 ||
@@ -407,7 +476,12 @@ $("printBtn").onclick = async () => {
       releaseAfter: $("coilMode").value === "release",
     });
     toast(`${r.rows ?? rows} rows accepted by printer`, "success");
-    log(`Solid print queued · ${rows} rows · ${burnUs} µs burn`, "success");
+    log(
+      burnUs === 0
+        ? `Heatless row test queued · ${rows} rows`
+        : `Solid print queued · ${rows} rows · ${burnUs} µs burn`,
+      "success",
+    );
   } catch (e) {
     toast(e.message, "error");
   } finally {

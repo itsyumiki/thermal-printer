@@ -42,6 +42,20 @@ static int pb_printer_pin_i(pb_core *c, int i, unsigned level) {
 static int pb_printer_pin(pb_core *c, const char *name, unsigned level) {
     return pb_printer_pin_i(c, pb_pin(name), level);
 }
+static void pb_heater_off(pb_core *c) {
+    int k = pb_pin("PB11");
+    if (k < 0) return;
+    if (c->h.set_mode &&
+        c->h.set_mode(c->h.ctx, pb_defs[k].port, pb_defs[k].bit, PB_LO, 0) >= 0) {
+        c->pins[k].mode = PB_LO;
+        c->pins[k].level = 0;
+    } else if (c->h.write_port) {
+        uint16_t mask = (uint16_t)(1u << pb_defs[k].bit);
+        c->h.write_port(c->h.ctx, pb_defs[k].port, mask, 0);
+        c->pins[k].mode = PB_LO;
+        c->pins[k].level = 0;
+    }
+}
 static void pb_wait_us(pb_core *c, unsigned us) {
     if (us && c->h.delay_us)
         c->h.delay_us(c->h.ctx, us);
@@ -140,35 +154,45 @@ static void pb_step_start(pb_core *c, int reverse, uint32_t count, uint32_t gap_
 
 static void pb_printer_command(pb_core *c, char **v, int n) {
     static const char *const headpins[] = {"PB10", "PB9", "PB8", "PB11"};
-    uint32_t a, b, count, i;
-    char *hex;
+    uint32_t a, b, count;
     if (!c->h.delay_us) {
         pb_error(c, "bsy", "delay");
         return;
     }
     if (pb_eq(v[0], "PHEAD")) {
         if (n != 4 || strlen(v[1]) != 96 || !pb_u32(v[2], &a) || !pb_u32(v[3], &b) ||
-            !pb_all_outputs(c, headpins, 4)) {
+            a > 10u || b > 10u) {
             pb_error(c, "arg", "PHEAD");
             return;
         }
-        hex = v[1];
-        if (!pb_hex_row_ok(hex)) {
+        if (!pb_hex_row_ok(v[1])) {
             pb_error(c, "hex", "PHEAD");
             return;
         }
-        if (!c->h.write_port) {
+        if (pb_tbp_used(c) || c->step_active) {
+            pb_error(c, "bsy", "PHEAD");
+            return;
+        }
+        if (!pb_all_outputs(c, headpins, 4) || !c->h.write_port) {
             pb_error(c, "mod", "PB10");
             return;
         }
-        pb_shift_head_row(c, hex, (unsigned)a, (unsigned)b);
+        pb_shift_head_row(c, v[1], (unsigned)a, (unsigned)b);
         pb_reply(c, "ok bits=384");
         c->last_feed = pb_now(c);
         return;
     }
     if (pb_eq(v[0], "PLATCH")) {
-        if (n != 2 || !pb_u32(v[1], &a) || !pb_all_outputs(c, headpins, 4)) {
+        if (n != 2 || !pb_u32(v[1], &a) || a > 1000u) {
             pb_error(c, "arg", "PLATCH");
+            return;
+        }
+        if (pb_tbp_used(c) || c->step_active) {
+            pb_error(c, "bsy", "PLATCH");
+            return;
+        }
+        if (!pb_all_outputs(c, headpins, 4)) {
+            pb_error(c, "mod", "PB8");
             return;
         }
         (void)pb_printer_pin(c, "PB8", 0);
@@ -179,40 +203,42 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
         return;
     }
     if (pb_eq(v[0], "PHEAT")) {
-        /* Experimental single pulse. Duration policy belongs to the host-side demo. */
-        if (n != 2 || !pb_u32(v[1], &a) || !pb_all_outputs(c, headpins, 4)) {
+        if (n != 2 || !pb_u32(v[1], &a)) {
             pb_error(c, "arg", "PHEAT");
             return;
         }
-        (void)pb_printer_pin(c, "PB11", 1);
-        pb_wait_us(c, (unsigned)a);
-        (void)pb_printer_pin(c, "PB11", 0);
-        pb_reply(c, "ok");
-        c->last_feed = pb_now(c);
+        /* No validated temperature/battery/paper sensors or calibrated heater timer. */
+        pb_heater_off(c);
+        pb_error(c, "bsy", "PHEAT");
         return;
     }
     if (pb_eq(v[0], "PSTEP")) {
         if (n != 5 || (!pb_eq(v[1], "FWD") && !pb_eq(v[1], "REV")) || !pb_u32(v[2], &count) ||
-            !pb_u32(v[3], &a) || !pb_u32(v[4], &b) || !pb_all_outputs(c, pb_motor_pins, 4) ||
-            c->step_active) {
+            !pb_u32(v[3], &a) || !pb_u32(v[4], &b) || count > 10000u || a > 1000000u ||
+            b < PB_TBP_MIN_PERIOD_US || b > 65535u) {
             pb_error(c, "arg", "PSTEP");
             return;
         }
-        /* Nonblocking 1 ms scheduler: USB command handling and watchdog polling
-           continue during motion. Host-side code owns duration/range policy. */
+        if (pb_tbp_used(c) || c->step_active) {
+            pb_error(c, "bsy", "PSTEP");
+            return;
+        }
+        if (!pb_all_outputs(c, pb_motor_pins, 4)) pb_motor_outputs_init(c);
+        if (!pb_all_outputs(c, pb_motor_pins, 4)) {
+            pb_motor_outputs_release(c);
+            pb_error(c, "mod", "PA9");
+            return;
+        }
         pb_step_start(c, pb_eq(v[1], "REV"), count, a, b);
         pb_reply(c, count ? "ok started" : "ok halfsteps");
         return;
     }
     if (pb_eq(v[0], "PEVENT")) {
-        /* One stock-style print event in a single round trip:
-           PEVENT <96 hex> <bit_us> <hold_us> <latch_us> <heat_us> <steps>
-           shift -> latch pulse -> heater pulse -> <steps> forward half-steps (async). */
+        /* Legacy heat-bearing events are disabled until sensors and heater timing are validated. */
         uint32_t latch_us, heat_us;
         if (n != 7 || strlen(v[1]) != 96 || !pb_u32(v[2], &a) || !pb_u32(v[3], &b) ||
             !pb_u32(v[4], &latch_us) || !pb_u32(v[5], &heat_us) || !pb_u32(v[6], &count) ||
-            a > 1000 || b > 1000 || latch_us > 1000 || heat_us > 6000 || count > 8 ||
-            !pb_all_outputs(c, headpins, 4) || (count && !pb_all_outputs(c, pb_motor_pins, 4))) {
+            a > 10u || b > 10u || latch_us > 1000u || heat_us > 6000u || count > 8u) {
             pb_error(c, "arg", "PEVENT");
             return;
         }
@@ -220,26 +246,31 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
             pb_error(c, "hex", "PEVENT");
             return;
         }
-        if (!c->h.write_port) {
+        if (heat_us) {
+            pb_heater_off(c);
+            pb_error(c, "bsy", "PEVENT");
+            return;
+        }
+        if (pb_tbp_used(c) || c->step_active) {
+            pb_error(c, "bsy", "PEVENT");
+            return;
+        }
+        if (!pb_all_outputs(c, headpins, 4) || !c->h.write_port) {
             pb_error(c, "mod", "PB10");
             return;
         }
-        /* A previous event's short step burst may still be running; wait up to 50 ms. */
-        for (i = 0; c->step_active && i < 100; i++)
-            pb_wait_us(c, 500);
-        if (c->step_active) {
-            pb_error(c, "bsy", "PSTEP");
+        if (count && !pb_all_outputs(c, pb_motor_pins, 4)) pb_motor_outputs_init(c);
+        if (count && !pb_all_outputs(c, pb_motor_pins, 4)) {
+            pb_motor_outputs_release(c);
+            pb_error(c, "mod", "PA9");
             return;
         }
         pb_shift_head_row(c, v[1], (unsigned)a, (unsigned)b);
         (void)pb_printer_pin(c, "PB8", 0);
         pb_wait_us(c, (unsigned)latch_us);
         (void)pb_printer_pin(c, "PB8", 1);
-        (void)pb_printer_pin(c, "PB11", 1);
-        pb_wait_us(c, (unsigned)heat_us);
-        (void)pb_printer_pin(c, "PB11", 0);
-        if (count)
-            pb_step_start(c, 0, count + 1u, 0, 1000); /* 1 ms per transition, no gap */
+        pb_heater_off(c);
+        if (count) pb_step_start(c, 0, count + 1u, 0, PB_TBP_MIN_PERIOD_US);
         c->last_feed = pb_now(c);
         pb_reply(c, "ok event");
         return;

@@ -33,6 +33,19 @@ typedef struct {
 #define PB_MAX_PINS 16u
 #define PB_TBP_QUEUE_DEPTH 4u
 #define PB_TBP_DATA_MAX 54u
+#define PB_TBP_MIN_PERIOD_US 1000u
+/* Heating remains disabled until temperature, battery and paper sensors are mapped/calibrated. */
+#define PB_TBP_SENSOR_CAP_TEMP 0x01u
+#define PB_TBP_SENSOR_CAP_BATTERY 0x02u
+#define PB_TBP_SENSOR_CAP_PAPER 0x08u
+#define PB_TBP_SENSOR_CAPS 0u
+#define PB_TBP_HEATER_TIMER_READY 0u
+#define PB_TBP_BURN_TICK_US 0u
+#define PB_TBP_BURN_MAX_US 0u
+#define PB_TBP_GUARD_US 0u
+#define PB_TBP_DUTY_WINDOW_MS 0u
+#define PB_TBP_DUTY_MAX_US 0u
+#define PB_TBP_SHIFT_US 0u
 typedef struct {
     void *ctx;
     int (*set_mode)(void *, unsigned, unsigned, unsigned, unsigned);
@@ -67,6 +80,9 @@ typedef struct {
     uint8_t tbp_exec_stage, tbp_exec_slice;
     uint16_t tbp_exec_bit;
     uint32_t tbp_exec_deadline, tbp_exec_progress_at;
+    uint32_t tbp_heat_window_start, tbp_heat_used_us;
+    uint32_t tbp_last_frame_ms, tbp_last_hb_ms, tbp_coils_release_at;
+    uint16_t tbp_hb_interval_ms, tbp_idle_hold_ms, tbp_link_timeout_ms;
     uint32_t last_feed;
     unsigned pollport;
     char reply[128];
@@ -81,6 +97,10 @@ typedef struct {
     int scratch_p[PB_MAX_PINS];
     char *scratch_v[17];
 } pb_core;
+static uint8_t pb_tbp_used(const pb_core *c);
+static void pb_heater_off(pb_core *c);
+static void pb_motor_outputs_init(pb_core *c);
+static void pb_motor_outputs_release(pb_core *c);
 static const char *pb_modes[] = {"off", "hiz", "in", "up", "dn", "lo", "hi", "adc", "pwm"};
 static uint32_t pb_now(pb_core *c) {
     return c->h.millis ? c->h.millis(c->h.ctx) : 0;
@@ -186,6 +206,10 @@ static void pb_safe_state(pb_core *c) {
         /* The power latch, active-low button pull-up and status LED are local controls. */
         if (pb_eq(pb_defs[i].name, "PA1") || pb_eq(pb_defs[i].name, "PB1") || pb_eq(pb_defs[i].name, "PC7"))
             continue;
+        if (pb_eq(pb_defs[i].name, "PB11")) {
+            pb_heater_off(c);
+            continue;
+        }
         pb_safe_pin(c, i);
     }
 }
@@ -248,8 +272,9 @@ static unsigned pb_sample_pin(pb_core *c, unsigned index) {
 #include "pb_commands.h"
 
 static void pb_printer_outputs_init(pb_core *c) {
-    static const char *const names[] = {"PB10", "PB9", "PB8", "PB11", "PA9", "PA10", "PC3", "PC2"};
-    static const uint8_t levels[] = {0, 0, 1, 0, 0, 1, 1, 0};
+    /* Initialize head/latch and heater-off only; leave motor coils released until motion is requested. */
+    static const char *const names[] = {"PB10", "PB9", "PB8", "PB11"};
+    static const uint8_t levels[] = {0, 0, 1, 0};
     unsigned j;
     for (j = 0; j < sizeof names / sizeof names[0]; j++) {
         int k = pb_pin(names[j]);
@@ -272,6 +297,13 @@ static void pb_motor_outputs_init(pb_core *c) {
             c->pins[k].mode = (uint8_t)mode;
             c->pins[k].level = (uint8_t)level;
         }
+    }
+}
+static void pb_motor_outputs_release(pb_core *c) {
+    unsigned i;
+    for (i = 0; i < 4u; i++) {
+        int k = pb_pin(pb_motor_pins[i]);
+        if (k >= 0) pb_safe_pin(c, (unsigned)k);
     }
 }
 
@@ -307,7 +339,7 @@ static void pb_power_led_poll(pb_core *c, uint32_t now) {
             c->button_was_down = 1;
             c->button_down_ms = now;
         } else if ((uint32_t)(now - c->button_down_ms) >= 1000u) {
-            (void)pb_printer_pin(c, "PB11", 0);
+            pb_heater_off(c);
             c->step_active = 0;
             (void)pb_printer_pin(c, "PA1", 0);
             c->power_ready = 0;
@@ -429,6 +461,21 @@ static void pb_tbp_record_state(pb_core *c, uint8_t id, uint8_t state) {
 static uint8_t pb_tbp_used(const pb_core *c) {
     return (uint8_t)(c->tbp_qcount + (c->tbp_running ? 1u : 0u));
 }
+static void pb_tbp_build_stat(pb_core *c, uint8_t stat[13]) {
+    unsigned i;
+    for (i = 0; i < 13u; i++) stat[i] = 0;
+    for (i = 5; i <= 11u; i++) stat[i] = 0xFFu;
+    stat[0] = c->tbp_stopped ? 3u : (pb_tbp_used(c) ? 2u : 1u);
+    stat[1] = pb_tbp_used(c);
+    stat[2] = PB_TBP_QUEUE_DEPTH;
+    stat[3] = c->tbp_running ? c->tbp_current.id : 0u;
+    stat[4] = c->tbp_last_terminal_valid ? c->tbp_last_terminal_id : 0u;
+    if (pb_all_outputs(c, pb_motor_pins, 4)) stat[12] |= 4u;
+    {
+        int heater = pb_pin("PB11");
+        if (heater >= 0 && c->pins[heater].level) stat[12] |= 8u;
+    }
+}
 static int pb_tbp_enqueue(pb_core *c, uint8_t id, uint8_t op, const uint8_t *data, uint8_t len) {
     unsigned tail;
     uint8_t ack;
@@ -462,12 +509,13 @@ static void pb_tbp_terminal(pb_core *c, uint8_t state, const uint8_t *body, uint
     c->tbp_last_terminal_valid = 1;
     c->tbp_running = 0;
     c->tbp_exec_stage = 0;
+    if (state == 3u && !c->tbp_qcount && !c->tbp_idle_hold_ms)
+        pb_motor_outputs_release(c);
 }
 static void pb_tbp_cancel_work(pb_core *c, uint8_t reason) {
     uint8_t i, body[1] = {reason};
     if (c->tbp_running) {
-        if (c->tbp_current.op == 0x10u && c->tbp_exec_stage >= 2u)
-            (void)pb_printer_pin(c, "PB11", 0);
+        pb_heater_off(c);
         pb_tbp_terminal(c, 5u, body, sizeof body);
     }
     for (i = 0; i < c->tbp_qcount; i++) {
@@ -483,14 +531,31 @@ static void pb_tbp_cancel_work(pb_core *c, uint8_t reason) {
     c->tbp_exec_stage = 0;
     c->step_active = 0;
     c->step_done_pending = 0;
-    (void)pb_printer_pin(c, "PB11", 0);
+    pb_heater_off(c);
+    if (!c->tbp_idle_hold_ms) pb_motor_outputs_release(c);
+}
+static uint8_t pb_tbp_missing_heat_sensor(void) {
+    if (!(PB_TBP_SENSOR_CAPS & PB_TBP_SENSOR_CAP_TEMP)) return 1u;
+    if (!(PB_TBP_SENSOR_CAPS & PB_TBP_SENSOR_CAP_BATTERY)) return 2u;
+    if (!(PB_TBP_SENSOR_CAPS & PB_TBP_SENSOR_CAP_PAPER)) return 3u;
+    return 0u;
+}
+static void pb_tbp_fail_stop(pb_core *c, uint8_t code, uint8_t arg) {
+    uint8_t error[2] = {code, arg};
+    pb_heater_off(c);
+    pb_tbp_terminal(c, 4u, error, sizeof error);
+    pb_tbp_cancel_work(c, 3u);
+}
+static int pb_tbp_heat_window_expired(uint32_t now, uint32_t start) {
+    uint32_t window = PB_TBP_DUTY_WINDOW_MS;
+    return window != 0u && (uint32_t)(now - start) >= window;
 }
 static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
     pb_tbp_command *cmd = &c->tbp_current;
     uint8_t result[12] = {3, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0};
     unsigned qi;
     if (c->emergency_abort_requested) {
-        (void)pb_printer_pin(c, "PB11", 0);
+        pb_heater_off(c);
         c->step_active = 0;
         c->step_done_pending = 0;
         return;
@@ -579,10 +644,62 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         uint8_t slices = cmd->data[53];
         int any = 0;
         for (i = 0; i < 48; i++) if (cmd->data[i]) { any = 1; break; }
+        if (c->tbp_exec_stage == 7u) {
+            if (pb_tbp_heat_window_expired(now, c->tbp_heat_window_start)) {
+                c->tbp_heat_window_start = now;
+                c->tbp_heat_used_us = 0;
+            }
+            if (burn <= PB_TBP_DUTY_MAX_US &&
+                c->tbp_heat_used_us <= PB_TBP_DUTY_MAX_US - burn) {
+                uint32_t duration = (uint32_t)(steps < 0 ? -steps : steps) * period / 1000u +
+                                    (burn + PB_TBP_SHIFT_US + (uint32_t)slices * PB_TBP_GUARD_US + 999u) / 1000u + 40u;
+                c->tbp_heat_used_us += burn;
+                c->tbp_exec_stage = 1u;
+                c->tbp_exec_bit = 0;
+                if (duration >= 250u) {
+                    pb_tbp_status(c, cmd->id, 2u, 0, 0);
+                    pb_tbp_record_state(c, cmd->id, 2u);
+                }
+                return;
+            }
+            if ((int32_t)(now - c->tbp_exec_progress_at) >= 0) {
+                uint8_t queued[2] = {0u, pb_tbp_used(c)};
+                pb_tbp_status(c, cmd->id, 1u, queued, sizeof queued);
+                pb_tbp_record_state(c, cmd->id, 1u);
+                c->tbp_exec_progress_at = now + 1000u;
+            }
+            return;
+        }
+        if (!c->tbp_exec_stage && any && burn) {
+            uint8_t missing = pb_tbp_missing_heat_sensor();
+            if (missing) { pb_tbp_fail_stop(c, 0x13u, missing); return; }
+            if (!PB_TBP_HEATER_TIMER_READY || !PB_TBP_BURN_TICK_US || !PB_TBP_GUARD_US ||
+                !PB_TBP_SHIFT_US || !PB_TBP_DUTY_WINDOW_MS || !PB_TBP_DUTY_MAX_US) {
+                pb_tbp_fail_stop(c, 0x14u, 0u);
+                return;
+            }
+            if (pb_tbp_heat_window_expired(now, c->tbp_heat_window_start)) {
+                c->tbp_heat_window_start = now;
+                c->tbp_heat_used_us = 0;
+            }
+            if (burn > PB_TBP_DUTY_MAX_US) {
+                pb_tbp_fail_stop(c, 0x14u, 0u);
+                return;
+            }
+            if (c->tbp_heat_used_us > PB_TBP_DUTY_MAX_US - burn) {
+                c->tbp_exec_stage = 7u;
+                c->tbp_exec_progress_at = now + 1000u;
+                return;
+            }
+            c->tbp_heat_used_us += burn;
+        }
         if (!c->tbp_exec_stage) {
+            uint32_t duration = steps ? (uint32_t)(steps < 0 ? -steps : steps) * period / 1000u : 0u;
+            if (any && burn)
+                duration += (burn + PB_TBP_SHIFT_US + (uint32_t)slices * PB_TBP_GUARD_US + 999u) / 1000u + 40u;
             c->tbp_exec_stage = 1;
             c->tbp_exec_bit = 0;
-            if ((steps ? (uint32_t)(steps < 0 ? -steps : steps) * period / 1000u : 0u) + ((any && burn) ? 40u : 0u) >= 250u) { pb_tbp_status(c, cmd->id, 2u, 0, 0); pb_tbp_record_state(c, cmd->id, 2u); }
+            if (duration >= 250u) { pb_tbp_status(c, cmd->id, 2u, 0, 0); pb_tbp_record_state(c, cmd->id, 2u); }
         }
         if (c->tbp_exec_stage == 1u && (!any || !burn)) c->tbp_exec_stage = 4u;
         if (c->tbp_exec_stage == 1u) {
@@ -611,6 +728,7 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
             if (c->tbp_exec_bit < 384u) return;
             if (pin_data >= 0) { c->pins[pin_data].level = (uint8_t)((cmd->data[47] >> 7) & 1u); c->pins[pin_data].mode = (uint8_t)(c->pins[pin_data].level ? PB_HI : PB_LO); }
             if (pin_clk >= 0) { c->pins[pin_clk].level = 0; c->pins[pin_clk].mode = PB_LO; }
+            pb_wait_us(c, PB_TBP_GUARD_US);
             (void)pb_printer_pin(c, "PB8", 0);
             pb_wait_us(c, 10u);
             if (c->emergency_abort_requested) { (void)pb_printer_pin(c, "PB8", 0); return; }
@@ -620,18 +738,18 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
             return;
         }
         if (c->tbp_exec_stage == 3u) {
-            if (c->emergency_abort_requested) { (void)pb_printer_pin(c, "PB11", 0); return; }
+            if (c->emergency_abort_requested) { pb_heater_off(c); return; }
             if (c->tbp_exec_slice < slices) {
                 unsigned on = (unsigned)burn / slices + (c->tbp_exec_slice < ((unsigned)burn % slices));
                 c->tbp_exec_slice++;
                 if (on) {
                     if (c->emergency_abort_requested) return;
                     (void)pb_printer_pin(c, "PB11", 1);
-                    if (c->emergency_abort_requested) { (void)pb_printer_pin(c, "PB11", 0); return; }
+                    if (c->emergency_abort_requested) { pb_heater_off(c); return; }
                     pb_wait_us(c, on);
                     (void)pb_printer_pin(c, "PB11", 0);
                 }
-                if (c->tbp_exec_slice < slices) pb_wait_us(c, 100u);
+                if (c->tbp_exec_slice < slices) pb_wait_us(c, PB_TBP_GUARD_US);
                 return;
             }
             (void)pb_printer_pin(c, "PB11", 0);
@@ -710,10 +828,17 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         return 1;
     }
     c->last_feed = pb_now(c);
+    c->tbp_last_frame_ms = c->last_feed;
     if (op == 0x01u) {
-        uint8_t info[38] = {1, 0, 0, 0, 0, 1, 0x80, PB_TBP_QUEUE_DEPTH, PB_TBP_QUEUE_DEPTH, 0x03,
-                            0xE8, 0x03, 0xE8, 0, 1, 0x17, 0x70, 0, 100, 0x03, 0xE8, 0x75,
-                            0x30, 0x0B, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        uint8_t info[38] = {1, 0, 0, 0, 0, 1, 0x80, PB_TBP_QUEUE_DEPTH, PB_TBP_QUEUE_DEPTH,
+                            0x03, 0xE8, 0x03, 0xE8,
+                            (uint8_t)(PB_TBP_BURN_TICK_US >> 8), (uint8_t)PB_TBP_BURN_TICK_US,
+                            (uint8_t)(PB_TBP_BURN_MAX_US >> 8), (uint8_t)PB_TBP_BURN_MAX_US,
+                            (uint8_t)(PB_TBP_GUARD_US >> 8), (uint8_t)PB_TBP_GUARD_US,
+                            (uint8_t)(PB_TBP_DUTY_WINDOW_MS >> 8), (uint8_t)PB_TBP_DUTY_WINDOW_MS,
+                            (uint8_t)(PB_TBP_DUTY_MAX_US >> 8), (uint8_t)PB_TBP_DUTY_MAX_US,
+                            (uint8_t)(PB_TBP_SHIFT_US >> 8), (uint8_t)PB_TBP_SHIFT_US,
+                            0xFF, 0xFF, 0xFF, 0xFF, PB_TBP_SENSOR_CAPS, 0, 0, 0, 0, 0, 0, 0, 0};
         if (len != 1 || raw[3] != 1) {
             pb_tbp_err(c, id, 4, 1);
             return 1;
@@ -721,6 +846,11 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         pb_tbp_cancel_work(c, 5u);
         c->tbp_stopped = 0;
         c->emergency_abort_requested = 0;
+        c->tbp_hb_interval_ms = 0;
+        c->tbp_idle_hold_ms = 0;
+        c->tbp_link_timeout_ms = 0;
+        c->tbp_last_frame_ms = pb_now(c);
+        c->tbp_last_hb_ms = c->tbp_last_frame_ms;
         c->tbp_active = 1;
         c->tbp_next_id = (uint8_t)(id + 1u);
         if (!c->tbp_next_id)
@@ -733,7 +863,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         c->led_mode = 1;
         c->led_phase = 0;
         c->led_change_ms = pb_now(c);
-        (void)pb_printer_pin(c, "PB11", 0);
+        pb_heater_off(c);
         {
             uint8_t ack = 0;
             pb_tbp_send(c, id, 0x81u, &ack, 1);
@@ -751,7 +881,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         pb_tbp_send(c, id, 0x81u, &ack, 1);
         c->tbp_stopped = 1;
         c->emergency_abort_requested = 1;
-        (void)pb_printer_pin(c, "PB11", 0);
+        pb_heater_off(c);
         c->step_active = 0;
         c->step_done_pending = 0;
         pb_tbp_status(c, id, 3u, done, sizeof done);
@@ -785,7 +915,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         return 1;
     }
     if (op == 0x02u) {
-        uint8_t stat[13] = {0, 0, 1, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0};
+        uint8_t stat[13];
         uint8_t lastid = c->tbp_last_terminal_valid ? c->tbp_last_terminal_id : 0;
         if (len) {
             pb_tbp_err(c, id, 4, 0);
@@ -796,12 +926,8 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             uint8_t ack = pb_tbp_used(c);
             pb_tbp_send(c, id, 0x81u, &ack, 1);
         }
-        stat[0] = c->tbp_stopped ? 3u : (pb_tbp_used(c) ? 2u : 1u);
-        stat[1] = pb_tbp_used(c);
-        stat[2] = PB_TBP_QUEUE_DEPTH;
+        pb_tbp_build_stat(c, stat);
         stat[4] = lastid;
-        if (pb_all_outputs(c, pb_motor_pins, 4))
-            stat[12] |= 4u;
         pb_tbp_status(c, id, 3, stat, sizeof stat);
         return 1;
     }
@@ -811,33 +937,54 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         pb_tbp_accept(c, id);
         ack = pb_tbp_used(c);
         pb_tbp_send(c, id, 0x81u, &ack, 1);
-        (void)pb_printer_pin(c, "PB11", 0);
+        pb_heater_off(c);
         pb_tbp_status(c, id, 3u, done, sizeof done);
         pb_tbp_cancel_work(c, 1u);
         return 1;
     }
     if (op == 0x04u) {
-        uint16_t value;
+        uint16_t value, effective;
+        uint8_t key;
         if (len != 3) {
             pb_tbp_err(c, id, 4, 3);
             return 1;
         }
+        key = raw[3];
         value = (uint16_t)(((uint16_t)raw[4] << 8) | raw[5]);
-        if ((raw[3] == 1u && value != 0u && (value < 100u || value > 60000u)) ||
-            (raw[3] == 3u && value != 0u && (value < 500u || value > 60000u)) || raw[3] < 1u ||
-            raw[3] > 3u) {
+        if (key == 1u) {
+            if (value && (value < 100u || value > 60000u)) {
+                pb_tbp_err(c, id, 5, 1);
+                return 1;
+            }
+            effective = value;
+        } else if (key == 2u) {
+            if (value != 0u) {
+                pb_tbp_err(c, id, 5, 1);
+                return 1;
+            }
+            effective = 0u;
+        } else if (key == 3u) {
+            if (value && (value < 500u || value > 60000u)) {
+                pb_tbp_err(c, id, 5, 1);
+                return 1;
+            }
+            effective = value;
+        } else {
             pb_tbp_err(c, id, 5, 0);
             return 1;
         }
         pb_tbp_accept(c, id);
+        if (key == 1u) { c->tbp_hb_interval_ms = effective; c->tbp_last_hb_ms = pb_now(c); }
+        if (key == 2u) c->tbp_idle_hold_ms = effective;
+        if (key == 3u) { c->tbp_link_timeout_ms = effective; c->tbp_last_frame_ms = pb_now(c); }
         {
             uint8_t ack = pb_tbp_used(c);
             pb_tbp_send(c, id, 0x81u, &ack, 1);
         }
         body[0] = 3;
-        body[1] = raw[3];
-        body[2] = raw[4];
-        body[3] = raw[5];
+        body[1] = key;
+        body[2] = (uint8_t)(effective >> 8);
+        body[3] = (uint8_t)effective;
         pb_tbp_status(c, id, 3, body, 4);
         return 1;
     }
@@ -846,7 +993,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             pb_tbp_err(c, id, 4, 1);
             return 1;
         }
-        if (pb_tbp_used(c)) {
+        if (pb_tbp_used(c) || c->step_active || (raw[3] && !c->tbp_idle_hold_ms)) {
             pb_tbp_err(c, id, 9, 0);
             return 1;
         }
@@ -856,14 +1003,10 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             pb_tbp_send(c, id, 0x81u, &ack, 1);
         }
         if (raw[3]) {
-            pb_printer_outputs_init(c);
+            pb_motor_outputs_init(c);
             pb_drive_motor_phase(c, c->step_phase & 7u);
         } else {
-            for (i = 0; i < 4; i++) {
-                int k = pb_pin(pb_motor_pins[i]);
-                if (k >= 0)
-                    pb_safe_pin(c, (unsigned)k);
-            }
+            pb_motor_outputs_release(c);
         }
         body[0] = 3;
         pb_tbp_status(c, id, 3, body, 1);
@@ -884,10 +1027,21 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         steps = (int8_t)raw[53];
         period = (uint16_t)(((uint16_t)raw[54] << 8) | raw[55]);
         slices = raw[56];
-        if (burn > 6000u || slices < 1u ||
-            slices > (steps ? (unsigned)(steps < 0 ? -steps : steps) : 1u) ||
-            (steps && period < 1000u)) {
-            pb_tbp_err(c, id, 5, steps ? 51 : 48);
+        if (burn > PB_TBP_BURN_MAX_US) {
+            pb_tbp_err(c, id, 5, 48);
+            return 1;
+        }
+        if (slices < 1u ||
+            slices > (steps ? (unsigned)(steps < 0 ? -steps : steps) : 1u)) {
+            pb_tbp_err(c, id, 5, 53);
+            return 1;
+        }
+        if (steps && period < PB_TBP_MIN_PERIOD_US) {
+            pb_tbp_err(c, id, 5, 51);
+            return 1;
+        }
+        if (steps && c->step_active && !c->tbp_running) {
+            pb_tbp_err(c, id, 9, 0);
             return 1;
         }
         for (j = 0; j < 48; j++) if (raw[3 + j]) any = 1;
@@ -919,8 +1073,12 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         steps = (int32_t)(((uint32_t)raw[3] << 24) | ((uint32_t)raw[4] << 16) |
                           ((uint32_t)raw[5] << 8) | raw[6]);
         period = (uint16_t)(((uint16_t)raw[7] << 8) | raw[8]);
-        if (!steps || steps > 10000 || steps < -10000 || period < 1000u) {
-            pb_tbp_err(c, id, 5, 0);
+        if (!steps || steps > 10000 || steps < -10000 || period < PB_TBP_MIN_PERIOD_US) {
+            pb_tbp_err(c, id, 5, period < PB_TBP_MIN_PERIOD_US ? 4u : 0u);
+            return 1;
+        }
+        if (c->step_active && !c->tbp_running) {
+            pb_tbp_err(c, id, 9, 0);
             return 1;
         }
         if (pb_tbp_used(c) >= PB_TBP_QUEUE_DEPTH) {
@@ -946,6 +1104,10 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         ms = (uint16_t)(((uint16_t)raw[3] << 8) | raw[4]);
         if (!ms) {
             pb_tbp_err(c, id, 5, 0);
+            return 1;
+        }
+        if (c->step_active && !c->tbp_running) {
+            pb_tbp_err(c, id, 9, 0);
             return 1;
         }
         if (!pb_tbp_enqueue(c, id, op, raw + 3, len)) {
@@ -1041,9 +1203,25 @@ static void pb_poll(pb_core *c) {
     pb_power_led_poll(c, now);
     if (c->step_done_pending) {
         c->step_done_pending = 0;
-        if (!c->tbp_running) pb_reply(c, "!step done");
+        if (!c->tbp_running) {
+            pb_reply(c, "!step done");
+            if (!pb_tbp_used(c) && !c->tbp_idle_hold_ms) pb_motor_outputs_release(c);
+        }
     }
     pb_tbp_exec_poll(c, now);
+    if (c->tbp_active && c->tbp_link_timeout_ms && pb_tbp_used(c) &&
+        (uint32_t)(now - c->tbp_last_frame_ms) >= c->tbp_link_timeout_ms) {
+        c->tbp_last_frame_ms = now;
+        pb_tbp_cancel_work(c, 4u);
+    }
+    if (c->tbp_active && c->tbp_hb_interval_ms &&
+        (uint32_t)(now - c->tbp_last_hb_ms) >= c->tbp_hb_interval_ms) {
+        uint8_t event[14];
+        event[0] = 1u;
+        pb_tbp_build_stat(c, event + 1);
+        pb_tbp_send(c, 0u, 0x84u, event, sizeof event);
+        c->tbp_last_hb_ms = now;
+    }
     unsigned i, port = c->pollport++ % 4;
     int anyout = 0;
     for (i = 0; i < PB_NPINS; i++) {
@@ -1073,6 +1251,7 @@ static void pb_poll(pb_core *c) {
             pb_reply(c, "#wdg trip");
         pb_reply(c, "!wdg");
         c->last_feed = now;
+        c->wdg = 0;
     }
 }
 #endif

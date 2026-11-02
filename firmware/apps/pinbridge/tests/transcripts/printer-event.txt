@@ -1,4 +1,4 @@
-# PEVENT: shift + latch + heat + async half-steps in one round trip.
+# PEVENT: heatless shift + latch + async half-steps; nonzero heat is fail-closed.
 > MOD PB8 lo
 < ok
 > MOD PB9 lo
@@ -16,23 +16,26 @@
 > MOD PC2 lo
 < ok
 # 2 steps: phase 0 -> 2 {0,1,0,1}
-> PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 2000 2
+> PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 0 2
 < ok event
 @advance 30
 < !step done
-@hw PA9=lo PA10=hi PC3=lo PC2=hi
+@hw PA9=hiz PA10=hiz PC3=hiz PC2=hiz
 # Continues from remembered phase 2 -> 4 {1,0,0,1}
-> PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 2000 2
+> PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 0 2
 < ok event
 @advance 30
 < !step done
-@hw PA9=hi PA10=lo PC3=lo PC2=hi
+@hw PA9=hiz PA10=hiz PC3=hiz PC2=hiz
 # 0 steps leaves the motor alone
 > PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 0 0 0 0 0
 < ok event
+> PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 2000 0
+< err bsy PEVENT
+@hw PB11=lo
 > PSTEPSTAT
 < ok done
-@hw PA9=hi PA10=lo PC3=lo PC2=hi
+@hw PA9=hiz PA10=hiz PC3=hiz PC2=hiz
 # Argument checks
 > PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 6001 2
 < err arg PEVENT
@@ -45,5 +48,5 @@
 # Refuses (after waiting) while a long PSTEP is still running
 > PSTEP FWD 400 4000 1000
 < ok started
-> PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 2000 2
-< err bsy PSTEP
+> PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 0 2
+< err bsy PEVENT

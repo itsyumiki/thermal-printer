@@ -129,6 +129,52 @@ describe("TBP fake-transport retry behavior", () => {
     expect(link.state).toBe("connected");
   });
 
+  test("blocks heater-bearing rows when firmware advertises no validated sensors or limits", async () => {
+    const { link, count } = fakeLink(() => {});
+    link.info = {
+      queueDepth: 4,
+      maxWindow: 4,
+      burnTickUs: 0,
+      burnMaxUs: 0,
+      guardUs: 0,
+      dutyWindowMs: 0,
+      dutyMaxUs: 0,
+      shiftUs: 0,
+      tempLimitRaw: 65535,
+      battMinRaw: 65535,
+      caps: 0,
+    } as any;
+    await expect(link.command("row", { burnUs: 1500 })).rejects.toThrow(
+      "Heating disabled",
+    );
+    expect(count()).toBe(0);
+  });
+
+  test("blocks indefinite coil hold when thermal limits are unavailable", async () => {
+    const { link, count } = fakeLink(() => {});
+    await expect(link.command("coils", { enabled: true })).rejects.toThrow(
+      "Coil hold disabled",
+    );
+    expect(count()).toBe(0);
+  });
+
+  test("allows heatless row/feed tests without advertising heater capability", async () => {
+    const { link, count } = fakeLink((wire, _n, current) => {
+      const frame = decode(wire);
+      ack(current, frame.id);
+      done(current, frame.id);
+    });
+    link.info = { queueDepth: 4, maxWindow: 4, burnMaxUs: 0, caps: 0 } as any;
+    const result = await link.command("row", {
+      burnUs: 0,
+      steps: 0,
+      periodUs: 1000,
+      slices: 1,
+    });
+    expect(result.done).toBe(true);
+    expect(count()).toBe(1);
+  });
+
   test("retries a rejected sequence at the printer's expected ID", async () => {
     const sent: string[] = [];
     const { link, count } = fakeLink((wire, n, current) => {

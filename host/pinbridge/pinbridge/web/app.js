@@ -37,15 +37,15 @@ function applyStatus(s){state.connected=!!s.connected;state.pinStatus={};$("devi
 function applyPrinter(p){
  const live=!!(p&&state.connected),setTile=(id,active,warning=false)=>{const el=$(id);el.classList.toggle("active-signal",live&&!!active&&!warning);el.classList.toggle("warn-signal",live&&!!warning);el.classList.toggle("unknown-signal",!live)};
  const poll=$("printerPollState");poll.classList.toggle("live",live);poll.innerHTML="<i></i> "+(live?"Live · 1 second poll":"Waiting for device");
- $("paperStatus").textContent=!live?"—":p.paper_level==null?"Reading…":p.paper_present?"Paper present":"Paper empty";
+ $("paperStatus").textContent=!live?"—":!p.paper_sensor_validated?"Unverified":p.paper_level==null?"Reading…":p.paper_present?"Paper present":"Paper empty";
  $("buttonStatus").textContent=!live?"—":p.power_button_level==null?"Reading…":p.power_button_pressed?"Pressed":"Released";
  $("latchStatus").textContent=!live?"—":p.power_latched?"Power ON":"Power OFF";
  const head=p&&p.head_sensor,battery=p&&p.battery_sensor;
- $("headTempStatus").textContent=live&&head?head.mv+" mV signal":live?"Waiting for ADC":"—";
- $("headTempDetail").textContent=live&&head?"PC4 raw count: "+head.raw:"Raw ADC / sensor voltage";
- $("batteryStatus").textContent=live&&battery?battery.mv+" mV at pin":live?"Waiting for ADC":"—";
- $("batteryDetail").textContent=live&&battery?"PC5 raw count: "+battery.raw:"Raw ADC / divider voltage";
- setTile("paperTile",p&&p.paper_present,p&&p.paper_level===1);setTile("buttonTile",p&&p.power_button_pressed);setTile("latchTile",p&&p.power_latched);setTile("headTile",head);setTile("batteryTile",battery);
+ $("headTempStatus").textContent=!live?"—":!p.head_sensor_validated?"Unverified":head?head.mv+" mV signal":"Sensor unavailable";
+ $("headTempDetail").textContent=live&&!p.head_sensor_validated?"PC4 raw ADC only; not a temperature reading":head?"PC4 raw count: "+head.raw:"Sensor reading unavailable";
+ $("batteryStatus").textContent=!live?"—":!p.battery_sensor_validated?"Unverified":battery?battery.mv+" mV at pin":"Sensor unavailable";
+ $("batteryDetail").textContent=live&&!p.battery_sensor_validated?"PC5 raw ADC only; not calibrated battery voltage":battery?"PC5 raw count: "+battery.raw:"Sensor reading unavailable";
+ setTile("paperTile",p&&p.paper_present,live&&!p.paper_sensor_validated);setTile("buttonTile",p&&p.power_button_pressed);setTile("latchTile",p&&p.power_latched);setTile("headTile",head,live&&!p.head_sensor_validated);setTile("batteryTile",battery,live&&!p.battery_sensor_validated);
  $("latchTile").classList.toggle("is-on",!!(live&&p.power_latched));$("latchTile").disabled=!live;
 }
 function modesFor(pin){const c=pin.caps||[],a=[["hiz","High impedance"]];if(c.includes("in"))a.push(["in","Input"]);if(c.includes("pu"))a.push(["up","Pull-up"]);if(c.includes("pd"))a.push(["dn","Pull-down"]);if(c.includes("adc"))a.push(["adc","Analog input (ADC)"]);if(c.includes("out"))a.push(["lo","Output LOW"],["hi","Output HIGH"]);return a}

@@ -73,10 +73,15 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
         result = await self.send({"action": "printer_poll"})
         self.assertEqual(result["type"], "printer_status")
         printer = result["printer"]
-        self.assertTrue(printer["paper_present"])
+        self.assertIsNone(printer["paper_present"])
+        self.assertFalse(printer["paper_sensor_validated"])
         self.assertFalse(printer["power_button_pressed"])
-        self.assertEqual(printer["head_sensor"], {"raw": 512, "mv": 1650})
-        self.assertEqual(printer["battery_sensor"], {"raw": 620, "mv": 2000})
+        self.assertIsNone(printer["head_sensor"])
+        self.assertFalse(printer["head_sensor_validated"])
+        self.assertEqual(printer["head_adc_raw"], {"raw": 512, "mv": 1650})
+        self.assertIsNone(printer["battery_sensor"])
+        self.assertFalse(printer["battery_sensor_validated"])
+        self.assertEqual(printer["battery_adc_raw"], {"raw": 620, "mv": 2000})
         modes = {p["name"]: p["mode"] for p in result["status"]["pins"]}
         self.assertEqual(modes["PC4"], "adc")
         self.assertEqual(modes["PC5"], "adc")
@@ -144,6 +149,39 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(rejected["type"], "error", key)
             self.assertIn(key, rejected["message"])
         self.assertEqual(len(commands), 1)
+
+    async def test_real_printer_actions_fail_closed_for_heating_and_heater_gpio(self):
+        await self.send({"action": "connect"})
+        self.backend.mock = False
+        commands = []
+
+        async def command(line):
+            commands.append(line)
+            return ["ok"]
+
+        self.backend._command = command
+        heat = await self.send({
+            "action": "printer", "confirm": "printer", "op": "heat", "pulse_us": 1000,
+        })
+        self.assertEqual(heat["type"], "error")
+        self.assertIn("Heating disabled", heat["message"])
+        row = "00" * 48
+        event = await self.send({
+            "action": "printer", "confirm": "printer", "op": "event", "data_hex": row,
+            "bit_delay_us": 2, "data_hold_us": 1, "latch_us": 2, "heat_us": 2000, "steps": 2,
+        })
+        self.assertEqual(event["type"], "error")
+        self.assertIn("Heating disabled", event["message"])
+        mode = await self.send({"action": "mode", "pin": "PB11", "mode": "hi", "confirm": "PB11"})
+        self.assertEqual(mode["type"], "error")
+        self.assertIn("heater gate", mode["message"])
+        high_z = await self.send({"action": "mode", "pin": "PB11", "mode": "hiz", "confirm": "PB11"})
+        self.assertEqual(high_z["type"], "error")
+        self.assertIn("heater gate", high_z["message"])
+        value = await self.send({"action": "set", "pin": "PB11", "value": 1, "confirm": "PB11"})
+        self.assertEqual(value["type"], "error")
+        self.assertIn("heater gate", value["message"])
+        self.assertEqual(commands, [])
 
     async def test_stepper_action_waits_for_async_firmware_completion(self):
         await self.send({"action": "connect"})

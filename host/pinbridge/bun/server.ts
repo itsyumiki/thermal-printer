@@ -149,12 +149,12 @@ export class PrinterLink {
         maxWindow: 4,
         minPeriodUs: 1000,
         stepTickUs: 1000,
-        burnTickUs: 1,
-        burnMaxUs: 6000,
-        guardUs: 100,
+        burnTickUs: 0,
+        burnMaxUs: 0,
+        guardUs: 0,
         dutyWindowMs: 0,
         dutyMaxUs: 0,
-        shiftUs: 3000,
+        shiftUs: 0,
         tempLimitRaw: 65535,
         battMinRaw: 65535,
         caps: 0,
@@ -166,10 +166,10 @@ export class PrinterLink {
         queueDepth: 4,
         runningId: 0,
         lastTerminalId: 0,
-        headTempRaw: 310,
-        batteryRaw: 512,
-        batteryMv: 3800,
-        paper: 1,
+        headTempRaw: 65535,
+        batteryRaw: 65535,
+        batteryMv: 65535,
+        paper: 255,
         flags: 0,
       };
       this.lastError = "";
@@ -546,6 +546,28 @@ export class PrinterLink {
     const frame = await promise;
     return frame;
   }
+  private requireHeatReady(burnUs: number) {
+    if (burnUs <= 0 || this.mock) return;
+    const i = this.info;
+    const requiredSensors = 0x01 | 0x02 | 0x08;
+    if (
+      !i ||
+      i.burnMaxUs <= 0 ||
+      burnUs > i.burnMaxUs ||
+      i.burnTickUs <= 0 ||
+      i.guardUs <= 0 ||
+      i.dutyWindowMs <= 0 ||
+      i.dutyMaxUs <= 0 ||
+      i.shiftUs <= 0 ||
+      i.tempLimitRaw === 0xffff ||
+      i.battMinRaw === 0xffff ||
+      (i.caps & requiredSensors) !== requiredSensors
+    ) {
+      throw new Error(
+        "Heating disabled: firmware has no validated temperature, battery, and paper sensors or calibrated heater/duty limits; use burnUs=0 for heatless feed tests.",
+      );
+    }
+  }
   async command(action: string, msg: any) {
     switch (action) {
       case "ports":
@@ -603,6 +625,7 @@ export class PrinterLink {
         const burn = Number(msg.burnUs ?? 1500),
           steps = Number(msg.steps ?? 8),
           period = Number(msg.periodUs ?? 6000);
+        this.requireHeatReady(burn);
         const timeout = Math.min(
           30000,
           Math.ceil((Math.abs(steps) * period) / 1000) + 5000,
@@ -619,6 +642,7 @@ export class PrinterLink {
         const rows = Math.max(1, Math.min(500, Number(msg.rows ?? 24)));
         const burn = Number(msg.burnUs ?? 1500);
         const period = Number(msg.periodUs ?? 6000);
+        this.requireHeatReady(burn);
         this.stopRequested = false;
         let sent = 0;
         for (let i = 0; i < rows; i++) {
@@ -648,6 +672,11 @@ export class PrinterLink {
         return { queued: true, rows: sent, stopped: this.stopRequested };
       }
       case "coils":
+        if (msg.enabled && !this.mock) {
+          throw new Error(
+            "Coil hold disabled until motor-coil thermal limits are measured; motion commands release coils automatically.",
+          );
+        }
         await this.transact(OP.COILS, Uint8Array.of(msg.enabled ? 1 : 0), true);
         return {};
       case "config":

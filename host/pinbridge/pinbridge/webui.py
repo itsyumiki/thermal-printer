@@ -229,8 +229,8 @@ class WebBackend:
 
                 def poll_printer():
                     with self.board_lock:
-                        # Keep the two digital sensors in their measured modes and
-                        # the two analog sensor nets connected to the SDK ADC scanner.
+                        # Expose raw GPIO/ADC readings only; PB3/PC4/PC5 sensor
+                        # mappings are unvalidated and must not be treated as safety inputs.
                         self.board.command("MOD PB1 up")
                         self.board.command("MOD PB3 in")
                         self.board.command("MOD PC4 adc")
@@ -267,16 +267,21 @@ class WebBackend:
                     "type": "printer_status",
                     "status": status,
                     "printer": {
-                        "paper_present": levels.get("PB3") == 0,
+                        "paper_present": None,
                         "paper_level": levels.get("PB3"),
+                        "paper_sensor_validated": False,
                         "power_button_pressed": levels.get("PB1") == 0,
                         "power_button_level": levels.get("PB1"),
                         "power_latched": any(
                             p["name"] == "PA1" and p["value"] == 1
                             for p in status["pins"]
                         ),
-                        "head_sensor": readings.get("PC4"),
-                        "battery_sensor": readings.get("PC5"),
+                        "head_sensor": None,
+                        "head_sensor_validated": False,
+                        "head_adc_raw": readings.get("PC4"),
+                        "battery_sensor": None,
+                        "battery_sensor_validated": False,
+                        "battery_adc_raw": readings.get("PC5"),
                     },
                 }
             except Exception as exc:
@@ -335,31 +340,36 @@ class WebBackend:
                     data = str(msg.get("data_hex", ""))
                     if len(data) != 96 or any(ch not in "0123456789abcdefABCDEF" for ch in data):
                         raise ValueError("data_hex must contain exactly 96 hexadecimal characters (48 bytes)")
-                    bit_us = integer("bit_delay_us", 0, 1000)
-                    hold_us = integer("data_hold_us", 0, 1000)
+                    bit_us = integer("bit_delay_us", 0, 10)
+                    hold_us = integer("data_hold_us", 0, 10)
                     line = f"PHEAD {data} {bit_us} {hold_us}"
                 elif op == "event":
                     # One round trip: shift + latch + heat + async forward half-steps.
                     data = str(msg.get("data_hex", ""))
                     if len(data) != 96 or any(ch not in "0123456789abcdefABCDEF" for ch in data):
                         raise ValueError("data_hex must contain exactly 96 hexadecimal characters (48 bytes)")
-                    bit_us = integer("bit_delay_us", 0, 1000)
-                    hold_us = integer("data_hold_us", 0, 1000)
+                    bit_us = integer("bit_delay_us", 0, 10)
+                    hold_us = integer("data_hold_us", 0, 10)
                     latch_us = integer("latch_us", 0, 1000)
                     heat_us = integer("heat_us", 0, 6000)
                     steps = integer("steps", 0, 8)
+                    if heat_us and not self.mock:
+                        raise ValueError("Heating disabled: sensor mappings and calibrated heater/duty limits are unavailable.")
                     line = f"PEVENT {data} {bit_us} {hold_us} {latch_us} {heat_us} {steps}"
                 elif op == "latch":
                     line = f"PLATCH {integer('pulse_us', 0, 1000)}"
                 elif op == "heat":
-                    line = f"PHEAT {integer('pulse_us', 0, 6000)}"
+                    pulse_us = integer("pulse_us", 0, 6000)
+                    if not self.mock:
+                        raise ValueError("Heating disabled: sensor mappings and calibrated heater/duty limits are unavailable.")
+                    line = f"PHEAT {pulse_us}"
                 elif op == "step":
                     direction = str(msg.get("direction", "")).upper()
                     if direction not in {"FWD", "REV"}:
                         raise ValueError("direction must be FWD or REV")
-                    count = integer("count", 0, 60000)
-                    inter = integer("inter_step_us", 0, 60000000)
-                    dwell = integer("coil_on_us", 0, 60000000)
+                    count = integer("count", 0, 10000)
+                    inter = integer("inter_step_us", 0, 1000000)
+                    dwell = integer("coil_on_us", 1000, 65535)
                     if count * (((inter + 999) // 1000) + max(1, (dwell + 999) // 1000)) > 60000:
                         raise ValueError("rounded 1 ms step timing must be <= 60,000 ms")
                     line = f"PSTEP {direction} {count} {inter} {dwell}"
@@ -402,6 +412,8 @@ class WebBackend:
                 valid = {"hiz", "in", "up", "dn", "lo", "hi", "adc"}
                 if mode not in valid:
                     return {"type": "error", "message": "Unsupported mode."}
+                if pin == "PB11" and mode != "lo":
+                    return {"type": "error", "message": "PB11 is the heater gate and must remain driven LOW while validated sensors and heater limits are unavailable."}
                 spec = next(p for p in PINS if p[0] == pin)
                 need = {
                     "in": "in",
@@ -443,6 +455,8 @@ class WebBackend:
             elif action == "set":
                 value = 1 if msg.get("value") in (1, True, "1", "HIGH", "high") else 0
                 spec = next(p for p in PINS if p[0] == pin)
+                if pin == "PB11" and value == 1:
+                    return {"type": "error", "message": "PB11 is the heater gate and cannot be driven high while validated sensors and heater limits are unavailable."}
                 if "out" not in spec[3]:
                     return {
                         "type": "error",
