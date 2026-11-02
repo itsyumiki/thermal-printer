@@ -32,7 +32,7 @@ type Pending = {
   retries: number;
   retry?: () => void;
 };
-class PrinterLink {
+export class PrinterLink {
   serial: SerialPort | null = null;
   parser: ReadlineParser | null = null;
   path = "";
@@ -561,100 +561,103 @@ class PrinterLink {
     this.pending.clear();
   }
 }
-const link = new PrinterLink();
-const mime: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".svg": "image/svg+xml",
-};
-const server = Bun.serve<{ client?: Client }>({
-  hostname: host,
-  port,
-  async fetch(req, server) {
-    const url = new URL(req.url);
-    if (url.pathname === "/ws") {
-      if (server.upgrade(req, { data: {} })) return;
-      return new Response("WebSocket upgrade failed", { status: 400 });
-    }
-    if (url.pathname === "/api/status")
-      return Response.json({
-        state: link.state,
-        path: link.path,
-        info: link.info,
-        status: link.status,
-        error: link.lastError,
-      });
-    if (url.pathname === "/api/ports") return Response.json(await link.ports());
-    const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-    const path = resolve(root, rel);
-    if (!path.startsWith(root + "/") && !path.startsWith(root))
-      return new Response("Not found", { status: 404 });
-    if (!existsSync(path)) return new Response("Not found", { status: 404 });
-    return new Response(readFileSync(path), {
-      headers: {
-        "content-type": mime[extname(path)] ?? "application/octet-stream",
-        "cache-control": "no-cache",
-      },
-    });
-  },
-  websocket: {
-    open(ws) {
-      const client = { send: (s: string) => ws.send(s) };
-      ws.data.client = client;
-      link.clients.add(client);
-      ws.send(
-        JSON.stringify({
-          type: "snapshot",
+if (import.meta.main) {
+  const link = new PrinterLink();
+  const mime: Record<string, string> = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".svg": "image/svg+xml",
+  };
+  const server = Bun.serve<{ client?: Client }>({
+    hostname: host,
+    port,
+    async fetch(req, server) {
+      const url = new URL(req.url);
+      if (url.pathname === "/ws") {
+        if (server.upgrade(req, { data: {} })) return;
+        return new Response("WebSocket upgrade failed", { status: 400 });
+      }
+      if (url.pathname === "/api/status")
+        return Response.json({
           state: link.state,
           path: link.path,
           info: link.info,
           status: link.status,
           error: link.lastError,
-        }),
-      );
+        });
+      if (url.pathname === "/api/ports")
+        return Response.json(await link.ports());
+      const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+      const path = resolve(root, rel);
+      if (!path.startsWith(root + "/") && !path.startsWith(root))
+        return new Response("Not found", { status: 404 });
+      if (!existsSync(path)) return new Response("Not found", { status: 404 });
+      return new Response(readFileSync(path), {
+        headers: {
+          "content-type": mime[extname(path)] ?? "application/octet-stream",
+          "cache-control": "no-cache",
+        },
+      });
     },
-    message(ws, message) {
-      let msg: any;
-      try {
-        msg = JSON.parse(String(message));
-      } catch {
-        return;
-      }
-      if (msg.action === "connect") link.connectWanted = true;
-      void link
-        .command(String(msg.action ?? ""), msg)
-        .then((result) =>
-          ws.send(
-            JSON.stringify({
-              type: "result",
-              requestId: msg.requestId,
-              action: msg.action,
-              ...result,
-            }),
-          ),
-        )
-        .catch((e) =>
-          ws.send(
-            JSON.stringify({
-              type: "result",
-              requestId: msg.requestId,
-              action: msg.action,
-              error: e instanceof Error ? e.message : String(e),
-            }),
-          ),
+    websocket: {
+      open(ws) {
+        const client = { send: (s: string) => ws.send(s) };
+        ws.data.client = client;
+        link.clients.add(client);
+        ws.send(
+          JSON.stringify({
+            type: "snapshot",
+            state: link.state,
+            path: link.path,
+            info: link.info,
+            status: link.status,
+            error: link.lastError,
+          }),
         );
+      },
+      message(ws, message) {
+        let msg: any;
+        try {
+          msg = JSON.parse(String(message));
+        } catch {
+          return;
+        }
+        if (msg.action === "connect") link.connectWanted = true;
+        void link
+          .command(String(msg.action ?? ""), msg)
+          .then((result) =>
+            ws.send(
+              JSON.stringify({
+                type: "result",
+                requestId: msg.requestId,
+                action: msg.action,
+                ...result,
+              }),
+            ),
+          )
+          .catch((e) =>
+            ws.send(
+              JSON.stringify({
+                type: "result",
+                requestId: msg.requestId,
+                action: msg.action,
+                error: e instanceof Error ? e.message : String(e),
+              }),
+            ),
+          );
+      },
+      close(ws) {
+        if (ws.data.client) link.clients.delete(ws.data.client);
+      },
     },
-    close(ws) {
-      if (ws.data.client) link.clients.delete(ws.data.client);
-    },
-  },
-});
-await link.start();
-console.log(`Pinbridge host listening on http://${host}:${server.port}`);
-process.on("SIGINT", () => {
-  void link.shutdown().finally(() => process.exit(0));
-});
-process.on("SIGTERM", () => {
-  void link.shutdown().finally(() => process.exit(0));
-});
+  });
+  await link.start();
+  console.log(`Pinbridge host listening on http://${host}:${server.port}`);
+  process.on("SIGINT", () => {
+    void link.shutdown().finally(() => process.exit(0));
+  });
+  process.on("SIGTERM", () => {
+    void link.shutdown().finally(() => process.exit(0));
+  });
+}
