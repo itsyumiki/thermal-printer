@@ -8,11 +8,17 @@ import time
 from .pins_gen import CFG_HASH, PINS
 from .protocol import *
 
+# Distinguishes "no reply queued" from a legitimately empty reply line.
+_NO_REPLY = object()
+
 
 class Board:
     def __init__(self, port=None, *, timeout=0.5, serial_obj=None):
         self.port, self.timeout, self.serial = port, timeout, serial_obj
         self._lock = threading.Lock()
+        # Guards _events and wakes command() the moment the reader thread queues a reply
+        # (instead of polling with sleep, which cost >= 5 ms per command).
+        self._cond = threading.Condition()
         self._events = []
         self._reader = None
         self._stop = threading.Event()
@@ -46,7 +52,9 @@ class Board:
             raise ProtocolError(f"unsupported protocol version {data[0]}")
         self.up = int(data[3].split("=", 1)[1])
         self._keepalive_stop.clear()
-        self._keepalive_thread = threading.Thread(target=self._keepalive_loop, daemon=True, name="pinbridge-keepalive")
+        self._keepalive_thread = threading.Thread(
+            target=self._keepalive_loop, daemon=True, name="pinbridge-keepalive"
+        )
         self._keepalive_thread.start()
         return self
 
@@ -80,9 +88,12 @@ class Board:
                 if self.on_event:
                     self.on_event(event)
                 else:
-                    self._events.append(event)
+                    with self._cond:
+                        self._events.append(event)
             else:
-                self._events.append(("reply", line))
+                with self._cond:
+                    self._events.append(("reply", line))
+                    self._cond.notify_all()
 
     def command(self, line):
         if self._reset:
@@ -90,22 +101,33 @@ class Board:
         with self._lock:
             self.serial.write((line.strip() + "\n").encode("ascii"))
             deadline = time.monotonic() + self.timeout
-            while time.monotonic() < deadline:
-                for i, (kind, val) in enumerate(self._events):
-                    if kind == "reply":
-                        del self._events[i]
-                        parts = parse_reply(val)
-                        if line.strip().upper() == "HEL" and len(parts) >= 3:
-                            newup = int(parts[3].split("=", 1)[1])
-                            if self.up is not None and newup < self.up:
-                                self._reset = True
-                                if self.on_event:
-                                    self.on_event(("reset", newup))
-                                raise BoardReset("device reboot detected")
-                            self.up = newup
-                        return parts
-                time.sleep(0.005)
-            raise TimeoutError(f"timeout waiting for reply to {line!r}")
+            with self._cond:
+                while True:
+                    val = self._take_reply()
+                    if val is not _NO_REPLY:
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(f"timeout waiting for reply to {line!r}")
+                    self._cond.wait(remaining)
+            parts = parse_reply(val)
+            if line.strip().upper() == "HEL" and len(parts) >= 3:
+                newup = int(parts[3].split("=", 1)[1])
+                if self.up is not None and newup < self.up:
+                    self._reset = True
+                    if self.on_event:
+                        self.on_event(("reset", newup))
+                    raise BoardReset("device reboot detected")
+                self.up = newup
+            return parts
+
+    def _take_reply(self):
+        """Remove and return the oldest queued reply line, or _NO_REPLY. Call with _cond held."""
+        for i, (kind, val) in enumerate(self._events):
+            if kind == "reply":
+                del self._events[i]
+                return val
+        return _NO_REPLY
 
     def mod(self, pin, mode):
         return self.command(f"MOD {self._pin(pin)} {mode}")
