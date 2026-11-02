@@ -21,8 +21,12 @@
 < ok
 > PHEAT 100
 < ok
-> PSTEP FWD 1 100 100
-< ok
+> PSTEP FWD 1 5000 1000
+< ok halfsteps
+@hw PA9=lo PA10=hi PC3=hi PC2=lo
+> PSTEP REV 1 5000 1000
+< ok halfsteps
+@hw PA9=lo PA10=lo PC3=hi PC2=lo
 > PHEAT 6001
 < err arg PHEAT
 > PSTEP SIDE 1 1 1

@@ -228,7 +228,12 @@ static int pb_all_outputs(pb_core *c, const char *const *pins, unsigned n) {
 static void pb_printer_command(pb_core *c, char **v, int n) {
   static const char *const headpins[] = {"PB10", "PB9", "PB8", "PB11"};
   static const char *const motorpins[] = {"PA9", "PA10", "PC3", "PC2"};
-  static const uint8_t phases[4][4] = {{1,0,1,0},{0,1,1,0},{0,1,0,1},{1,0,0,1}};
+  /* Official JieLi AC6956C half-step sequence on PA9, PA10, PC3, PC2.
+   Static firmware trace only; pin polarity and motor wiring remain unverified. */
+  static const uint8_t phases[8][4] = {
+    {0,1,1,0}, {0,1,0,0}, {0,1,0,1}, {0,0,0,1},
+    {1,0,0,1}, {1,0,0,0}, {1,0,1,0}, {0,0,1,0}
+  };
   uint32_t a, b, count, i, j; char *hex;
   if (!c->h.delay_us) { pb_error(c, "bsy", "delay"); return; }
   if (pb_eq(v[0], "PHEAD")) {
@@ -263,15 +268,17 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
   if (pb_eq(v[0], "PSTEP")) {
     int reverse;
     if (n != 5 || (!pb_eq(v[1], "FWD") && !pb_eq(v[1], "REV")) || !pb_u32(v[2], &count) || !pb_u32(v[3], &a) || !pb_u32(v[4], &b) || count > 200 || a > 100000 || b > 100000 || (uint64_t)count * (a+b) > 2000000u || !pb_all_outputs(c, motorpins, 4)) { pb_error(c, "arg", "PSTEP"); return; }
+    /* a=inter-step gap, b=coil-on dwell; nominal phase period is a+b.
+       The busy-wait is approximate, not calibrated to stock firmware timing. */
     reverse = pb_eq(v[1], "REV");
     for (i = 0; i < count; i++) {
-      unsigned phase = reverse ? (3u - ((unsigned)i & 3u)) : ((unsigned)i & 3u);
+      unsigned phase = reverse ? (7u - ((unsigned)i & 7u)) : ((unsigned)i & 7u);
       unsigned k;
       for (k = 0; k < 4; k++) (void)pb_printer_pin(c, motorpins[k], phases[phase][k]);
       pb_wait_us(c, (unsigned)b); /* coil-on dwell */
-      if (i + 1 < count) pb_wait_us(c, (unsigned)a); /* inter-step delay */
+      if (i + 1 < count) pb_wait_us(c, (unsigned)a); /* remaining inter-step gap */
     }
-    pb_reply(c, "ok"); c->last_feed = pb_now(c); return;
+    pb_reply(c, "ok halfsteps"); c->last_feed = pb_now(c); return;
   }
 }
 
