@@ -6,6 +6,11 @@ Status: planning and agent handoffs, 2026-11-02. These documents split the curre
 
 Work one sprint at a time, in order. Before editing, read the sprint handoff, `docs/thermal-protocol-spec.md`, the current source, and the latest `docs/journal.md` entries. Re-check the current branch and working tree; do not assume the repository still matches this plan. Keep each sprint's diff focused. Update its handoff with the commit, checks, known limitations, and exact next step. Do not flash hardware unless the owner explicitly asks. Do not build firmware locally when GitHub Actions can validate it. Never claim hardware behavior from a compile or mock test.
 
+## Latest handoff reports
+
+- [Sprint 0 baseline report](sprint-00-report.md) — commands, test results, implementation gaps, and Sprint 1 blockers.
+- [TBP implementation matrix](../tbp-implementation-matrix.md) — draft-to-code status and known ambiguities.
+
 ## Sprint sequence
 
 | Sprint | Goal | Deliverable / exit gate | Handoff |
