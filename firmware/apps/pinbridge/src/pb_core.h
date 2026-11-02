@@ -251,17 +251,26 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
       unsigned byte;
       if (!pb_hexbyte(hex + i*2, &byte)) { pb_error(c, "hex", "PHEAD"); return; }
     }
-    /* Resolve pin names once; a per-bit name lookup cost ~90 ms per row. */
+    /* Fast path: resolve DATA/CLK once and write the ports directly. Name lookups
+       plus per-write bookkeeping made a row take ~76 ms of pure overhead. */
     int pin_data = pb_pin("PB10"), pin_clk = pb_pin("PB9");
+    unsigned dport = pb_defs[pin_data].port, cport = pb_defs[pin_clk].port;
+    uint16_t dmask = (uint16_t)(1u << pb_defs[pin_data].bit);
+    uint16_t cmask = (uint16_t)(1u << pb_defs[pin_clk].bit);
+    unsigned last = 0;
+    if (!c->h.write_port) { pb_error(c, "mod", "PB10"); return; }
     for (i = 0; i < 48; i++) {
       unsigned byte; (void)pb_hexbyte(hex + i*2, &byte);
       for (j = 0; j < 8; j++) {
-        if (pb_printer_pin_i(c, pin_data, (byte >> j) & 1u) < 0) { pb_error(c, "mod", "PB10"); return; }
+        last = (byte >> j) & 1u;
+        c->h.write_port(c->h.ctx, dport, dmask, last ? dmask : 0);
         pb_wait_us(c, (unsigned)b); /* data setup / hold */
-        (void)pb_printer_pin_i(c, pin_clk, 1); pb_wait_us(c, (unsigned)a);
-        (void)pb_printer_pin_i(c, pin_clk, 0); pb_wait_us(c, (unsigned)a);
+        c->h.write_port(c->h.ctx, cport, cmask, cmask); pb_wait_us(c, (unsigned)a);
+        c->h.write_port(c->h.ctx, cport, cmask, 0); pb_wait_us(c, (unsigned)a);
       }
     }
+    c->pins[pin_data].level = (uint8_t)last; c->pins[pin_data].mode = (uint8_t)(last ? PB_HI : PB_LO);
+    c->pins[pin_clk].level = 0; c->pins[pin_clk].mode = PB_LO;
     pb_reply(c, "ok bits=384"); c->last_feed = pb_now(c); return;
   }
   if (pb_eq(v[0], "PLATCH")) {

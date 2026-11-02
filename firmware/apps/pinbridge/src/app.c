@@ -53,9 +53,11 @@ static int hal_adc(void *ctx,int ch,unsigned *raw,unsigned *mv){
     return 0;
 }
 static uint32_t hal_ms(void *ctx){(void)ctx;return jiffies*10u;}
-/* Approximate busy-wait: assumes ~48 MHz and ~4 cycles per loop iteration.
- * Not a calibrated timer; do not use this as a certified heater safety timer. */
-static void hal_delay_us(void *ctx,unsigned us){volatile unsigned n;(void)ctx;for(n=0;n<us*12u;n++){__asm__ volatile("nop");}}
+/* Busy-wait calibrated on hardware (2026-11-02 --profile): the earlier 12 NOP-loop iterations
+ * per us ran 10.9x too long, i.e. one iteration takes ~0.91 us, so ~1.1 iterations per us.
+ * Still a software loop (not a timer): resolution is ~1 us and ISRs lengthen it slightly.
+ * Do not use it as a certified heater safety timer. */
+static void hal_delay_us(void *ctx,unsigned us){volatile unsigned n;unsigned loops=(us*11u+5u)/10u;(void)ctx;for(n=0;n<loops;n++){__asm__ volatile("nop");}}
 static int hal_tx(void *ctx,const char *s,size_t n){size_t i;u16 free_space;(void)ctx;free_space=(u16)((rd+PB_RING-wr-1)%PB_RING);if(n>free_space){drops++;return -1;}for(i=0;i<n;i++){ring[wr]=(u8)s[i];wr=(u16)((wr+1)%PB_RING);}os_sem_post(&tx_sem);return (int)n;}
 static void tx_task(void *priv){u8 b[64];(void)priv;for(;;){unsigned n=0;while(rd!=wr&&n<sizeof b){b[n++]=ring[rd];rd=(u16)((rd+1)%PB_RING);}if(n){if(!cdc_write_data(PB_USB,b,n)){} }else os_sem_pend(&tx_sem,1);}}
 static void pb_step_timer(void *priv){(void)priv;pb_step_tick(&core);}
