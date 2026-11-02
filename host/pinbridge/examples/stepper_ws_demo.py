@@ -3,7 +3,7 @@
 
 --steps counts half-step transitions. --full-steps is a convenience expressed as
 two half-step transitions per requested full-step angle; the firmware still runs
-the same eight-state table. Timing uses a 100 us hardware-timer interrupt; actual motor speed remains hardware-dependent.
+the same eight-state table. Timing uses a 1 ms nonblocking scheduler; actual motor speed remains hardware-dependent.
 
 This script does not flash firmware or verify hardware. Use an owner-reviewed,
 current-limited motor setup with the thermal head disconnected. The coils are
@@ -75,8 +75,8 @@ def parse_args():
     parser.add_argument(
         "--coil-on-us",
         type=int,
-        default=None,
-        help="requested dwell for each phase in microseconds (default: min(1000 us, requested step period))",
+        default=1000,
+        help="requested dwell for each phase in microseconds (default: 1000)",
     )
     parser.add_argument(
         "--reverse",
@@ -107,11 +107,10 @@ def parse_args():
         parser.error(f"total half-step transitions must be 1..{MAX_HALF_STEPS}")
     if not 1 <= args.rate <= 5000:
         parser.error("--rate must be 1..5000 half-steps per second")
-    period_us = round(1_000_000 / args.rate)
-    if args.coil_on_us is None:
-        args.coil_on_us = min(1000, period_us)
     if not 0 <= args.coil_on_us <= 60_000_000:
         parser.error("--coil-on-us must be 0..60000000")
+
+    period_us = round(1_000_000 / args.rate)
     gap_us = period_us - args.coil_on_us
     if gap_us < 0:
         parser.error("--coil-on-us cannot exceed the requested step period")
@@ -142,7 +141,7 @@ async def run(args, count, count_description, period_us, gap_us):
                 f"requested period={period_us} us; coil dwell={args.coil_on_us} us; "
                 f"inter-step gap={gap_us} us"
             )
-            print("Note: firmware timing is quantized to 100 us ticks; actual motor speed and torque are not hardware-verified.")
+            print("Note: --rate accepts up to 5000, but current firmware timing resolution is 1 ms (about 1000 transitions/s maximum); higher requests need a firmware timing change and reflash. Actual motor speed is not hardware-verified.")
             if args.dry_run:
                 print("dry run: no motor phase or step commands sent")
                 return
