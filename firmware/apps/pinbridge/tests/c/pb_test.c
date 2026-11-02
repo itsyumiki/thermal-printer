@@ -235,6 +235,15 @@ int main(int argc, char **argv) {
                     fail(ln, "invalid fast ESTOP frame accepted");
                 continue;
             }
+            if (!strcmp(s, "@disconnect")) {
+                pb_tbp_cancel_work(&c, 4u);
+                pb_safe_state(&c);
+                c.tbp_active = 0;
+                c.emergency_abort_requested = 1;
+                c.step_active = 0;
+                c.step_done_pending = 0;
+                continue;
+            }
             if (!strcmp(s, "@abort-fast")) {
                 c.emergency_abort_requested = 1;
                 c.step_active = 0;

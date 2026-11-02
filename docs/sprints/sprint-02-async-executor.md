@@ -22,7 +22,7 @@ Implemented in the current working tree:
 - Accepted jobs receive immediate ACK. QUEUED is emitted after 1000 ms of waiting and repeated each second; long jobs emit RUNNING and 1-second PROGRESS updates. Duplicate history follows QUEUED/RUNNING and terminal states.
 - FLUSH and CRC-valid ESTOP cancel the active and queued jobs with reasoned CANCELLED statuses. ESTOP bypasses session/sequence checks and enters STOPPED; the watchdog cancels active/queued work instead of allowing a stale executor to finish later.
 - Host supports four accepted outstanding commands while sending only one not-yet-ACKed frame at a time. It uses advertised credits, resets credits on terminal states, discards unsent later IDs after a rejection, and fails closed on an ambiguous ERR SEQ after ACK.
-- C transcripts cover FIFO ordering/credit recovery, queue full, delayed QUEUED, long DWELL/MOVE progress, FLUSH/ESTOP cancellation, duplicate ROW/MOVE side-effect suppression, watchdog cancellation, fast-abort gating, and CRC/length/opcode validation for the independent fast ESTOP scanner. Bun fake-transport tests cover queue credits, rejection backpressure, retry recovery and sequence-error safety.
+- C transcripts cover FIFO ordering/credit recovery, queue full, delayed QUEUED, long DWELL/MOVE progress, FLUSH/ESTOP/disconnect cancellation, stale-session rejection, duplicate ROW/MOVE side-effect suppression, watchdog cancellation, fast-abort gating, and CRC/length/opcode validation for the independent fast ESTOP scanner. Bun fake-transport tests cover queue credits, rejection backpressure, retry recovery and sequence-error safety.
 
 Known acceptance gaps before completion:
 
