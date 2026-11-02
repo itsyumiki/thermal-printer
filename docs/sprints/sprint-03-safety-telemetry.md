@@ -13,7 +13,7 @@
 
 ## Tasks
 
-1. Verify physical pin/ADC mappings from source evidence and, where necessary, an owner-provided measurement. Treat PC4/PC5/PB3 hypotheses as unverified until proven.
+1. Record owner-confirmed pin/peripheral mappings and functions from the existing WebUI/scripts; separately track sensor transfer-function calibration and timing measurements.
 2. Make INFO capability bits truthful. Missing/un-calibrated temperature, battery, or paper inputs must be reported unavailable, never fabricated as healthy values.
 3. Implement a safe heater-enable gate: valid temperature measurement and within limit, no active overheat, valid row parameters, duty budget available, heater-off guard satisfied, and correct latch state. If required sensing is unavailable, fail closed for heater operations unless the owner explicitly approves a documented temporary policy.
 4. Enforce compiled-in firmware hard limits for burn pulse, total duty window, step period, and any other agreed timing/range constraints. Host/UI validation is additional convenience, not the safety boundary.
@@ -41,7 +41,11 @@ List each confirmed pin/sensor mapping, safety constant and evidence, plus remai
 
 ## Implementation checkpoint — 2026-11-02
 
-Status: **fail-closed software protections implemented; Sprint 3 is not complete**.
+Status: **owner-confirmed pin/peripheral mappings; fail-closed software protections implemented; Sprint 3 remains in progress for sensor acquisition/calibration and safety-limit validation**.
+
+### Owner hardware confirmation — 2026-11-02
+
+The owner confirms that all pin mappings and physical functions—including buttons, LED/light, stepper, printhead signals, and heater—were already verified using the previous WebUI and scripts. The earlier statements calling these mappings hypotheses were stale and are superseded by this confirmation. This confirms physical identity/function; it does not by itself provide firmware sensor conversion curves, fault thresholds, or calibrated timing/duty budgets.
 
 ### Implemented in the current worktree
 
@@ -50,7 +54,7 @@ Status: **fail-closed software protections implemented; Sprint 3 is not complete
 - Motor outputs remain released until motion starts and are released after completion. COILS-on and nonzero idle-hold configuration are rejected until coil thermal limits are measured; COILS-off remains available.
 - CONFIG heartbeat interval and link timeout are range-checked, stored, and applied. Heartbeat is opt-in (default off); link timeout cancels running/queued work with reason `04`. STAT reports the running command ID and current output flags.
 - The executor contains fail-stop handling for missing required sensor capabilities and duty-limit violations, plus a rolling-window duty wait. Those paths cannot enable heating in the current build because `burn_max_us=0` and all sensor capabilities are unavailable.
-- Both WebUIs now treat PC4/PC5/PB3 as unvalidated raw inputs rather than claiming temperature, calibrated battery voltage, or paper presence. The Bun UI only permits heatless feed tests; real-mode Python WebUI heat actions and PB11-high requests fail closed.
+- Both WebUIs currently treat PC4/PC5/PB3 as raw inputs because the new Pinbridge firmware path has not yet implemented/validated the corresponding sensor interpretation; this is not a claim that the owner has not verified the physical pin functions. The Bun UI only permits heatless feed tests; real-mode Python WebUI heat actions and PB11-high requests fail closed.
 
 ### Verification in this checkpoint
 
@@ -60,9 +64,9 @@ Status: **fail-closed software protections implemented; Sprint 3 is not complete
 
 ### Exit blockers — do not enable heat yet
 
-1. Confirm physical pin mapping for the temperature sensor, battery divider, and paper sensor; current PC4/PC5/PB3 assignments remain hypotheses.
+1. Implement actual sensor acquisition and conversion for the owner-confirmed temperature, battery-divider, and paper-sensor nets; document calibration curves/ratios and fault thresholds in the new firmware path.
 2. Implement actual sensor acquisition, validation, filtering/debounce, and calibrated thresholds. A capability bit must not be enabled until the associated sampling path is real.
 3. Measure and owner-approve heater timer resolution, maximum burn, guard gap, row-shift time, duty window/budget, and motor-coil hold limits.
-4. Add board-specific tests and controlled hardware validation for sensor faults, overtemperature, low battery, paper absent, ESTOP, link loss, and watchdog behavior before changing the zero heater limits.
+4. Add tests and controlled validation for sensor faults, overtemperature, low battery, paper absent, ESTOP, link loss, and watchdog behavior before changing the zero heater limits. Owner-confirmed pin functionality does not substitute for validating these safety interlocks in the new firmware path.
 
-The present work intentionally disables heater operation; it does not claim that the hardware sensors or safety thresholds are validated. Do not set `PB_TBP_BURN_MAX_US` or sensor capability bits nonzero as a workaround.
+The present work intentionally disables heater operation. Physical pin/peripheral functions are owner-confirmed; sensor acquisition/conversion, thresholds, firmware timing and safety interlocks still need validation. Do not set `PB_TBP_BURN_MAX_US` or sensor capability bits nonzero as a workaround.

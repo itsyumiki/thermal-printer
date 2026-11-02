@@ -5,19 +5,19 @@ Config hash: `ea4a6cb8` (what `HEL` returns).
 | Pin | Allowed modes | ADC | Alias | Note |
 |---|---|---|---|---|
 | PA0 | hiz in lo hi up dn |  |  | SDK UART0 log TX pad in demo config; Pinbridge disables SDK logging. Exposed for explicit GPIO experiments. |
-| PA1 | hiz in lo hi up dn |  |  | pkg pin 27. Traced to printer power-control circuitry; output control may change board power. Use explicit output confirmation. Electrical behavior not hardware-verified. |
-| PA9 | hiz in lo hi up dn |  |  | pkg pin 26. Stepper phase A1 (owner trace); host GPIO access for driver development. Mapping not hardware-verified. |
-| PA10 | hiz in lo hi up dn |  |  | pkg pin 25. Stepper phase A2 (owner trace); host GPIO access for driver development. Mapping not hardware-verified. |
-| PB1 | hiz in up |  | button | pkg pin 14. Power-button/power-control net (owner trace). SENSE ONLY: no output, no pull-down. Pull-up is what the stock firmware uses. ADKEY (which sampled this pin) is switched off in app.conf; the SDK long-press reset on PB1 is configured with time 0 (off) in board_ac635n_demo.c. |
-| PB3 | hiz in |  | paper | pkg pin 12. Paper-presence sensor net (owner trace). SENSE ONLY, no pulls (they would bias the sensor). |
-| PB8 | hiz in lo hi up dn |  |  | pkg pin 8. Printhead LATCH/strobe line (owner trace + firmware analysis); host GPIO access. Mapping not hardware-verified. |
-| PB9 | hiz in lo hi up dn |  |  | pkg pin 7. Printhead CLOCK line (owner trace); host GPIO access. Mapping not hardware-verified. |
-| PB10 | hiz in lo hi up dn |  |  | pkg pin 6. Printhead DATA line (owner trace); host GPIO access. Mapping not hardware-verified. |
-| PB11 | hiz in lo hi up dn |  |  | pkg pin 5. Printhead heater strobe/enable (TIMER2 ISR in stock firmware); host GPIO access for controlled experiments. Can burn head; mapping not hardware-verified. |
-| PC2 | hiz in lo hi up dn |  |  | pkg pin 22. Stepper phase B2 (owner trace); host GPIO access for driver development. Mapping not hardware-verified. |
-| PC3 | hiz in lo hi up dn |  |  | pkg pin 21. Stepper phase B1 (owner trace); host GPIO access for driver development. Mapping not hardware-verified. |
-| PC4 | hiz in adc | ch 10 | head_temp | pkg pin 20. Goes to the print head, likely the head thermistor (56k pull-up per the ledger; role inferred from code). SENSE ONLY, no pulls, no output. |
-| PC5 | hiz in adc | ch 13 | vbat_div | pkg pin 19. Voltage divider, likely battery sense (owner trace; role inferred). SENSE ONLY, no pulls, no output. |
+| PA1 | hiz in lo hi up dn |  |  | pkg pin 27. Traced to printer power-control circuitry; output control may change board power. Use explicit output confirmation. Owner-confirmed physical function; use explicit output confirmation because this controls board power. |
+| PA9 | hiz in lo hi up dn |  |  | pkg pin 26. Stepper phase A1; owner-confirmed mapping/function. Timing limits remain separately uncalibrated. |
+| PA10 | hiz in lo hi up dn |  |  | pkg pin 25. Stepper phase A2; owner-confirmed mapping/function. Timing limits remain separately uncalibrated. |
+| PB1 | hiz in up |  | button | pkg pin 14. Power-button/power-control net; owner-confirmed mapping/function. SENSE ONLY: no output, no pull-down. Pull-up is what the stock firmware uses. ADKEY (which sampled this pin) is switched off in app.conf; the SDK long-press reset on PB1 is configured with time 0 (off) in board_ac635n_demo.c. |
+| PB3 | hiz in |  | paper | pkg pin 12. Paper-presence sensor net; owner-confirmed mapping/function. SENSE ONLY, no pulls (they would bias the sensor). |
+| PB8 | hiz in lo hi up dn |  |  | pkg pin 8. Printhead LATCH/strobe line; owner-confirmed mapping/function. |
+| PB9 | hiz in lo hi up dn |  |  | pkg pin 7. Printhead CLOCK line; owner-confirmed mapping/function. |
+| PB10 | hiz in lo hi up dn |  |  | pkg pin 6. Printhead DATA line; owner-confirmed mapping/function. |
+| PB11 | hiz in lo hi up dn |  |  | pkg pin 5. Printhead heater strobe/enable (TIMER2 ISR in stock firmware); owner-confirmed mapping/function. Can burn head; firmware timing/safety gates still apply. |
+| PC2 | hiz in lo hi up dn |  |  | pkg pin 22. Stepper phase B2; owner-confirmed mapping/function. Timing limits remain separately uncalibrated. |
+| PC3 | hiz in lo hi up dn |  |  | pkg pin 21. Stepper phase B1; owner-confirmed mapping/function. Timing limits remain separately uncalibrated. |
+| PC4 | hiz in adc | ch 10 | head_temp | pkg pin 20. Printhead temperature-sensor net; owner-confirmed mapping/function. Thermistor conversion/calibration still required. SENSE ONLY, no pulls, no output. |
+| PC5 | hiz in adc | ch 13 | vbat_div | pkg pin 19. Battery-sense voltage-divider net; owner-confirmed mapping/function. Divider conversion/calibration still required. SENSE ONLY, no pulls, no output. |
 | PC7 | hiz in lo hi up dn |  | led | pkg pin 29. LED net (blink-pc7 and hello-cdc heartbeat, flashed and seen on hardware). The known-good test pin. |
 
 Denied pins (answer `err pin`):

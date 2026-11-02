@@ -27,7 +27,7 @@ Legend: **Implemented (partial)** means a path exists but does not meet the full
 | §11 host image planning | ROW helper only; no complete raster/gray scheduler identified in TBP host | No image planning | Host scheduler and queue model remain future work; Sprint 4–5 |
 | §12 disconnect/session-loss safety | Disconnect clears pending and queued stale commands; reconnect starts HELLO/session | HELLO resets session; USB detach cancels queued/running work, forces heater low and releases motor outputs | Host stale-work recovery and fast detach abort path covered in source; hardware disconnect timing remains unverified |
 | §13 error codes / terminal history | Handles ERR SEQ expected-ID recovery and bounded retries | Core ERR vectors and 127-entry terminal-state history have C transcript coverage | Async QUEUED/RUNNING/PROGRESS/terminal semantics covered in Sprint 2 transcripts; FAILED/sensor error semantics and hardware behavior remain Sprint 3/6 |
-| §14 unknowns / physical assumptions | UI can display reported fields | Several reported limits are compile-time constants, not measured | Physical dot order, pin map, timing, thermal/electrical limits, sensors, and motor direction remain unverified; Sprint 3, 4, 6 |
+| §14 unknowns / physical assumptions | UI can display reported fields | Several reported limits are compile-time constants, not measured | Pin/peripheral mappings and functions are owner-confirmed (2026-11-02); physical dot order, firmware timing, thermal/electrical limits, sensor conversion/calibration, and safety-interlock behavior remain open; Sprint 3, 4, 6 |
 
 ## Known draft ambiguities to resolve before claiming conformance
 

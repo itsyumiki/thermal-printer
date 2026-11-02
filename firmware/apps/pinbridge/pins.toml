@@ -21,8 +21,9 @@
 # Evidence: package pin numbers, ADC channel numbers and board-net traces come from the owner's
 # datasheet notes and pin ledger in the (read-only) thermal-printer repo:
 #   re/docs/ac6956c-datasheet-notes.md, re/docs/pin-map.md  (AC6956C datasheet v1.1, user tracing).
-# They were NOT re-verified on hardware by this project [assumed]. The SDK ADC channel numbers
-# were checked against include_lib/driver/cpu/br23/asm/adc_api.h [verified].
+# The owner confirms all listed pin functions and peripherals (buttons, LED, stepper, printhead/heater)
+# were verified using the previous WebUI/scripts (2026-11-02). SDK ADC channel numbers were checked
+# against include_lib/driver/cpu/br23/asm/adc_api.h [verified].
 
 schema = 1
 # The command parser supports up to 16 configured pins. `GET` output fits within 128 bytes
@@ -37,7 +38,7 @@ note = "SDK UART0 log TX pad in demo config; Pinbridge disables SDK logging. Exp
 
 [pins.PA1]
 caps = ["in", "out", "pu", "pd"]
-note = "pkg pin 27. Traced to printer power-control circuitry; output control may change board power. Use explicit output confirmation. Electrical behavior not hardware-verified."
+note = "pkg pin 27. Traced to printer power-control circuitry; output control may change board power. Use explicit output confirmation. Owner-confirmed physical function; use explicit output confirmation because this controls board power."
 
 [pins.PC7]
 caps = ["in", "out", "pu", "pd"]
@@ -47,24 +48,24 @@ note = "pkg pin 29. LED net (blink-pc7 and hello-cdc heartbeat, flashed and seen
 [pins.PB1]
 caps = ["in", "pu"]
 alias = "button"
-note = "pkg pin 14. Power-button/power-control net (owner trace). SENSE ONLY: no output, no pull-down. Pull-up is what the stock firmware uses. ADKEY (which sampled this pin) is switched off in app.conf; the SDK long-press reset on PB1 is configured with time 0 (off) in board_ac635n_demo.c."
+note = "pkg pin 14. Power-button/power-control net; owner-confirmed mapping/function. SENSE ONLY: no output, no pull-down. Pull-up is what the stock firmware uses. ADKEY (which sampled this pin) is switched off in app.conf; the SDK long-press reset on PB1 is configured with time 0 (off) in board_ac635n_demo.c."
 
 [pins.PB3]
 caps = ["in"]
 alias = "paper"
-note = "pkg pin 12. Paper-presence sensor net (owner trace). SENSE ONLY, no pulls (they would bias the sensor)."
+note = "pkg pin 12. Paper-presence sensor net; owner-confirmed mapping/function. SENSE ONLY, no pulls (they would bias the sensor)."
 
 [pins.PC4]
 caps = ["in", "adc"]
 adc = 10
 alias = "head_temp"
-note = "pkg pin 20. Goes to the print head, likely the head thermistor (56k pull-up per the ledger; role inferred from code). SENSE ONLY, no pulls, no output."
+note = "pkg pin 20. Printhead temperature-sensor net; owner-confirmed mapping/function. Thermistor conversion/calibration still required. SENSE ONLY, no pulls, no output."
 
 [pins.PC5]
 caps = ["in", "adc"]
 adc = 13
 alias = "vbat_div"
-note = "pkg pin 19. Voltage divider, likely battery sense (owner trace; role inferred). SENSE ONLY, no pulls, no output."
+note = "pkg pin 19. Battery-sense voltage-divider net; owner-confirmed mapping/function. Divider conversion/calibration still required. SENSE ONLY, no pulls, no output."
 
 # ---------------------------------------------------------------- denied pins (documentation only)
 # These answer `err pin` exactly like any unlisted pin. The reasons end up in the README and in the
@@ -73,35 +74,35 @@ note = "pkg pin 19. Voltage divider, likely battery sense (owner trace; role inf
 
 [pins.PA9]
 caps = ["in", "out", "pu", "pd"]
-note = "pkg pin 26. Stepper phase A1 (owner trace); host GPIO access for driver development. Mapping not hardware-verified."
+note = "pkg pin 26. Stepper phase A1; owner-confirmed mapping/function. Timing limits remain separately uncalibrated."
 
 [pins.PA10]
 caps = ["in", "out", "pu", "pd"]
-note = "pkg pin 25. Stepper phase A2 (owner trace); host GPIO access for driver development. Mapping not hardware-verified."
+note = "pkg pin 25. Stepper phase A2; owner-confirmed mapping/function. Timing limits remain separately uncalibrated."
 
 [pins.PC2]
 caps = ["in", "out", "pu", "pd"]
-note = "pkg pin 22. Stepper phase B2 (owner trace); host GPIO access for driver development. Mapping not hardware-verified."
+note = "pkg pin 22. Stepper phase B2; owner-confirmed mapping/function. Timing limits remain separately uncalibrated."
 
 [pins.PC3]
 caps = ["in", "out", "pu", "pd"]
-note = "pkg pin 21. Stepper phase B1 (owner trace); host GPIO access for driver development. Mapping not hardware-verified."
+note = "pkg pin 21. Stepper phase B1; owner-confirmed mapping/function. Timing limits remain separately uncalibrated."
 
 [pins.PB8]
 caps = ["in", "out", "pu", "pd"]
-note = "pkg pin 8. Printhead LATCH/strobe line (owner trace + firmware analysis); host GPIO access. Mapping not hardware-verified."
+note = "pkg pin 8. Printhead LATCH/strobe line; owner-confirmed mapping/function."
 
 [pins.PB9]
 caps = ["in", "out", "pu", "pd"]
-note = "pkg pin 7. Printhead CLOCK line (owner trace); host GPIO access. Mapping not hardware-verified."
+note = "pkg pin 7. Printhead CLOCK line; owner-confirmed mapping/function."
 
 [pins.PB10]
 caps = ["in", "out", "pu", "pd"]
-note = "pkg pin 6. Printhead DATA line (owner trace); host GPIO access. Mapping not hardware-verified."
+note = "pkg pin 6. Printhead DATA line; owner-confirmed mapping/function."
 
 [pins.PB11]
 caps = ["in", "out", "pu", "pd"]
-note = "pkg pin 5. Printhead heater strobe/enable (TIMER2 ISR in stock firmware); host GPIO access for controlled experiments. Can burn head; mapping not hardware-verified."
+note = "pkg pin 5. Printhead heater strobe/enable (TIMER2 ISR in stock firmware); owner-confirmed mapping/function. Can burn head; firmware timing/safety gates still apply."
 
 [denied]
 PA3  = "Not exposed on the QFN32 package (datasheet has no PA3); SDK uses it as flash CS in demo config."

@@ -5,7 +5,7 @@
 /* Printer-specific commands and the nonblocking motor stepper. */
 static const char *const pb_motor_pins[4] = {"PA9", "PA10", "PC3", "PC2"};
 /* Official JieLi AC6956C half-step sequence on PA9, PA10, PC3, PC2.
- Static firmware trace only; pin polarity and motor wiring remain unverified. */
+ Owner confirms the phase pin mapping and motor function; phase timing/drive limits still require firmware-specific validation. */
 static const uint8_t pb_motor_phases[8][4] = {{0, 1, 1, 0}, {0, 1, 0, 0}, {0, 1, 0, 1},
                                               {0, 0, 0, 1}, {1, 0, 0, 1}, {1, 0, 0, 0},
                                               {1, 0, 1, 0}, {0, 0, 1, 0}};
