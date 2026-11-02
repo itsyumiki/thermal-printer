@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include "../../src/pb_core.h"
 static unsigned now_ms, writes;
+static pb_core *active_core;
 static uint16_t outs[4], pads[4];
 static char output[32768];
 static size_t used;
@@ -42,8 +43,14 @@ static uint32_t ms(void *x) {
     return now_ms;
 }
 static void delay_us(void *x, unsigned us) {
+    unsigned elapsed;
     (void)x;
-    (void)us;
+    if (!active_core)
+        return;
+    for (elapsed = 0; elapsed < us; elapsed += 1000u) {
+        now_ms++;
+        pb_step_tick(active_core);
+    }
 }
 static int tx(void *x, const char *s, size_t n) {
     (void)x;
@@ -87,6 +94,7 @@ int main(int argc, char **argv) {
         return 2;
     }
     pb_init(&c, &h);
+    active_core = &c;
     while (fgets(line, sizeof line, f)) {
         char *s, *e;
         ln++;
