@@ -208,8 +208,7 @@ static int pb_hexbyte(const char *s, unsigned *out) {
   }
   *out = v; return 1;
 }
-static int pb_printer_pin(pb_core *c, const char *name, unsigned level) {
-  int i = pb_pin(name);
+static int pb_printer_pin_i(pb_core *c, int i, unsigned level) {
   uint16_t mask, value;
   if (i < 0 || (c->pins[i].mode != PB_LO && c->pins[i].mode != PB_HI) || !c->h.write_port)
     return -1;
@@ -219,6 +218,9 @@ static int pb_printer_pin(pb_core *c, const char *name, unsigned level) {
   c->pins[i].level = (uint8_t)level;
   c->pins[i].mode = (uint8_t)(level ? PB_HI : PB_LO);
   return 0;
+}
+static int pb_printer_pin(pb_core *c, const char *name, unsigned level) {
+  return pb_printer_pin_i(c, pb_pin(name), level);
 }
 static void pb_wait_us(pb_core *c, unsigned us) {
   if (us && c->h.delay_us) c->h.delay_us(c->h.ctx, us);
@@ -249,13 +251,15 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
       unsigned byte;
       if (!pb_hexbyte(hex + i*2, &byte)) { pb_error(c, "hex", "PHEAD"); return; }
     }
+    /* Resolve pin names once; a per-bit name lookup cost ~90 ms per row. */
+    int pin_data = pb_pin("PB10"), pin_clk = pb_pin("PB9");
     for (i = 0; i < 48; i++) {
       unsigned byte; (void)pb_hexbyte(hex + i*2, &byte);
       for (j = 0; j < 8; j++) {
-        if (pb_printer_pin(c, "PB10", (byte >> j) & 1u) < 0) { pb_error(c, "mod", "PB10"); return; }
+        if (pb_printer_pin_i(c, pin_data, (byte >> j) & 1u) < 0) { pb_error(c, "mod", "PB10"); return; }
         pb_wait_us(c, (unsigned)b); /* data setup / hold */
-        (void)pb_printer_pin(c, "PB9", 1); pb_wait_us(c, (unsigned)a);
-        (void)pb_printer_pin(c, "PB9", 0); pb_wait_us(c, (unsigned)a);
+        (void)pb_printer_pin_i(c, pin_clk, 1); pb_wait_us(c, (unsigned)a);
+        (void)pb_printer_pin_i(c, pin_clk, 0); pb_wait_us(c, (unsigned)a);
       }
     }
     pb_reply(c, "ok bits=384"); c->last_feed = pb_now(c); return;

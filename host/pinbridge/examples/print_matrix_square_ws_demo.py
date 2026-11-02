@@ -258,6 +258,37 @@ async def profile(con, args, count=20):
         print(
             f"  {name:30s} min {times[0]:7.1f}  median {times[len(times) // 2]:7.1f}  max {times[-1]:7.1f} ms"
         )
+    # Delay-loop calibration: the firmware busy-wait is "us * 12 NOPs" and was never
+    # calibrated. Blank data + latch pulse only, so nothing is heated.
+    async def med(msg, n=5):
+        ts = []
+        for _ in range(n):
+            t0 = time.perf_counter()
+            await con.call(**msg)
+            ts.append((time.perf_counter() - t0) * 1000)
+        return sorted(ts)[n // 2]
+
+    base = await med(dict(action="printer", confirm="printer", op="latch", pulse_us=0))
+    long = await med(
+        dict(action="printer", confirm="printer", op="latch", pulse_us=1000)
+    )
+    print(f"  latch 0 us / 1000 us: {base:.1f} / {long:.1f} ms")
+    factor = (long - base) / 1.0
+    print(
+        f"  => firmware 'us' delays run about {factor:.1f}x longer than nominal "
+        f"(1.0 = calibrated; a requested 2000 us heat pulse would last about {2.0 * factor:.1f} ms)"
+    )
+    zero = await med(
+        dict(
+            action="printer",
+            confirm="printer",
+            op="shift",
+            data_hex=blank.hex(),
+            bit_delay_us=0,
+            data_hold_us=0,
+        )
+    )
+    print(f"  shift with 0 us delays (pure GPIO/loop overhead): {zero:.1f} ms")
     t = time.perf_counter()
     await con.batch([m for _, m in probes[1:]])
     print(f"  4 commands pipelined in one batch: {(time.perf_counter() - t) * 1000:.1f} ms")
