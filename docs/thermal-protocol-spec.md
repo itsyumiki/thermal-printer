@@ -47,7 +47,7 @@ One frame per line. Same layout in both directions.
 | DATA | LEN bytes | Opcode- or kind-specific payload. |
 | CRC16 | 2 bytes | CRC-16/CCITT-FALSE over ID, OP, LEN and DATA (poly `0x1021`, init `0xFFFF`, no reflection, xorout `0`). |
 
-- A frame is 5 + LEN bytes, so 10 + 2·LEN hex characters, then `\n` (`0x0A`). Maximum line length is 521 characters including `\n`; receivers must buffer at least 522.
+- A frame is 5 + LEN bytes, so 10 + 2·LEN hex characters, then `\n` (`0x0A`). Maximum wire line length is 521 characters including `\n` (520 hex characters plus LF). Implementations must allocate an additional NUL byte if using C strings; this storage byte is not part of the wire limit.
 - Receivers ignore a `\r` before `\n` and ignore empty lines. Spaces, odd digit counts and non-hex characters are a format error.
 - CRC check value: CRC of the ASCII string `123456789` is `0x29B1`.
 - The CRC does not make anything safe. Safety is enforced by firmware limits regardless of frame validity (section 9).
@@ -107,7 +107,7 @@ The printer keeps `next_id`. For an incoming id, let `d = (id - next_id) mod 255
 
 `HELLO` sets `next_id` to its own id plus 1. The host must never have more than **127** commands without a terminal status outstanding, so the three ranges can never be ambiguous. The printer's HELLO reply reports a lower `max_window` if its record memory is smaller.
 
-The printer records one byte of state per id for the last 127 ids (a ring indexed by id).
+The printer records one byte of terminal state per accepted id for the current HELLO session, retaining the most recent 127 IDs logically. A duplicate response is `ACK` plus `STATUS` containing only the recorded state byte (no result payload). IDs outside retained history are rejected with `ERR SEQ`, arg = `next_id`; they must never execute as duplicates. Since the current synchronous implementation accepts only after validation and records terminal `DONE`, the state-only replay is sufficient for its present command model. When asynchronous QUEUED/RUNNING commands are introduced, Sprint 2 must retain and replay the actual latest state rather than assuming every accepted command is already DONE.
 
 ### 4.3 Host retry rules
 
@@ -244,7 +244,7 @@ Starts or restarts a session.
 | 29 | caps | u8 | bit 0 temp sensor valid, bit 1 battery sensor valid, bit 2 battery mV calibrated, bit 3 paper sensor valid |
 | 30 | uid | 8 bytes | Chip unique id if available, else zeros. Hosts use it to select a calibration profile. |
 
-INFO body is 38 bytes. All limits are fixed in firmware and not writable by the host.
+INFO body is 38 bytes, excluding the leading `state` byte in the enclosing STATUS DATA. Thus the full STATUS DATA is 39 bytes. All limits are fixed in firmware and not writable by the host.
 
 ### 7.2 `03` FLUSH
 

@@ -50,6 +50,8 @@ typedef struct {
     char line[523]; /* TBP v1 maximum: 520 hex chars plus NUL */
     unsigned llen, discard, dbg, wdg;
     uint8_t tbp_active, tbp_next_id, tbp_last_id, tbp_last_state, tbp_last_valid;
+    /* Zero means no accepted command is recorded for this id in this session. */
+    uint8_t tbp_history[256];
     uint32_t last_feed;
     unsigned pollport;
     char reply[128];
@@ -374,9 +376,12 @@ static void pb_tbp_status(pb_core *c, uint8_t id, uint8_t state, const uint8_t *
     pb_tbp_send(c, id, 0x82u, d, (uint8_t)(n + 1u));
 }
 static void pb_tbp_accept(pb_core *c, uint8_t id) {
+    unsigned evict = (((unsigned)id - 1u + 255u - 127u) % 255u) + 1u;
     c->tbp_last_id = id;
     c->tbp_last_state = 3;
     c->tbp_last_valid = 1;
+    c->tbp_history[evict] = 0;
+    c->tbp_history[id] = c->tbp_last_state;
     c->tbp_next_id = (uint8_t)(id + 1u);
     if (!c->tbp_next_id)
         c->tbp_next_id = 1;
@@ -428,6 +433,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         if (!c->tbp_next_id)
             c->tbp_next_id = 1;
         c->tbp_last_valid = 0;
+        memset(c->tbp_history, 0, sizeof c->tbp_history);
         c->step_active = 0;
         pb_printer_outputs_init(c);
         c->led_mode = 1;
@@ -466,10 +472,13 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         return 1;
     }
     if (id != c->tbp_next_id) {
-        if (c->tbp_last_valid && id == c->tbp_last_id) {
+        /* IDs form the 1..255 cycle. Distances 128..254 are old IDs;
+         * only replay one when it was accepted in this HELLO session. */
+        unsigned delta = ((unsigned)id + 255u - c->tbp_next_id) % 255u;
+        if (delta >= 128u && c->tbp_history[id]) {
             uint8_t ack = 0;
             pb_tbp_send(c, id, 0x81u, &ack, 1);
-            pb_tbp_status(c, id, c->tbp_last_state, 0, 0);
+            pb_tbp_status(c, id, c->tbp_history[id], 0, 0);
             return 1;
         }
         pb_tbp_err(c, id, 6, c->tbp_next_id);

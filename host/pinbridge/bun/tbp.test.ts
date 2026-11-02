@@ -23,6 +23,20 @@ describe("TBP v1 framing", () => {
     expect(f.data[52]).toBe(0x70);
     expect(f.data[53]).toBe(4);
   });
+  test("accepts CRLF framing and event ID zero on receive", () => {
+    const frame = encode(1, OP.HELLO, Uint8Array.of(1)).trim();
+    expect(decode(frame + "\r").id).toBe(1);
+    const event = encode(1, 0x84, Uint8Array.of(1)).replace(/^01/, "00");
+    // Recompute CRC after changing the event id to its reserved value.
+    const raw = Uint8Array.from(event.trim().match(/../g)!, (x) =>
+      parseInt(x, 16),
+    );
+    const crc = crc16(raw.subarray(0, -2));
+    raw[raw.length - 2] = crc >> 8;
+    raw[raw.length - 1] = crc & 255;
+    const wire = [...raw].map((b) => b.toString(16).padStart(2, "0")).join("");
+    expect(decode(wire).id).toBe(0);
+  });
   test("rejects corrupt CRC and malformed lengths", () => {
     const frame = encode(1, OP.HELLO, Uint8Array.of(1)).trim();
     expect(() => decode(frame.slice(0, -2) + "00")).toThrow();

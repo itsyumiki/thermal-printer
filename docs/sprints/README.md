@@ -9,6 +9,7 @@ Work one sprint at a time, in order. Before editing, read the sprint handoff, `d
 ## Latest handoff reports
 
 - [Sprint 0 baseline report](sprint-00-report.md) — commands, test results, implementation gaps, and Sprint 1 blockers.
+- [Sprint 1 progress checkpoint](sprint-01-progress.md) — current code changes, passing tests, and remaining acceptance gaps.
 - [TBP implementation matrix](../tbp-implementation-matrix.md) — draft-to-code status and known ambiguities.
 
 ## Sprint sequence

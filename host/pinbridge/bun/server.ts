@@ -407,7 +407,8 @@ class PrinterLink {
               this.pending.delete(id);
               resolve({ id, op, data: new Uint8Array() });
             } else {
-              p.retries = 3;
+              // STATUS may be lost after ACK. Retry the exact same wire frame
+              // so the printer can replay its recorded terminal state.
               attempt();
             }
           } else attempt();
