@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "pb_tuning.h"
+#include "pb_sensors.h"
 #define PB_CAP_IN 1u
 #define PB_CAP_OUT 2u
 #define PB_CAP_PU 4u

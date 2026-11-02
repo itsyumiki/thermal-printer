@@ -93,6 +93,22 @@ int main(int argc, char **argv) {
         perror(argv[1]);
         return 2;
     }
+    /* Sensor math must reject unset calibration and invalid divider voltages. */
+    {
+        unsigned value = 777u;
+        if (pb_sensor_temperature_calibrated() || pb_sensor_battery_calibrated())
+            fail(0, "unset sensor calibration advertised as ready");
+        if (!pb_sensor_thermistor_ohms(1000u, 3300u, 56000u, &value) || value != 24347u)
+            fail(0, "thermistor divider resistance conversion mismatch");
+        value = 777u;
+        if (pb_sensor_thermistor_ohms(3300u, 3300u, 56000u, &value) || value != 777u)
+            fail(0, "invalid thermistor voltage was accepted or output modified");
+        if (!pb_sensor_battery_mv(1250u, 4u, 1u, &value) || value != 5000u)
+            fail(0, "battery divider conversion mismatch");
+        value = 777u;
+        if (pb_sensor_battery_mv(1250u, 0u, 1u, &value) || value != 777u)
+            fail(0, "unset battery divider was accepted or output modified");
+    }
     pb_init(&c, &h);
     active_core = &c;
     while (fgets(line, sizeof line, f)) {
