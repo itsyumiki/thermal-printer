@@ -1,13 +1,30 @@
 #!/usr/bin/env python3
-"""Print 24 solid-black rows across all 384 printhead dots, then feed blank paper.
+"""Print a 16x16 black/white checkerboard of 24 px boxes (384x384 dots).
 
 Requires Pinbridge WebUI running at ws://127.0.0.1:8765/ws and the printer
-connected. The printhead data polarity (1=black) follows the current experimental
-hypothesis. PB8 is an active-low latch and must idle high during shifting. This is a low-level demo, not the stock four-phase row scheduler.
-Paper-feed distance is mechanism-dependent: --tail-steps is phase transitions,
-not millimetres. The firmware PSTEP count includes the initial phase, so one
-actual transition requires count=2. Calibrate feed distance before relying on mm.
+connected. Head data polarity (1=black) is still the experimental hypothesis.
+PB8 is an active-low latch and must idle high while shifting.
+
+This mimics the *stock* row scheduler as closely as a host script can:
+  * one logical row = 4 print events with the same 48 bytes each
+    (shift -> latch -> ~2 ms heater pulse), and exactly one motor half-step
+    per event, issued as a single-transition PSTEP;
+  * events are paced at the stock minimum event period of 6 ms
+    (2 ms timer tick * divider 3).
+
+Requires pinbridge firmware where PSTEP keeps the half-step phase in firmware
+RAM and resumes from it (step_phase). On older firmware every PSTEP restarts at
+phase 0, so single-transition steps would only toggle phases 0/1 and the paper
+would not advance.
+
+Limits (read these):
+  * Head events are paced by the host clock, not the MCU. If the host cannot keep
+    up with --event-ms, printing just runs slower (the motor still moves once per
+    event, so dots stay in the right place); the worst lag is reported.
+  * Stock timings are static-analysis-derived, not measured. No thermal
+    interlocks exist here. Not hardware-tested.
 """
+
 import argparse
 import asyncio
 import sys
@@ -19,22 +36,33 @@ MOTOR_PINS = ("PA9", "PA10", "PC3", "PC2")
 OK_TYPES = {"raw", "result", "connected"}
 FAIL_TYPES = {"error", "confirm_required"}
 HEAD_DOTS = 384
-ROW_COUNT = 24
+BOX_PX = 24
+BOXES = 16
+ROW_COUNT = BOX_PX * BOXES  # 384 rows
+EVENTS_PER_ROW = 4  # stock: four events per logical row
+assert BOX_PX * BOXES == HEAD_DOTS and BOX_PX % 8 == 0
 
 
 class Console:
     def __init__(self, ws):
         self.ws = ws
 
-    async def call(self, **msg):
-        await self.ws.send_json(msg)
-        while True:
+    async def batch(self, msgs):
+        """Send several messages back-to-back, then collect the replies in order."""
+        for msg in msgs:
+            await self.ws.send_json(msg)
+        replies = []
+        while len(replies) < len(msgs):
             reply = await asyncio.wait_for(self.ws.receive_json(), timeout=70)
             kind = reply.get("type")
             if kind in FAIL_TYPES:
                 raise RuntimeError(f"{kind}: {reply.get('message', reply)}")
             if kind in OK_TYPES:
-                return reply
+                replies.append(reply)
+        return replies
+
+    async def call(self, **msg):
+        return (await self.batch([msg]))[0]
 
     async def raw(self, command):
         return await self.call(action="raw", command=command)
@@ -43,10 +71,13 @@ class Console:
         return await self.call(action="printer", confirm="printer", **kwargs)
 
 
-def make_row(y: int = 0) -> bytes:
-    """Return 48 bytes with all 384 dots selected as black (1 bits)."""
-    del y  # Keep the row argument for callers; every row is identical.
-    return b"\xff" * (HEAD_DOTS // 8)
+def make_row(y: int) -> bytes:
+    """48 bytes for dot-row y: 16 boxes of 24 dots, checkerboard, top-left black."""
+    by = y // BOX_PX
+    out = bytearray()
+    for bx in range(BOXES):
+        out += (b"\xff" if (bx + by) % 2 == 0 else b"\x00") * (BOX_PX // 8)
+    return bytes(out)
 
 
 def parse_args():
@@ -56,35 +87,123 @@ def parse_args():
     parser.add_argument("--bit-us", type=int, default=2)
     parser.add_argument("--hold-us", type=int, default=1)
     parser.add_argument("--latch-us", type=int, default=2)
-    parser.add_argument("--heat-us", type=int, default=6000,
-                        help="PB11 high pulse per row (0..6000 us; not a safety guarantee)")
-    parser.add_argument("--row-steps", type=int, default=8,
-                        help="actual motor phase transitions after each printed row (default: 8)")
-    parser.add_argument("--row-step-us", type=int, default=1000,
-                        help="requested inter-step gap for each printed row")
-    parser.add_argument("--coil-on-us", type=int, default=1000)
-    parser.add_argument("--tail-steps", type=int, default=24,
-                        help="blank-paper feed after square, in half-step transitions (default: 24; calibrate to mm)")
+    parser.add_argument(
+        "--heat-us",
+        type=int,
+        default=2000,
+        help="PB11 high pulse per print event (0..6000 us; stock quality 0x32 is ~1.8 ms)",
+    )
+    parser.add_argument(
+        "--event-ms",
+        type=int,
+        default=6,
+        help="print event / half-step period in ms (stock minimum: 2 ms tick x 3 = 6)",
+    )
+    parser.add_argument(
+        "--tail-steps",
+        type=int,
+        default=24,
+        help="blank-paper feed after the pattern, in half-step transitions (default: 24)",
+    )
     parser.add_argument("--tail-direction", choices=("FWD", "REV"), default="FWD")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--yes", action="store_true", help="skip typed PRINT confirmation")
+    parser.add_argument(
+        "--yes", action="store_true", help="skip typed PRINT confirmation"
+    )
     args = parser.parse_args()
     for name in ("bit_us", "hold_us", "latch_us"):
         if not 0 <= getattr(args, name) <= 1000:
             parser.error(f"--{name.replace('_', '-')} must be 0..1000")
     if not 0 <= args.heat_us <= 6000:
         parser.error("--heat-us must be 0..6000")
-    if not 0 <= args.row_step_us <= 60_000_000 or not 0 <= args.coil_on_us <= 60_000_000:
-        parser.error("step timing must be 0..60000000 us")
-    if not 0 <= args.row_steps <= 60000:
-        parser.error("--row-steps must be 0..60000")
+    if not 2 <= args.event_ms <= 1000:
+        parser.error("--event-ms must be 2..1000")
+    if args.heat_us > args.event_ms * 1000 // 2:
+        parser.error(
+            "--heat-us must be at most half of --event-ms (heater must not fill the whole event)"
+        )
     if not 0 <= args.tail_steps <= 60000:
         parser.error("--tail-steps must be 0..60000")
     return args
 
 
+def step_timing_us(event_ms):
+    """Split one event period into coil-on + inter-step so one transition = event_ms (1 ms granularity)."""
+    gap_ms = event_ms // 2
+    return gap_ms * 1000, (event_ms - gap_ms) * 1000  # (inter_step_us, coil_on_us)
+
+
+def preview():
+    lines = []
+    for by in range(BOXES):
+        lines.append(
+            "".join("##" if (bx + by) % 2 == 0 else ".." for bx in range(BOXES))
+        )
+    return "\n".join(lines)
+
+
+async def wait_step_done(con, timeout_s=5.0):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while True:
+        reply = (await con.raw("PSTEPSTAT")).get("reply")
+        if reply and reply[0] == "done":
+            return
+        if loop.time() >= deadline:
+            raise TimeoutError("stepper did not finish")
+        await asyncio.sleep(0.002)
+
+
+async def print_row(con, args, row_index, state):
+    """Four print events for one logical row; each ends with one half-step transition."""
+    loop = asyncio.get_running_loop()
+    event_s = args.event_ms / 1000.0
+    row = make_row(row_index).hex()
+    for _ in range(EVENTS_PER_ROW):
+        due = state["next_due"]
+        now = loop.time()
+        if now < due:
+            await asyncio.sleep(due - now)
+        else:
+            state["worst_lag"] = max(state["worst_lag"], now - due)
+        # Next event is due one period after this one was due (or now, if late).
+        state["next_due"] = max(due, now) + event_s
+        # Head work first, then the half-step, like the stock event handler.
+        # PSTEP count includes the initial phase: 2 = exactly one transition.
+        # coil_on 1 ms + gap 0: the transition lands ~1 ms after the command.
+        await con.batch(
+            [
+                dict(
+                    action="printer",
+                    confirm="printer",
+                    op="shift",
+                    data_hex=row,
+                    bit_delay_us=args.bit_us,
+                    data_hold_us=args.hold_us,
+                ),
+                dict(
+                    action="printer",
+                    confirm="printer",
+                    op="latch",
+                    pulse_us=args.latch_us,
+                ),
+                dict(
+                    action="printer",
+                    confirm="printer",
+                    op="heat",
+                    pulse_us=args.heat_us,
+                ),
+                dict(action="raw", command="PSTEP FWD 2 0 1000"),
+            ]
+        )
+
+
 async def run(args):
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None)) as session:
+    inter_us, coil_us = step_timing_us(args.event_ms)
+    total_events = ROW_COUNT * EVENTS_PER_ROW
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=None)
+    ) as session:
         async with session.ws_connect(args.url, max_msg_size=0) as ws:
             con = Console(ws)
             try:
@@ -96,15 +215,33 @@ async def run(args):
                 status = await con.raw("STA " + " ".join(HEAD_PINS + MOTOR_PINS))
 
             print("pins before:", status.get("reply"))
-            print(f"plan: {ROW_COUNT} solid-black rows across all {HEAD_DOTS} dots (48 bytes of 0xFF per row)")
-            print(f"{ROW_COUNT} heated rows at {args.heat_us} us per row, {args.row_steps} phase transitions after each; then {args.tail_steps} unheated {args.tail_direction} phase transitions of blank-paper feed")
-            print("Reminder: phase transitions do not map to mm until calibrated; row timing is experimental.")
+            print(
+                f"plan: {BOXES}x{BOXES} checkerboard of {BOX_PX}-dot boxes = {HEAD_DOTS}x{ROW_COUNT} dots"
+            )
+            print(preview())
+            print(
+                f"{ROW_COUNT} rows x {EVENTS_PER_ROW} events = {total_events} print events "
+                f"(shift+latch+{args.heat_us} us heat, one half-step each), event period {args.event_ms} ms "
+                f"-> about {total_events * args.event_ms / 1000:.1f} s of nominal pacing"
+            )
+            print(
+                f"motor: one single-transition PSTEP per event ({total_events} half-steps, phase kept in firmware), "
+                f"then {args.tail_steps} blank {args.tail_direction} half-steps"
+            )
+            print(
+                "Reminder: stock timings are static-analysis-derived; heater limits are not validated."
+            )
             if args.dry_run:
-                print(f"dry-run row payload: {make_row().hex()} ({len(make_row())} bytes, all bits set)")
+                print(f"dry-run row 0: {make_row(0).hex()}")
+                print(f"dry-run row {BOX_PX}: {make_row(BOX_PX).hex()}")
                 print("dry run: no GPIO, printhead, heater, or step commands sent")
                 return
             if not args.yes:
-                print("This energises the printhead heater and stepper. Type PRINT to continue: ", end="", flush=True)
+                print(
+                    "This energises the printhead heater and stepper. Type PRINT to continue: ",
+                    end="",
+                    flush=True,
+                )
                 if (await asyncio.to_thread(sys.stdin.readline)).strip() != "PRINT":
                     raise SystemExit("aborted")
 
@@ -113,33 +250,52 @@ async def run(args):
                 for pin in HEAD_PINS + MOTOR_PINS:
                     await con.call(action="mode", pin=pin, mode="lo", confirm=pin)
                 configured = True
-                # The head latch is active-low and must idle HIGH while bits shift.
-                # Leaving PB8 at the mode-command default (LOW) can expose shifting
-                # data continuously instead of holding the completed 384-bit row.
+                # Latch is active-low and must idle HIGH while bits shift.
                 await con.raw("SET PB8=1 PB9=0 PB10=0 PB11=0")
+                state = {
+                    "next_due": asyncio.get_running_loop().time(),
+                    "worst_lag": 0.0,
+                }
                 for y in range(ROW_COUNT):
-                    row = make_row(y)
-                    await con.printer(op="shift", data_hex=row.hex(), bit_delay_us=args.bit_us, data_hold_us=args.hold_us)
-                    await con.printer(op="latch", pulse_us=args.latch_us)
-                    await con.printer(op="heat", pulse_us=args.heat_us)
-                    # PSTEP count includes the initial phase, so N transitions need N+1.
-                    await con.printer(op="step", direction="FWD", count=args.row_steps + 1,
-                                      inter_step_us=args.row_step_us, coil_on_us=args.coil_on_us)
-                    print(f"printed row {y + 1}/{ROW_COUNT}; fed {args.row_steps} phase transitions")
+                    await print_row(con, args, y, state)
+                    if (y + 1) % BOX_PX == 0:
+                        print(
+                            f"printed row {y + 1}/{ROW_COUNT} "
+                            f"(worst host lag so far {state['worst_lag'] * 1000:.1f} ms)"
+                        )
+                await wait_step_done(con)
                 if args.tail_steps:
-                    # No shift/latch/heat during this final feed: move only the paper.
-                    # N requested transitions require N+1 phase entries in PSTEP.
-                    await con.printer(op="step", direction=args.tail_direction,
-                                      count=args.tail_steps + 1, inter_step_us=args.row_step_us,
-                                      coil_on_us=args.coil_on_us)
-                    print(f"blank-paper feed complete: {args.tail_steps} phase transitions (not calibrated mm)")
+                    # No shift/latch/heat: move only the paper, at the same half-step period.
+                    await con.printer(
+                        op="step",
+                        direction=args.tail_direction,
+                        count=args.tail_steps + 1,
+                        inter_step_us=inter_us,
+                        coil_on_us=coil_us,
+                    )
+                    print(
+                        f"blank-paper feed complete: {args.tail_steps} half-steps (not calibrated mm)"
+                    )
             finally:
                 if configured:
                     try:
-                        await asyncio.shield(con.raw("SET " + " ".join(f"{pin}=0" for pin in MOTOR_PINS)))
-                        print("motor phases released")
+                        try:
+                            await wait_step_done(con, timeout_s=2.0)
+                        except Exception:
+                            pass
+                        # Heater off, latch idle high, motor phases released.
+                        await asyncio.shield(
+                            con.raw(
+                                "SET PB8=1 PB9=0 PB10=0 PB11=0 "
+                                + " ".join(f"{pin}=0" for pin in MOTOR_PINS)
+                            )
+                        )
+                        print("heater off, motor phases released")
                     except Exception as exc:
-                        print(f"WARNING: unable to release motor phases: {exc}; use the WebUI", file=sys.stderr)
+                        print(
+                            f"WARNING: unable to make safe: {exc}; use the WebUI",
+                            file=sys.stderr,
+                        )
             print("done")
 
 

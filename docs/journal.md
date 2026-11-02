@@ -39,3 +39,9 @@ The current stepper8 build is published in the shared public folder as `pinbridg
 - 2026-11-02: Fixed a stale `SQUARE_SIZE` reference in the full-width solid-black print demo progress message; it now uses `ROW_COUNT`. Host-side validation only.
 
 - 2026-11-02: Added `docs/stock-print-scheduler-handoff.md` documenting the bursty row-by-row Pinbridge demo, stock firmware timer/event findings, firmware-side coordinated scheduler direction, acceptance criteria, and unresolved timing questions. Documentation only; no code, build, flash, or hardware test.
+
+- 2026-11-02: Rewrote `print_matrix_square_ws_demo.py` as a 16x16 checkerboard of 24-dot boxes (384x384 dots) using stock-derived timing: 4 print events per row (same 48 bytes), 2000 us heater pulse per event, 6 ms event/half-step period, and one continuous 8-transition `PSTEP` per 2-row pair (PSTEP restarts at phase 0, so single-step commands would not advance the paper). Host-paced; aborts if the host lags the motor. Syntax and row-pattern checks only; not hardware-tested.
+
+- 2026-11-02: `PSTEP` now keeps the half-step phase in firmware (`step_phase`, 0..7, reset only by `pb_init`) and resumes from it on every command instead of restarting at phase 0 (FWD) / 7 (REV). Count semantics unchanged (count includes the initial phase). Updated `printer-low-level.txt` transcript (REV 1 now holds the current phase) and added continuity cases; `python3 -m unittest tests.test_transcripts` passes. SDK firmware not rebuilt or flashed.
+
+- 2026-11-02: `print_matrix_square_ws_demo.py` now issues one single-transition `PSTEP FWD 2 0 1000` per print event (4 events per row, shift/latch/2 ms heat then half-step, host-paced at 6 ms) and relies on firmware-persistent phase; removed the 8-step-cycle pairing and lag abort. Requires the new `step_phase` firmware. Syntax/row checks only; not hardware-tested.
