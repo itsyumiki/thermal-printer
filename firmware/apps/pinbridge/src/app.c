@@ -276,7 +276,8 @@ static void tx_task(void *priv) {
 /* Timer 1 is reserved for the printhead pulse deadline in this app. The BR23
  * timer block supports a crystal-clocked, divided-by-four count (6 ticks/us at
  * the SDK's 24 MHz OSC_Hz setting). The 2.5 ms maximum pulse is 15,000 ticks. */
-static void pb_heater_timer_isr(void) {
+___interrupt
+void pb_heater_timer_isr(void) {
     JL_TIMER1->CON = BIT(14); /* stop timer and acknowledge the pending interrupt */
     ports[1]->OUT &= ~(1u << 11); /* PB11 low directly; no task wakeup required */
     heater_timer_armed = 0;
