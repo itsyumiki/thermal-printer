@@ -358,7 +358,7 @@ describe("TBP fake-transport retry behavior", () => {
     ).rejects.toThrow("mm/s");
   });
 
-  test("print-solid uses one full-duration heater pulse for timing tests", async () => {
+  test("print-solid matches checker timing with four heated events per logical row", async () => {
     const frames: any[] = [];
     const { link } = fakeLink((wire, _n, current) => {
       const frame = decode(wire);
@@ -386,11 +386,16 @@ describe("TBP fake-transport retry behavior", () => {
       speedMmS: 5.2083,
     });
     expect(result).toEqual({ queued: true, rows: 1, stopped: false });
-    expect(frames).toHaveLength(1);
-    expect(frames[0].op).toBe(OP.ROW);
-    expect(frames[0].data[48]).toBe(0x1f);
-    expect(frames[0].data[49]).toBe(0x40);
-    expect(frames[0].data[53]).toBe(1);
+    expect(frames).toHaveLength(4);
+    expect(frames.every((frame) => frame.op === OP.ROW)).toBe(true);
+    for (const frame of frames) {
+      expect(frame.data[48]).toBe(0x1f);
+      expect(frame.data[49]).toBe(0x40); // 8000 µs on every event
+      expect(frame.data[50]).toBe(2); // two half-steps per event
+      expect(frame.data[51]).toBe(0x17);
+      expect(frame.data[52]).toBe(0x70); // 6000 µs per half-step
+      expect(frame.data[53]).toBe(1);
+    }
   });
 
   test("coil hold is bounded: it configures idle_hold_ms before energising", async () => {

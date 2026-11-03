@@ -528,9 +528,9 @@ $("printBtn").onclick = async () => {
     return;
   }
   const feedSteps = Math.round(feedMm * STEPS_PER_MM);
-  if (burnUs > 0 && Math.abs(feedSteps) < DEFAULT_HEATER_SLICES) {
+  if (burnUs > 0 && Math.abs(feedSteps) < 4) {
     toast(
-      `Heated rows need at least ${DEFAULT_HEATER_SLICES} feed half-steps for ${DEFAULT_HEATER_SLICES} slices`,
+      "Heated rows need at least 4 feed half-steps for 4 print events",
       "error",
     );
     return;
@@ -538,7 +538,7 @@ $("printBtn").onclick = async () => {
   const slices = burnUs > 0 ? DEFAULT_HEATER_SLICES : 1;
   if (
     !confirm(
-      `Queue ${rows} full-width black rows at ${burnUs} µs total per row across ${slices} slice(s) (up to ${MAX_HEATER_SLICE_US} µs per pulse)?`,
+      `Queue ${rows} full-width black rows using 4 print events per row, each with a ${burnUs} µs heat pulse and total feed of ${feedSteps} half-steps per row? Heater temperature, sensor and duty safeguards remain active.`,
     )
   )
     return;
@@ -557,7 +557,7 @@ $("printBtn").onclick = async () => {
     log(
       burnUs === 0
         ? `Heatless row test queued · ${rows} rows`
-        : `Solid print queued · ${rows} rows · ${burnUs} µs total per row · ${slices} slice${slices === 1 ? "" : "s"}`,
+        : `Solid print queued · ${rows} rows · 4 events/row · ${burnUs} µs per event · ${slices} slice${slices === 1 ? "" : "s"}`,
       "success",
     );
   } catch (e) {

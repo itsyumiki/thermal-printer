@@ -877,27 +877,44 @@ export class PrinterLink {
           steps: 8,
           periodUs: 6000,
         });
+        const eventsPerRow = 4;
+        if (burn > 0 && Math.abs(steps) < eventsPerRow)
+          throw new Error(
+            "Heated rows need at least 4 feed half-steps for 4 print events",
+          );
         this.requireHeatReady(burn);
         this.stopRequested = false;
         let sent = 0;
+        const magnitude = Math.abs(steps);
+        const direction = Math.sign(steps);
+        const baseSteps = Math.floor(magnitude / eventsPerRow);
+        const extraSteps = magnitude % eventsPerRow;
+        const slices = Number(
+          msg.slices ?? (burn > 0 ? DEFAULT_HEATER_SLICES : 1),
+        );
         for (let i = 0; i < rows; i++) {
+          for (let event = 0; event < eventsPerRow; event++) {
+            if (this.stopRequested) break;
+            const eventSteps =
+              direction * (baseSteps + (event < extraSteps ? 1 : 0));
+            const timeout = Math.min(
+              30000,
+              Math.ceil((Math.abs(eventSteps) * period) / 1000) + 5000,
+            );
+            await this.transact(
+              OP.ROW,
+              row(
+                new Uint8Array(48).fill(255),
+                burn,
+                eventSteps,
+                period,
+                slices,
+              ),
+              true,
+              timeout,
+            );
+          }
           if (this.stopRequested) break;
-          const timeout = Math.min(
-            30000,
-            Math.ceil((Math.abs(steps) * period) / 1000) + 5000,
-          );
-          await this.transact(
-            OP.ROW,
-            row(
-              new Uint8Array(48).fill(255),
-              burn,
-              steps,
-              period,
-              Number(msg.slices ?? (burn > 0 ? DEFAULT_HEATER_SLICES : 1)),
-            ),
-            true,
-            timeout,
-          );
           sent = i + 1;
           this.emit("print-progress", { done: sent, total: rows });
         }
