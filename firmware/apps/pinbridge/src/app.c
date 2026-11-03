@@ -306,9 +306,7 @@ static void command_task(void *priv) {
             pb_tbp_cancel_work(&core, 4u);
             pb_safe_state(&core);
             core.tbp_active = 0;
-            core.led_mode = 0;
-            core.led_phase = 0;
-            core.led_change_ms = pb_now(&core);
+            pb_led_idle(&core, pb_now(&core));
             /* Keep the local power controls alive across USB detach. */
             { int k = pb_pin("PB1"); if (k >= 0) { (void)hal_mode(0,pb_defs[k].port,pb_defs[k].bit,PB_UP,1); core.pins[k].mode=PB_UP; } }
             { int k = pb_pin("PA1"); unsigned v=core.power_ready?1u:0u; if (k >= 0) { (void)hal_mode(0,pb_defs[k].port,pb_defs[k].bit,v?PB_HI:PB_LO,v); core.pins[k].mode=(uint8_t)(v?PB_HI:PB_LO); core.pins[k].level=(uint8_t)v; } }

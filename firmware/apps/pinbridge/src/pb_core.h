@@ -348,7 +348,7 @@ static void pb_init(pb_core *c, const pb_hal *h) {
     c->last_feed = pb_now(c);
     c->boot_ms = c->last_feed;
     button = pb_pin("PB1"); power = pb_pin("PA1"); led = pb_pin("PC7");
-    c->led_mode = 0;
+    c->led_mode = 4; /* dark until the startup hold completes */
     if (button >= 0 && c->h.set_mode) {
         c->h.set_mode(c->h.ctx,pb_defs[button].port,pb_defs[button].bit,PB_UP,1);
         c->pins[button].mode=PB_UP; c->pins[button].level=1;
@@ -450,8 +450,20 @@ static void pb_coils_idle(pb_core *c) {
     }
 }
 
+/* PC7 status LED modes: 0 slow blink (powered, waiting for the host), 1/3 double flash after
+   HELLO, 2 steady on (host connected), 4 dark (before the startup hold completes). Returns the
+   LED to its idle state: dark until powered on, then steady with a host session, else blinking. */
+static void pb_led_idle(pb_core *c, uint32_t now) {
+    c->led_mode = !c->power_ready ? 4u : c->tbp_active ? 2u : 0u;
+    c->led_phase = 0;
+    c->led_change_ms = now;
+    if (!c->power_ready)
+        (void)pb_printer_pin(c, "PC7", 0);
+}
+
 /* PB1 is active-low. Hold one second at boot to latch PA1; a fresh one-second
-   hold after startup cuts PA1. PC7 slow-blinks until HELLO, flashes twice, then stays on. */
+   hold after startup cuts PA1. PC7 stays dark until that startup hold completes, then
+   slow-blinks until HELLO, flashes twice, then stays on. */
 static void pb_power_led_poll(pb_core *c, uint32_t now) {
     int bi = pb_pin("PB1"), pi = pb_pin("PA1"), li = pb_pin("PC7");
     unsigned pressed;
@@ -472,6 +484,7 @@ static void pb_power_led_poll(pb_core *c, uint32_t now) {
                 c->wiggle_request = 1;
                 c->button_was_down = 2u;
                 (void)pb_printer_pin(c, "PA1", 1);
+                pb_led_idle(c, now); /* the LED starts blinking only now */
             }
         } else {
             c->button_was_down = 0;
@@ -1275,9 +1288,11 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         c->step_segment_remaining = 0;
         c->step_seg_head = c->step_seg_count = 0;
         pb_printer_outputs_init(c);
-        c->led_mode = 1;
-        c->led_phase = 0;
-        c->led_change_ms = pb_now(c);
+        if (c->power_ready) { /* a host connecting before the startup hold keeps the LED dark */
+            c->led_mode = 1;
+            c->led_phase = 0;
+            c->led_change_ms = pb_now(c);
+        }
         pb_heater_off(c);
         {
             uint8_t ack = 0;
@@ -1694,7 +1709,7 @@ static void pb_poll(pb_core *c) {
     if (c->wdg && anyout && (uint32_t)(now - c->last_feed) >= c->wdg) {
         pb_tbp_cancel_work(c, 3u);
         pb_safe_state(c);
-        c->tbp_active=0; c->led_mode=0; c->led_phase=0; c->led_change_ms=now;
+        c->tbp_active=0; pb_led_idle(c, now);
         if (c->dbg)
             pb_reply(c, "#wdg trip");
         pb_reply(c, "!wdg");
