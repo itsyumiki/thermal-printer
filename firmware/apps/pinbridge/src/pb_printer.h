@@ -135,6 +135,13 @@ static int pb_hex_row_ok(const char *hex) {
     return 1;
 }
 
+/* Test-only race injection points. Firmware leaves this empty; the host regression test
+ * (tests/c/pb_race_test.c) defines it to run one 1 ms step tick at a chosen point, the way the
+ * real timer interrupt can preempt the command task. It must never change behavior when empty. */
+#ifndef PB_RACE_POINT
+#define PB_RACE_POINT(c, id) ((void)0)
+#endif
+
 /* Start the nonblocking stepper: count includes the initial phase (N transitions = N+1). */
 static void pb_step_start(pb_core *c, int reverse, uint32_t count, uint32_t gap_us,
                           uint32_t dwell_us) {
@@ -150,9 +157,11 @@ static void pb_step_start(pb_core *c, int reverse, uint32_t count, uint32_t gap_
     if (c->step_wait_ms == 0)
         c->step_wait_ms = 1;
     c->step_active = count != 0;
+    PB_RACE_POINT(c, 1);
     c->last_feed = pb_now(c);
     if (count)
         pb_drive_motor_phase(c, c->step_phase & 7u); /* resume from the remembered phase */
+    PB_RACE_POINT(c, 2);
 }
 /* Append one TBP feed segment to the phase train. Segment boundaries may change direction
  * or effective millisecond period; the ISR switches at the phase boundary without releasing coils. */
@@ -165,9 +174,11 @@ static int pb_step_feed_schedule(pb_core *c, int reverse, uint32_t steps, uint32
         *target_steps = c->step_completed;
         return 1;
     }
+    PB_RACE_POINT(c, 10);
     if (c->step_active) {
         pb_step_segment *last;
         if (!c->tbp_feed_train_active || c->step_gap_ms != 0u) return 0;
+        PB_RACE_POINT(c, 11);
         if (!c->step_segment_remaining && !c->step_seg_count) {
             /* The previous segment reached its final dwell; extend before the stop tick. */
             c->step_reverse = (uint8_t)reverse;
@@ -190,13 +201,17 @@ static int pb_step_feed_schedule(pb_core *c, int reverse, uint32_t steps, uint32
             }
         }
         c->step_remaining += steps;
+        PB_RACE_POINT(c, 12);
         c->step_scheduled_total += steps;
         *target_steps = c->step_scheduled_total;
         return 1;
     }
     pb_step_start(c, reverse, steps + 1u, 0u, period_us);
+    PB_RACE_POINT(c, 3);
     c->tbp_feed_train_active = 1;
+    PB_RACE_POINT(c, 4);
     c->step_segment_remaining = steps;
+    PB_RACE_POINT(c, 5);
     c->step_scheduled_total = c->step_completed + steps;
     *target_steps = c->step_scheduled_total;
     return 1;
