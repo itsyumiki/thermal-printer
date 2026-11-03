@@ -81,8 +81,25 @@ static int pb_output_pins_available(pb_core *c, const char *const *pins, unsigne
     return 1;
 }
 static void pb_drive_motor_phase(pb_core *c, unsigned phase) {
-    for (unsigned i = 0; i < 4; i++)
-        (void)pb_printer_pin(c, pb_motor_pins[i], pb_motor_phases[phase][i]);
+    /* This path runs from usr_timer_add's hardware-timer callback. Do not use
+       hal_write here: it unconditionally disables then enables IRQs, which is
+       not safe when called from an interrupt callback. Use the adapter's
+       explicitly IRQ-safe fast port writer for motor phase updates. */
+    unsigned i;
+    for (i = 0; i < 4; i++) {
+        int k = pb_pin(pb_motor_pins[i]);
+        unsigned level = pb_motor_phases[phase & 7u][i];
+        if (k < 0 || (c->pins[k].mode != PB_LO && c->pins[k].mode != PB_HI))
+            continue;
+        if (c->h.write_port_fast) {
+            uint16_t mask = (uint16_t)(1u << pb_defs[k].bit);
+            c->h.write_port_fast(c->h.ctx, pb_defs[k].port, mask, level ? mask : 0);
+            c->pins[k].level = (uint8_t)level;
+            c->pins[k].mode = (uint8_t)(level ? PB_HI : PB_LO);
+        } else {
+            (void)pb_printer_pin_i(c, k, level);
+        }
+    }
 }
 
 /* The motor stepper writes its ports from interrupt context, so a head port that shares a port

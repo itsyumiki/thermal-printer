@@ -24,6 +24,13 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("if (core.step_active)", source)
         self.assertNotIn("sys_s_hi_timer_add(NULL, pb_step_timer, 1)", source)
 
+    def test_motor_phase_callback_uses_irq_safe_port_writer(self):
+        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
+        phase = printer[printer.index("static void pb_drive_motor_phase"):printer.index("/* A head port") if "/* A head port" in printer else printer.index("/* Shift one fully validated")]
+        self.assertIn("c->h.write_port_fast", phase)
+        self.assertIn("pb_printer_pin_i(c, k, level)", phase)
+        self.assertIn("unconditionally disables then enables IRQs", phase)
+
     def test_stepper_runtime_diagnostics_expose_timer_progress_and_wiggle_gates(self):
         app = APP.read_text(encoding="utf-8")
         core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
