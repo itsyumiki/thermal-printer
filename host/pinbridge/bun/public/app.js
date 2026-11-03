@@ -15,6 +15,9 @@ const state = {
   toastTimer: null,
 };
 const pending = new Map();
+const STEPS_PER_MM = 32;
+const MAX_HEATER_SLICE_US = 2500;
+const DEFAULT_HEATER_SLICES = 4;
 function log(message, level = "info") {
   const row = document.createElement("div");
   row.className = `log-entry ${level}`;
@@ -134,15 +137,19 @@ function setConnection(c) {
     (info.battMinRaw !== 0xffff || !!(info.caps & 0x04)) &&
     (info.caps & requiredSensors) === requiredSensors
   );
-  $("burnUs").max = String(heatReady ? info.burnMaxUs : 0);
+  $("burnUs").max = String(
+    heatReady
+      ? Math.min(info.burnMaxUs, MAX_HEATER_SLICE_US * DEFAULT_HEATER_SLICES)
+      : 0,
+  );
   $("burnUs").disabled = !heatReady;
   if (!heatReady) {
     $("burnUs").value = "0";
     $("heaterNotice").querySelector("p").textContent =
-      "Heating disabled: temperature, battery and paper sensors or calibrated heater/duty limits are unavailable. Only heatless feed tests are allowed.";
+      `Heating disabled until temperature, battery and paper sensors are valid. Per-slice cap: ${MAX_HEATER_SLICE_US} µs; up to ${DEFAULT_HEATER_SLICES} slices (row total ≤ ${MAX_HEATER_SLICE_US * DEFAULT_HEATER_SLICES} µs). Only heatless feed tests are allowed.`;
   } else {
     $("heaterNotice").querySelector("p").textContent =
-      `Firmware heater gates available; burn is capped at ${info.burnMaxUs} µs. Physical validation is still required.`;
+      `Per-slice cap ${MAX_HEATER_SLICE_US} µs; heated rows use ${DEFAULT_HEATER_SLICES} slices (total ≤ ${Math.min(info.burnMaxUs, MAX_HEATER_SLICE_US * DEFAULT_HEATER_SLICES)} µs). Burn remains zero by default; physical validation is still required.`;
   }
   $("printBtn").textContent = "";
   const printLabel = document.createElement("span");
@@ -437,13 +444,13 @@ function updateEffectiveSpeed(inputId, outputId) {
     output.textContent = "Effective: — mm/s";
     return;
   }
-  const periodUs = Math.round(1e6 / (requested * 32));
+  const periodUs = Math.round(1e6 / (requested * STEPS_PER_MM));
   if (periodUs < 1000 || periodUs > 65000) {
     output.textContent = "Effective: outside firmware range";
     return;
   }
   const effectivePeriodUs = Math.ceil(periodUs / 1000) * 1000;
-  const effectiveSpeed = 1e6 / effectivePeriodUs / 32;
+  const effectiveSpeed = 1e6 / effectivePeriodUs / STEPS_PER_MM;
   output.textContent = `Effective: ${effectiveSpeed.toFixed(2)} mm/s`;
 }
 $("rowSpeed").oninput = () =>
@@ -487,7 +494,20 @@ $("printBtn").onclick = async () => {
     toast("Check print settings and allowed ranges", "error");
     return;
   }
-  if (!confirm(`Queue ${rows} full-width black rows at ${burnUs} µs per burn?`))
+  const feedSteps = Math.round(feedMm * STEPS_PER_MM);
+  if (burnUs > 0 && Math.abs(feedSteps) < DEFAULT_HEATER_SLICES) {
+    toast(
+      `Heated rows need at least ${DEFAULT_HEATER_SLICES} feed half-steps for ${DEFAULT_HEATER_SLICES} slices`,
+      "error",
+    );
+    return;
+  }
+  const slices = burnUs > 0 ? DEFAULT_HEATER_SLICES : 1;
+  if (
+    !confirm(
+      `Queue ${rows} full-width black rows at ${burnUs} µs total per row across ${slices} slice(s) (≤ ${MAX_HEATER_SLICE_US} µs each)?`,
+    )
+  )
     return;
   $("printBtn").disabled = true;
   updateProgress(0, rows);
@@ -497,14 +517,14 @@ $("printBtn").onclick = async () => {
       burnUs,
       distanceMm: feedMm,
       speedMmS,
-      slices: 1,
+      slices,
       releaseAfter: $("coilMode").value === "release",
     });
     toast(`${r.rows ?? rows} rows accepted by printer`, "success");
     log(
       burnUs === 0
         ? `Heatless row test queued · ${rows} rows`
-        : `Solid print queued · ${rows} rows · ${burnUs} µs burn`,
+        : `Solid print queued · ${rows} rows · ${burnUs} µs total per row · ${slices} slices`,
       "success",
     );
   } catch (e) {

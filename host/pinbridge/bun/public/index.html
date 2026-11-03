@@ -109,7 +109,7 @@
                   max="500"
                   value="24" /></label
               ><label
-                >Burn time (µs)
+                >Total row burn (µs)
                 <span class="input-with-unit"
                   ><input
                     id="burnUs"
@@ -151,9 +151,9 @@
             <div class="notice" id="heaterNotice">
               <span>!</span>
               <p>
-                Heating disabled: firmware advertises no validated temperature,
-                battery or paper sensors and no calibrated heater/duty limits.
-                Only heatless feed tests are allowed.
+                Per-slice cap: 2500 µs. Heated rows use four slices (maximum
+                10000 µs total per row); heating stays disabled until sensor and
+                firmware gates are valid. Burn remains zero by default.
               </p>
             </div>
             <div class="progress-wrap hidden" id="progressWrap">

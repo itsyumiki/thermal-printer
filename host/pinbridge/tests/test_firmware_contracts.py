@@ -9,6 +9,7 @@ APP = ROOT / "firmware/apps/pinbridge/src/app.c"
 WEB_APP = ROOT / "host/pinbridge/bun/public/app.js"
 WEB_HTML = ROOT / "host/pinbridge/bun/public/index.html"
 TUNING = ROOT / "firmware/apps/pinbridge/src/pb_tuning.h"
+TBP = ROOT / "host/pinbridge/bun/tbp.ts"
 UNITS = ROOT / "host/pinbridge/bun/units.ts"
 
 
@@ -28,6 +29,21 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIsNotNone(firmware_match)
         self.assertIsNotNone(host_match)
         self.assertEqual(int(firmware_match.group(1)), int(host_match.group(1)))
+
+    def test_host_heater_slice_limit_matches_firmware_tuning(self):
+        tuning = TUNING.read_text(encoding="utf-8")
+        tbp = TBP.read_text(encoding="utf-8")
+        app = WEB_APP.read_text(encoding="utf-8")
+        firmware_match = re.search(r"#define PB_TUNE_HEATER_SLICE_MAX_US (\d+)u", tuning)
+        host_match = re.search(r"MAX_HEATER_SLICE_US = (\d+);", tbp)
+        ui_match = re.search(r"const MAX_HEATER_SLICE_US = (\d+);", app)
+        self.assertIsNotNone(firmware_match)
+        self.assertIsNotNone(host_match)
+        self.assertIsNotNone(ui_match)
+        self.assertEqual(int(firmware_match.group(1)), int(host_match.group(1)))
+        self.assertEqual(int(firmware_match.group(1)), int(ui_match.group(1)))
+        self.assertIn("const slices = burnUs > 0 ? DEFAULT_HEATER_SLICES : 1;", app)
+        self.assertIn("      slices,", app)
 
     def test_webui_shows_celsius_raw_tooltip_and_safety_limits(self):
         script = WEB_APP.read_text(encoding="utf-8")

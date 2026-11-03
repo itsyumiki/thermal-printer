@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { crc16, encode, decode, OP, row, move, decodeInfo } from "./tbp.ts";
+import {
+  crc16,
+  encode,
+  decode,
+  OP,
+  row,
+  move,
+  decodeInfo,
+  MAX_HEATER_SLICE_US,
+} from "./tbp.ts";
 
 describe("TBP v1 framing", () => {
   test("CRC-16/CCITT-FALSE check vector", () =>
@@ -47,6 +56,13 @@ describe("TBP v1 framing", () => {
     expect(() => decode("AA".repeat(261))).toThrow();
     expect(() => encode(0, OP.HELLO, Uint8Array.of(1))).toThrow();
     expect(decode(frame + "\r").id).toBe(1);
+  });
+  test("enforces the per-slice heater ceiling while allowing a four-slice row total", () => {
+    const mask = new Uint8Array(48).fill(255);
+    expect(MAX_HEATER_SLICE_US).toBe(2500);
+    expect(row(mask, 8000, 8, 6000, 4)[53]).toBe(4);
+    expect(() => row(mask, 5000, 8, 6000, 1)).toThrow("2500 µs");
+    expect(() => row(mask, 10000, 8, 6000, 3)).toThrow("2500 µs");
   });
   test("encodes signed motion in two's complement", () => {
     expect([...move(-200, 3000)]).toEqual([255, 255, 255, 56, 11, 184]);

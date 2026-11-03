@@ -14,6 +14,7 @@ import {
   move,
   u16,
   join,
+  DEFAULT_HEATER_SLICES,
 } from "./tbp.ts";
 
 const root = resolve(import.meta.dir, "public");
@@ -666,7 +667,7 @@ export class PrinterLink {
         const mask = Uint8Array.from({ length: 48 }, (_, i) =>
           msg.black === false ? 0 : 255,
         );
-        const burn = Number(msg.burnUs ?? 1500);
+        const burn = Number(msg.burnUs ?? 0);
         const { steps, periodUs: period } = motionFromMessage(msg, {
           steps: 8,
           periodUs: 6000,
@@ -678,7 +679,18 @@ export class PrinterLink {
         );
         await this.transact(
           OP.ROW,
-          row(mask, burn, steps, period, Number(msg.slices ?? 1)),
+          row(
+            mask,
+            burn,
+            steps,
+            period,
+            Number(
+              msg.slices ??
+                (burn > 0 && Math.abs(steps) >= DEFAULT_HEATER_SLICES
+                  ? DEFAULT_HEATER_SLICES
+                  : 1),
+            ),
+          ),
           true,
           timeout,
         );
@@ -720,7 +732,18 @@ export class PrinterLink {
               );
               await this.transact(
                 OP.ROW,
-                row(mask, burn, steps, period, Number(item.slices ?? 1)),
+                row(
+                  mask,
+                  burn,
+                  steps,
+                  period,
+                  Number(
+                    item.slices ??
+                      (burn > 0 && Math.abs(steps) >= DEFAULT_HEATER_SLICES
+                        ? DEFAULT_HEATER_SLICES
+                        : 1),
+                  ),
+                ),
                 true,
                 timeout,
               );
@@ -733,7 +756,7 @@ export class PrinterLink {
       }
       case "print-solid": {
         const rows = Math.max(1, Math.min(500, Number(msg.rows ?? 24)));
-        const burn = Number(msg.burnUs ?? 1500);
+        const burn = Number(msg.burnUs ?? 0);
         const { steps, periodUs: period } = motionFromMessage(msg, {
           steps: 8,
           periodUs: 6000,
@@ -754,7 +777,7 @@ export class PrinterLink {
               burn,
               steps,
               period,
-              Number(msg.slices ?? 1),
+              Number(msg.slices ?? (burn > 0 ? DEFAULT_HEATER_SLICES : 1)),
             ),
             true,
             timeout,

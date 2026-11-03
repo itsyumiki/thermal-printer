@@ -222,6 +222,10 @@ Findings from the source:
   full window, docs updates (Sprint 4/6 handoff, journal, resolution note in the first bug file).
 - **Unexplained cancel at 10:51:42** (bug 1, section 2.2/4.1) is still open.
 
+### Step 7 implementation note (heater slicing UI)
+
+Heated `print-solid` rows now use four slices by default; each slice is validated against the firmware's 2500 µs cap, while the input remains total row burn (maximum 10000 µs across four slices). The WebUI displays the per-slice ceiling, total-row ceiling, and four-slice behavior, and refuses a heated row with fewer than four feed half-steps. The encoder and server tests prove 8000 µs total becomes four 2000 µs slices and reject totals that exceed the per-slice ceiling. Burn remains zero by default and the UI remains gated on firmware sensor/safety capabilities. The hardware diagnostic sequence below remains owner-run; software tests do not establish heater polarity, pulse width, thermal-paper output, or stock-equivalent energy.
+
 ## 8. Suggested order (one behavior per commit, firmware changes validated by CI only)
 1. Host: BUSY and credit handling, no `drop()` for protocol conditions, reserved control credit, raw lines in the UI log (H1-H5).
 2. Firmware: link policy replaces the 5 s watchdog (F3), COILS (F4), control plane always answers (F1, F2) with tests; spec and matrix.

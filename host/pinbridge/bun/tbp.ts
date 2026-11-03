@@ -23,6 +23,10 @@ export const STATE = {
   CANCELLED: 5,
   PROGRESS: 6,
 } as const;
+
+/** Firmware PB_TUNE_HEATER_SLICE_MAX_US; ROW burnUs is a total split across slices. */
+export const MAX_HEATER_SLICE_US = 2500;
+export const DEFAULT_HEATER_SLICES = 4;
 export type Frame = { id: number; op: number; data: Uint8Array };
 export function crc16(bytes: Uint8Array): number {
   let crc = 0xffff;
@@ -117,6 +121,10 @@ export function row(
     slices > Math.max(1, Math.abs(steps))
   )
     throw new Error("Invalid heat slices");
+  if (Math.ceil(burnUs / slices) > MAX_HEATER_SLICE_US)
+    throw new Error(
+      `Each heat slice must be at most ${MAX_HEATER_SLICE_US} µs`,
+    );
   return join(
     mask,
     u16(burnUs),

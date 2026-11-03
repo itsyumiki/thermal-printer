@@ -286,6 +286,41 @@ describe("TBP fake-transport retry behavior", () => {
     ).rejects.toThrow("mm/s");
   });
 
+  test("print-solid splits total burn into four safe heater slices", async () => {
+    const frames: any[] = [];
+    const { link } = fakeLink((wire, _n, current) => {
+      const frame = decode(wire);
+      frames.push(frame);
+      ack(current, frame.id);
+      done(current, frame.id);
+    });
+    link.info = {
+      queueDepth: 4,
+      maxWindow: 4,
+      burnTickUs: 1,
+      burnMaxUs: 10000,
+      guardUs: 100,
+      dutyWindowMs: 200,
+      dutyMaxUs: 60000,
+      shiftUs: 3000,
+      tempLimitRaw: 600,
+      battMinRaw: 3400,
+      caps: 0x0f,
+    } as any;
+    const result = await link.command("print-solid", {
+      rows: 1,
+      burnUs: 8000,
+      distanceMm: 0.25,
+      speedMmS: 5.2083,
+    });
+    expect(result).toEqual({ queued: true, rows: 1, stopped: false });
+    expect(frames).toHaveLength(1);
+    expect(frames[0].op).toBe(OP.ROW);
+    expect(frames[0].data[48]).toBe(0x1f);
+    expect(frames[0].data[49]).toBe(0x40);
+    expect(frames[0].data[53]).toBe(4);
+  });
+
   test("coil hold is bounded: it configures idle_hold_ms before energising", async () => {
     const frames: any[] = [];
     const { link, count } = fakeLink((wire, _n, current) => {
