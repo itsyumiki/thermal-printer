@@ -320,6 +320,7 @@ export class PrinterLink {
   }
   drop(reason: string) {
     this.dbg("DROP", reason);
+    this.sequenceResyncing = false;
     this.stopKeepalive();
     this.generation++;
     for (const p of this.pending.values()) {
@@ -410,28 +411,110 @@ export class PrinterLink {
           "TBP ERR after ACK; execution status is ambiguous",
         );
         this.pending.delete(f.id);
-        this.wakeCreditWaiters();
+        this.releaseSend(f.id, false);
+        if (code === 6 && arg >= 1 && arg <= 255) {
+          this.nextId = arg;
+          for (const queued of this.outbound.splice(0)) {
+            const later = this.pending.get(queued.id);
+            if (!later) continue;
+            if (later.timer) clearTimeout(later.timer);
+            this.pending.delete(queued.id);
+            later.reject(
+              new Error("Blocked by TBP sequence resynchronization"),
+            );
+          }
+          this.emit("log", {
+            level: "warn",
+            message: `Sequence mismatch after ACK; next ID reset to ${arg}; current job status is ambiguous`,
+          });
+          this.wakeCreditWaiters(true);
+        } else {
+          this.wakeCreditWaiters();
+        }
         p.reject(error);
         this.emit("log", { level: "warn", message: error.message });
         return;
       }
-      // ERR SEQ is an explicit rejection: this frame was not accepted. Retry
-      // the same payload at the printer's expected ID, but only when no other
-      // transaction could be invalidated by that resynchronization.
+      // ERR SEQ means this frame was not accepted. Cancel later unsent IDs,
+      // probe STAT at the firmware's expected ID, then retry the original
+      // command at the next ID. The UART remains open throughout recovery.
       if (code === 6 && arg >= 1 && arg <= 255 && p.retry) {
-        if (arg !== f.id && this.pending.size > 1) {
-          const error = new Error(
-            "TBP sequence mismatch with concurrent commands; resynchronization required",
-          );
+        if (this.sequenceResyncing || p.op === OP.HELLO) {
           this.pending.delete(f.id);
-          this.wakeCreditWaiters();
-          p.reject(error);
-          this.emit("log", { level: "warn", message: error.message });
+          this.releaseSend(f.id, false);
+          this.nextId = arg;
+          p.reject(
+            new Error(
+              `TBP sequence resynchronization failed at expected ID ${arg}`,
+            ),
+          );
+          this.wakeCreditWaiters(true);
           return;
         }
+        if (this.pending.size === 1 || p.op === OP.STAT) {
+          if (this.pending.size > 1) {
+            this.outbound.splice(0);
+            for (const [pendingId, later] of this.pending) {
+              if (later === p) continue;
+              if (later.timer) clearTimeout(later.timer);
+              this.pending.delete(pendingId);
+              later.reject(
+                new Error(
+                  "Cancelled unsent command after TBP sequence mismatch",
+                ),
+              );
+            }
+          }
+          this.releaseSend(f.id, false);
+          p.acked = false;
+          p.retries = 0;
+          p.retry(arg);
+          return;
+        }
+        this.outbound.splice(0);
+        for (const [pendingId, later] of this.pending) {
+          if (later === p) continue;
+          if (later.timer) clearTimeout(later.timer);
+          this.pending.delete(pendingId);
+          later.reject(
+            new Error(
+              "Cancelled unsent command after TBP sequence mismatch; retry after resync",
+            ),
+          );
+        }
+        this.pending.delete(f.id);
         this.releaseSend(f.id, false);
         p.acked = false;
-        p.retry(arg);
+        p.retries = 0;
+        this.nextId = arg;
+        this.sequenceResyncing = true;
+        this.emit("log", {
+          level: "warn",
+          message: `TBP sequence mismatch; probing expected ID ${arg} with STAT before retrying command`,
+        });
+        void this.transact(OP.STAT, new Uint8Array(), true, 400)
+          .then(() => {
+            this.sequenceResyncing = false;
+            p.retries = 0;
+            p.acked = false;
+            p.retry?.(this.nextId);
+            this.wakeCreditWaiters(true);
+          })
+          .catch((resyncError) => {
+            this.sequenceResyncing = false;
+            const reason =
+              resyncError instanceof Error
+                ? resyncError.message
+                : String(resyncError);
+            p.reject(
+              new Error(`TBP sequence resynchronization failed: ${reason}`),
+            );
+            this.wakeCreditWaiters(true);
+            this.emit("log", {
+              level: "warn",
+              message: `TBP sequence resynchronization failed: ${reason}`,
+            });
+          });
         return;
       }
       this.releaseSend(f.id, false);
@@ -554,6 +637,7 @@ export class PrinterLink {
     }
     let wire = encode(id, op, data);
     const promise = new Promise<any>((resolve, reject) => {
+      let hasBeenSent = false;
       const p: Pending = {
         id,
         op,
@@ -573,7 +657,8 @@ export class PrinterLink {
           wire = encode(id, op, data);
           this.pending.set(id, p);
         }
-        if (op !== OP.ESTOP) this.nextId = id >= 255 ? 1 : id + 1;
+        if (op !== OP.ESTOP && (!hasBeenSent || expectedId !== undefined))
+          this.nextId = id >= 255 ? 1 : id + 1;
         if (!this.pending.has(id)) return;
         if (p.retries >= 3) {
           this.pending.delete(id);
@@ -587,6 +672,7 @@ export class PrinterLink {
         const sendFrame = () => {
           if (op === OP.HELLO) this.serial?.discardPartialLine?.();
           p.retries++;
+          hasBeenSent = true;
           this.dbg(
             "TX",
             `id=${id} op=${op.toString(16).padStart(2, "0")} ${wire.trim()}${p.retries > 1 ? ` (attempt ${p.retries})` : ""}`,

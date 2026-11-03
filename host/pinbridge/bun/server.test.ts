@@ -137,6 +137,63 @@ describe("TBP fake-transport retry behavior", () => {
     expect(link.state).toBe("connected");
   });
 
+  test("resynchronizes a concurrent sequence mismatch with STAT before retrying", async () => {
+    const frames: any[] = [];
+    const { link } = fakeLink((wire, _n, current) => {
+      const frame = decode(wire);
+      frames.push(frame);
+      if (frames.length === 1) {
+        setTimeout(
+          () => current.onLine(encode(frame.id, KIND.ERR, Uint8Array.of(6, 2))),
+          0,
+        );
+      } else {
+        ack(current, frame.id);
+        done(current, frame.id);
+      }
+    });
+    const first = link.transact(
+      OP.MOVE,
+      Uint8Array.of(0, 0, 0, 10, 3, 232),
+      true,
+      100,
+    );
+    const later = link.transact(OP.STAT, new Uint8Array(), true, 100);
+    const laterRejected = expect(later).rejects.toThrow("sequence mismatch");
+    await first;
+    await laterRejected;
+    expect(frames.map((frame) => frame.op)).toEqual([
+      OP.MOVE,
+      OP.STAT,
+      OP.MOVE,
+    ]);
+    expect(frames.map((frame) => frame.id)).toEqual([1, 2, 3]);
+    expect(link.nextId).toBe(4);
+    expect(link.state).toBe("connected");
+  });
+
+  test("an ACKed command retry does not rewind the next command ID", async () => {
+    const frames: any[] = [];
+    const { link } = fakeLink((wire, _n, current) => {
+      const frame = decode(wire);
+      frames.push(frame);
+      ack(current, frame.id);
+      if (frames.length !== 1) done(current, frame.id);
+    });
+    const first = link.transact(
+      OP.MOVE,
+      Uint8Array.of(0, 0, 0, 10, 3, 232),
+      true,
+      12,
+    );
+    const second = link.transact(OP.STAT, new Uint8Array(), true, 100);
+    await second;
+    await first;
+    await link.transact(OP.STAT, new Uint8Array(), true, 100);
+    expect(frames.map((frame) => frame.id)).toEqual([1, 2, 1, 3]);
+    expect(link.nextId).toBe(4);
+  });
+
   test("clears partial UART lines before every HELLO retransmission", async () => {
     const { link, count } = fakeLink((_wire, n, current) => {
       if (n === 2) {
@@ -405,9 +462,12 @@ describe("TBP fake-transport retry behavior", () => {
     expect(link.serial?.isOpen).toBe(true);
   });
 
-  test("does not renumber an operation after ACK when terminal history is ambiguous", async () => {
-    const { link } = fakeLink((_wire, _n, current) => {
-      setTimeout(() => ack(current, 1), 0);
+  test("resynchronizes next ID and releases the sender lock after an ambiguous post-ACK sequence error", async () => {
+    const sent: number[] = [];
+    const { link } = fakeLink((wire, _n, current) => {
+      const frame = decode(wire);
+      sent.push(frame.id);
+      setTimeout(() => ack(current, frame.id), 0);
     });
     const pending = link.transact(
       OP.MOVE,
@@ -420,6 +480,9 @@ describe("TBP fake-transport retry behavior", () => {
     ack(link, 1);
     link.onLine(encode(1, KIND.ERR, Uint8Array.of(6, 5)).trim());
     await expect(pending).rejects.toThrow("execution status is ambiguous");
+    await link.transact(OP.STAT, new Uint8Array(), false, 100);
+    expect(sent).toEqual([1, 5]);
+    expect(link.nextId).toBe(6);
     expect(link.state).toBe("connected");
   });
 
