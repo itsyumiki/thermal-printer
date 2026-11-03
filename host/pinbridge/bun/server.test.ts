@@ -358,7 +358,7 @@ describe("TBP fake-transport retry behavior", () => {
     ).rejects.toThrow("mm/s");
   });
 
-  test("print-solid streams four demo-timed heater events per logical row", async () => {
+  test("print-solid keeps the full feed quota in one continuously queued row event", async () => {
     const frames: any[] = [];
     const ids: number[] = [];
     let writesBeforeFirstDone = 0;
@@ -390,19 +390,19 @@ describe("TBP fake-transport retry behavior", () => {
       caps: 0x0f,
     } as any;
     const result = await link.command("print-solid", {
-      rows: 1,
+      rows: 4,
       burnUs: 8000,
       distanceMm: 0.25,
       speedMmS: 5.2083,
     });
-    expect(result).toEqual({ queued: true, rows: 1, stopped: false });
+    expect(result).toEqual({ queued: true, rows: 4, stopped: false });
     expect(writesBeforeFirstDone).toBe(3);
     expect(frames).toHaveLength(4);
     expect(frames.every((frame) => frame.op === OP.ROW)).toBe(true);
     for (const frame of frames) {
       expect(frame.data[48]).toBe(0x1f);
-      expect(frame.data[49]).toBe(0x40); // 8000 µs on every event
-      expect(frame.data[50]).toBe(2); // two half-steps per event
+      expect(frame.data[49]).toBe(0x40); // 8000 µs once per logical row
+      expect(frame.data[50]).toBe(8); // full feed quota stays with the row
       expect(frame.data[51]).toBe(0x17);
       expect(frame.data[52]).toBe(0x70); // 6000 µs per half-step
       expect(frame.data[53]).toBe(1);

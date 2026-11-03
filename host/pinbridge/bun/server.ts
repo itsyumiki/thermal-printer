@@ -877,50 +877,34 @@ export class PrinterLink {
           steps: 8,
           periodUs: 6000,
         });
-        const eventsPerRow = 4;
-        if (burn > 0 && Math.abs(steps) < eventsPerRow)
-          throw new Error(
-            "Heated rows need at least 4 feed half-steps for 4 print events",
-          );
+        // One full-width ROW per logical line. Splitting the same feed distance
+        // across four heated ROWs leaves only a couple of motor half-steps per
+        // event; those finish long before shifting/heating does, so the feed
+        // repeatedly stops (ROW flags show COLD_START | LATE). A single ROW lets
+        // the full feed quota overlap row preparation and compatible queued rows.
         this.requireHeatReady(burn);
         this.stopRequested = false;
-        let nextEvent = 0;
-        let completedEvents = 0;
-        const totalEvents = rows * eventsPerRow;
-        const magnitude = Math.abs(steps);
-        const direction = Math.sign(steps);
-        const baseSteps = Math.floor(magnitude / eventsPerRow);
-        const extraSteps = magnitude % eventsPerRow;
+        let nextRow = 0;
+        let completedRows = 0;
         const slices = Number(
           msg.slices ?? (burn > 0 ? DEFAULT_HEATER_SLICES : 1),
         );
-        // Keep a rolling window of ROWs in flight. Waiting for all four events
-        // at each line boundary starves the firmware queue and stalls the paper.
         const workerCount = Math.max(
           1,
           Math.min(3, Number(this.info?.maxWindow ?? 4) - 1),
         );
         const worker = async () => {
           while (!this.stopRequested) {
-            const eventIndex = nextEvent++;
-            if (eventIndex >= totalEvents) return;
-            const eventInRow = eventIndex % eventsPerRow;
-            const eventSteps =
-              direction * (baseSteps + (eventInRow < extraSteps ? 1 : 0));
+            const rowIndex = nextRow++;
+            if (rowIndex >= rows) return;
             const timeout = Math.min(
               30000,
-              Math.ceil((Math.abs(eventSteps) * period) / 1000) + 5000,
+              Math.ceil((Math.abs(steps) * period) / 1000) + 5000,
             );
             try {
               await this.transact(
                 OP.ROW,
-                row(
-                  new Uint8Array(48).fill(255),
-                  burn,
-                  eventSteps,
-                  period,
-                  slices,
-                ),
+                row(new Uint8Array(48).fill(255), burn, steps, period, slices),
                 true,
                 timeout,
               );
@@ -928,13 +912,11 @@ export class PrinterLink {
               this.stopRequested = true;
               throw error;
             }
-            completedEvents++;
-            if (completedEvents % eventsPerRow === 0) {
-              this.emit("print-progress", {
-                done: completedEvents / eventsPerRow,
-                total: rows,
-              });
-            }
+            completedRows++;
+            this.emit("print-progress", {
+              done: completedRows,
+              total: rows,
+            });
           }
         };
         await Promise.all(Array.from({ length: workerCount }, () => worker()));
@@ -942,7 +924,7 @@ export class PrinterLink {
           await this.transact(OP.COILS, Uint8Array.of(0), true);
         return {
           queued: true,
-          rows: Math.floor(completedEvents / eventsPerRow),
+          rows: completedRows,
           stopped: this.stopRequested,
         };
       }
