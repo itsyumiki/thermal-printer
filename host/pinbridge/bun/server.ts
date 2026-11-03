@@ -874,30 +874,26 @@ export class PrinterLink {
         const rows = Math.max(1, Math.min(500, Number(msg.rows ?? 24)));
         const burn = Number(msg.burnUs ?? 0);
         const stepsPerRow = 4;
-        const eventsPerRow = 4;
-        const stepsPerEvent = 1;
-        const period = 15000;
-        const slices = 1;
+        const period = 6000;
+        const slices = 4;
         this.requireHeatReady(burn);
         this.stopRequested = false;
-        let nextEvent = 0;
-        let completedEvents = 0;
-        let reportedRows = 0;
-        const totalEvents = rows * eventsPerRow;
-        // Four ordered ROW events per logical image row: repeat the same bitmap
-        // and advance one half-step per heater event. A 15 ms tick leaves room for
-        // the 10 ms maximum burn plus shift/latch work before the next feed step.
+        let nextRow = 0;
+        let completedRows = 0;
         const workerCount = Math.max(
           1,
           Math.min(3, Number(this.info?.maxWindow ?? 4) - 1),
         );
+        // One ROW per logical image row: one shift/latch and four heater slices
+        // synchronized to feed edges. Keep a small compatible window in flight so
+        // the firmware can extend the continuous feed train across row boundaries.
         const worker = async () => {
           while (!this.stopRequested) {
-            const eventIndex = nextEvent++;
-            if (eventIndex >= totalEvents) return;
+            const rowIndex = nextRow++;
+            if (rowIndex >= rows) return;
             const timeout = Math.min(
               30000,
-              Math.ceil((stepsPerEvent * period) / 1000) + 5000,
+              Math.ceil((stepsPerRow * period) / 1000) + 10000,
             );
             try {
               await this.transact(
@@ -905,7 +901,7 @@ export class PrinterLink {
                 row(
                   new Uint8Array(48).fill(255),
                   burn,
-                  stepsPerEvent,
+                  stepsPerRow,
                   period,
                   slices,
                 ),
@@ -916,25 +912,16 @@ export class PrinterLink {
               this.stopRequested = true;
               throw error;
             }
-            completedEvents++;
-            const completedRows = Math.floor(completedEvents / eventsPerRow);
-            if (completedRows > reportedRows) {
-              reportedRows = completedRows;
-              this.emit("print-progress", {
-                done: reportedRows,
-                total: rows,
-              });
-            }
+            completedRows++;
+            this.emit("print-progress", { done: completedRows, total: rows });
           }
         };
         await Promise.all(Array.from({ length: workerCount }, () => worker()));
-        if (msg.releaseAfter)
+        if (msg.releaseAfter && !this.stopRequested && completedRows === rows)
           await this.transact(OP.COILS, Uint8Array.of(0), true);
         return {
-          queued: true,
-          rows: Math.floor(completedEvents / eventsPerRow),
-          events: completedEvents,
-          stepsPerRow,
+          done: completedRows,
+          total: rows,
           stopped: this.stopRequested,
         };
       }

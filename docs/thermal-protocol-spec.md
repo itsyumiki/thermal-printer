@@ -525,7 +525,7 @@ Typical job: `HELLO`, `CONFIG`, several `ROW`s sent until credits or `T_target` 
 6. **Paper sensor** PB3 mapping is unvalidated; raw GPIO level is not advertised as paper presence.
 7. **Safe numeric limits** (`burn_max_us`, duty, `temp_limit_raw`, `batt_min_raw`, `guard_us`) remain unvalidated. The firmware reports zero heater capability until they are measured and reviewed.
 8. **Coil hold** thermal limits are unknown; current `idle_hold_ms=0` releases coils after motion and nonzero values are rejected.
-9. **Slice count:** the stock firmware fires four pulses per row across four phase steps. Whether more or fewer slices improve print quality is untested.
+9. **Slice count:** the stock firmware fires four pulses per row across four phase steps. Firmware ROW scheduling now gates slice i on the corresponding completed feed edge, and the host `print-solid` path sends one ROW per logical row with four slices and four feed steps at 6 ms/step. The current pulse width still uses the blocking calibrated delay loop; exact shutoff jitter and physical darkness remain unverified.
 10. **Queue depth** depends on free RAM. A ROW slot is 54 bytes; 32 slots is about 1.7 KB.
 11. **Throughput:** hex doubles the bytes. At 6 ms per row, about 167 rows/s is about 20 kB/s upstream; fine for USB-CDC, unverified on BLE. If BLE is the bottleneck, a binary-framed variant with the same fields can be added.
 12. **Sign encoding:** `steps` uses two's complement (-128 to 127), not sign-magnitude.

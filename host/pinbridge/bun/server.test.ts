@@ -358,7 +358,7 @@ describe("TBP fake-transport retry behavior", () => {
     ).rejects.toThrow("mm/s");
   });
 
-  test("print-solid sends four one-step heater events per logical row", async () => {
+  test("print-solid pipelines one latched ROW per row with four synchronized slices", async () => {
     const frames: any[] = [];
     const ids: number[] = [];
     let writesBeforeFirstDone = 0;
@@ -389,24 +389,18 @@ describe("TBP fake-transport retry behavior", () => {
       battMinRaw: 3400,
       caps: 0x0f,
     } as any;
-    const result = await link.command("print-solid", { rows: 4, burnUs: 2000 });
-    expect(result).toEqual({
-      queued: true,
-      rows: 4,
-      events: 16,
-      stepsPerRow: 4,
-      stopped: false,
-    });
+    const result = await link.command("print-solid", { rows: 4, burnUs: 8000 });
+    expect(result).toEqual({ done: 4, total: 4, stopped: false });
     expect(writesBeforeFirstDone).toBe(3);
-    expect(frames).toHaveLength(16);
+    expect(frames).toHaveLength(4);
     expect(frames.every((frame) => frame.op === OP.ROW)).toBe(true);
     for (const frame of frames) {
-      expect(frame.data[48]).toBe(0x07); // 2000 µs per event, below the conservative cap
-      expect(frame.data[49]).toBe(0xd0);
-      expect(frame.data[50]).toBe(1); // one feed half-step per event
-      expect(frame.data[51]).toBe(0x3a);
-      expect(frame.data[52]).toBe(0x98); // fixed 15000 µs per half-step
-      expect(frame.data[53]).toBe(1);
+      expect(frame.data[48]).toBe(0x1f); // 8000 µs total row heat, four 2000 µs slices
+      expect(frame.data[49]).toBe(0x40);
+      expect(frame.data[50]).toBe(4); // four motor edges per logical row
+      expect(frame.data[51]).toBe(0x17);
+      expect(frame.data[52]).toBe(0x70); // 6000 µs per half-step
+      expect(frame.data[53]).toBe(4);
     }
   });
 

@@ -108,7 +108,7 @@ typedef struct {
     uint8_t tbp_qhead, tbp_qcount, tbp_running, tbp_stopped;
     pb_tbp_completion tbp_completions[PB_TBP_QUEUE_DEPTH];
     uint8_t tbp_comp_head, tbp_comp_count;
-    uint32_t tbp_feed_target;
+    uint32_t tbp_feed_target, tbp_row_step_start;
     uint8_t tbp_feed_deferred, tbp_feed_reverse;
     volatile uint8_t emergency_abort_requested;
     pb_tbp_command tbp_current;
@@ -968,6 +968,7 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         c->tbp_exec_bit = 0;
         c->tbp_exec_slice = 0;
         c->tbp_feed_target = c->step_completed;
+        c->tbp_row_step_start = c->step_completed;
         c->tbp_feed_deferred = 0;
         c->tbp_exec_progress_at = now + 1000u;
     }
@@ -1158,14 +1159,35 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
                 if (!c->step_active) c->tbp_row_flags |= PB_TBP_ROWFLAG_COLD_START;
                 if (pb_step_feed_schedule(c, steps < 0, count, period, &target)) {
                     c->tbp_feed_target = target;
+                    c->tbp_row_step_start = target - count;
                 } else {
-                    c->tbp_feed_deferred = 1;
-                    c->tbp_feed_reverse = (uint8_t)(steps < 0);
+                    /* Wait before touching the head if a different feed train is active.
+                     * Stage 9 retries without charging the duty budget a second time. */
+                    if (c->step_active) { c->tbp_exec_stage = 9u; return; }
+                    { uint8_t err[2] = {9, 0}; pb_tbp_terminal(c, 4u, err, sizeof err); return; }
                 }
-            } else c->tbp_feed_target = c->step_completed;
+            } else {
+                c->tbp_feed_target = c->step_completed;
+                c->tbp_row_step_start = c->step_completed;
+            }
             c->tbp_exec_stage = 1;
             c->tbp_exec_bit = 0;
             if (duration >= 250u) { pb_tbp_status(c, cmd->id, 2u, 0, 0); pb_tbp_record_state(c, cmd->id, 2u); }
+        }
+        if (c->tbp_exec_stage == 9u) {
+            uint32_t target = c->step_completed;
+            uint32_t count = (uint32_t)(steps < 0 ? -steps : steps);
+            if (!pb_step_feed_schedule(c, steps < 0, count, period, &target)) {
+                if (c->step_active) return;
+                { uint8_t err[2] = {9, 0}; pb_tbp_terminal(c, 4u, err, sizeof err); return; }
+            }
+            c->tbp_feed_target = target;
+            c->tbp_row_step_start = target - count;
+            c->tbp_exec_stage = 1u;
+            c->tbp_exec_bit = 0;
+            { uint32_t duration = steps ? (uint32_t)(steps < 0 ? -steps : steps) * period / 1000u : 0u;
+              if (any && burn) duration += (burn + PB_TBP_SHIFT_US + (uint32_t)slices * PB_TBP_GUARD_US + 999u) / 1000u + 40u;
+              if (duration >= 250u) { pb_tbp_status(c, cmd->id, 2u, 0, 0); pb_tbp_record_state(c, cmd->id, 2u); } }
         }
         if (c->tbp_exec_stage == 1u && (!any || !burn)) c->tbp_exec_stage = 4u;
         if (c->tbp_exec_stage == 1u) {
@@ -1206,6 +1228,16 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         if (c->tbp_exec_stage == 3u) {
             if (c->emergency_abort_requested) { pb_heater_off(c); return; }
             if (c->tbp_exec_slice < slices) {
+                /* Heater slice i may start only after its corresponding motor edge. */
+                if (steps) {
+                    uint32_t count = (uint32_t)(steps < 0 ? -steps : steps);
+                    uint32_t edge = c->tbp_row_step_start +
+                        (((uint32_t)(c->tbp_exec_slice + 1u) * count + slices - 1u) / slices);
+                    if ((int32_t)(c->step_completed - edge) < 0) {
+                        if (pb_feed_target_unreachable(c, edge)) { pb_tbp_fail_stop(c, 0x1Fu, 0u); return; }
+                        return;
+                    }
+                }
                 unsigned on = (unsigned)burn / slices + (c->tbp_exec_slice < ((unsigned)burn % slices));
                 c->tbp_exec_slice++;
                 if (on) {

@@ -73,8 +73,9 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIsNotNone(ui_match)
         self.assertEqual(int(firmware_match.group(1)), int(host_match.group(1)))
         self.assertEqual(int(firmware_match.group(1)), int(ui_match.group(1)))
-        self.assertIn("four print events per row", app)
-        self.assertIn("four steps per row", app)
+        self.assertIn("one shift/latch per row", app)
+        self.assertIn("four synchronized events", app)
+        self.assertIn("four feed edges", app)
         self.assertIn("thermal and duty safeguards remain active", app)
 
     def test_webui_shows_celsius_raw_tooltip_and_safety_limits(self):

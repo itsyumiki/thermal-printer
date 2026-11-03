@@ -523,7 +523,7 @@ $("printBtn").onclick = async () => {
   }
   if (
     !confirm(
-      `Queue ${rows} full-width black rows using four print events per row, one feed half-step per event (four steps per row), a fixed 15 ms step tick, and ${burnUs} µs heat per event? Heater temperature, sensor and duty safeguards remain active.`,
+      `Print ${rows} full-width black rows using one bitmap shift/latch per row, four heater slices synchronized to four feed edges at a 6 ms step period, and ${burnUs} µs total heat per row? Heater temperature, sensor and duty safeguards remain active.`,
     )
   )
     return;
@@ -539,7 +539,7 @@ $("printBtn").onclick = async () => {
     log(
       burnUs === 0
         ? `Heatless row test queued · ${rows} rows · 4 steps/row`
-        : `Solid print queued · ${rows} rows · 4 events/row · ${burnUs} µs per event · 4 steps/row`,
+        : `Solid print queued · ${rows} rows · one shift/latch per row · ${burnUs} µs total/row · four synchronized events · 6 ms steps`,
       "success",
     );
   } catch (e) {
