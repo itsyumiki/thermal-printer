@@ -327,8 +327,9 @@ static pb_gate pb_heat_gate(const pb_sensor_snapshot *s, int limit_c, int waitin
 }
 
 static void pb_init(pb_core *c, const pb_hal *h) {
-    static const char *const names[] = {"PB10","PB9","PB8","PB11","PA9","PA10","PC3","PC2"};
-    static const uint8_t levels[] = {0,0,1,0,0,1,1,0};
+    static const char *const names[] = {"PB10","PB9","PB8","PB11"};
+    static const uint8_t levels[] = {0,0,1,0};
+    static const char *const motor[] = {"PA9","PA10","PC3","PC2"};
     int button, power, led;
     unsigned j;
     memset(c, 0, sizeof(*c));
@@ -356,6 +357,14 @@ static void pb_init(pb_core *c, const pb_hal *h) {
             unsigned mode=levels[j]?PB_HI:PB_LO;
             c->h.set_mode(c->h.ctx,pb_defs[k].port,pb_defs[k].bit,mode,levels[j]);
             c->pins[k].mode=(uint8_t)mode; c->pins[k].level=levels[j];
+        }
+    }
+    /* Stepper (DRV8833, always powered): never drive the phase pins at boot. High-Z lets the
+       driver's input pull-downs coast both bridges; coils are energized only by motion commands. */
+    for (j=0;j<sizeof motor/sizeof motor[0];j++) {
+        int k=pb_pin(motor[j]);
+        if (k>=0 && c->h.set_mode && c->h.set_mode(c->h.ctx,pb_defs[k].port,pb_defs[k].bit,PB_HIZ,0) >= 0) {
+            c->pins[k].mode=PB_HIZ; c->pins[k].level=0;
         }
     }
     pb_sensors_prepare(c);
