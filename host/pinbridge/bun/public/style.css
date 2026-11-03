@@ -376,6 +376,21 @@ input {
   font-size: 10px;
   color: #c4c9c2;
 }
+.field-note {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: #c4c9c2;
+  font-size: 10px;
+}
+.field-note small {
+  color: var(--muted);
+  line-height: 1.6;
+}
 .field-grid input,
 .field-grid select {
   width: 100%;

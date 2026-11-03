@@ -68,10 +68,9 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIsNotNone(ui_match)
         self.assertEqual(int(firmware_match.group(1)), int(host_match.group(1)))
         self.assertEqual(int(firmware_match.group(1)), int(ui_match.group(1)))
-        self.assertIn("const DEFAULT_HEATER_SLICES = 1;", app)
-        self.assertIn("const slices = burnUs > 0 ? DEFAULT_HEATER_SLICES : 1;", app)
+        self.assertIn("four print events per row", app)
+        self.assertIn("four steps per row", app)
         self.assertIn("thermal and duty safeguards remain active", app)
-        self.assertIn("      slices,", app)
 
     def test_webui_shows_celsius_raw_tooltip_and_safety_limits(self):
         script = WEB_APP.read_text(encoding="utf-8")
@@ -83,8 +82,12 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         script = WEB_APP.read_text(encoding="utf-8")
         page = WEB_HTML.read_text(encoding="utf-8")
         self.assertIn('Math.ceil(periodUs / 1000) * 1000', script)
-        self.assertIn('id="rowSpeedEffective"', page)
+        self.assertNotIn('id="rowSpeedEffective"', page)
+        self.assertNotIn('id="rowMm"', page)
+        self.assertNotIn('id="rowSpeed"', page)
         self.assertIn('id="moveSpeedEffective"', page)
+        self.assertIn("15 ms", page)
+        self.assertIn("step tick", page)
 
 
 if __name__ == "__main__":

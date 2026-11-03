@@ -95,9 +95,9 @@
               <span class="panel-icon">▦</span>
             </div>
             <p class="panel-copy">
-              Run a heatless row/feed test. Printing remains disabled until
-              temperature, battery and paper sensing plus heater limits are
-              validated.
+              Four synchronized print events per image row, with a fixed
+              four-step feed cadence. Heater output remains gated by
+              temperature, battery, paper and duty safeguards.
             </p>
             <div class="field-grid">
               <label
@@ -120,33 +120,14 @@
                     disabled
                   /><small>µs</small></span
                 ></label
-              ><label
-                >Feed per row
-                <span class="input-with-unit"
-                  ><input
-                    id="rowMm"
-                    type="number"
-                    min="-3.96875"
-                    max="3.96875"
-                    step="0.03125"
-                    value="0.25"
-                  /><small>mm</small></span
-                ></label
-              ><label
-                >Feed speed
-                <span class="input-with-unit"
-                  ><input
-                    id="rowSpeed"
-                    type="number"
-                    min="0.5"
-                    max="31.25"
-                    step="any"
-                    value="5.2083"
-                  /><small>mm/s</small></span
-                ><small class="muted" id="rowSpeedEffective"
-                  >Effective: 5.21 mm/s</small
-                ></label
               >
+              <div class="field-note">
+                <b>Fixed line cadence</b>
+                <small
+                  >4 print events per row · 1 feed half-step per event · 15 ms
+                  step tick</small
+                >
+              </div>
             </div>
             <div class="notice" id="heaterNotice">
               <span>!</span>

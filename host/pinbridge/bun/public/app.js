@@ -18,7 +18,6 @@ const state = {
 const pending = new Map();
 const STEPS_PER_MM = 32;
 const MAX_HEATER_SLICE_US = 10000;
-const DEFAULT_HEATER_SLICES = 1;
 function log(message, level = "info") {
   const row = document.createElement("div");
   row.className = `log-entry ${level}`;
@@ -140,9 +139,7 @@ function setConnection(c) {
     (info.caps & requiredSensors) === requiredSensors
   );
   $("burnUs").max = String(
-    heatReady
-      ? Math.min(info.burnMaxUs, MAX_HEATER_SLICE_US * DEFAULT_HEATER_SLICES)
-      : 0,
+    heatReady ? Math.min(info.burnMaxUs, MAX_HEATER_SLICE_US) : 0,
   );
   $("burnUs").disabled = !heatReady;
   if (heatReady && !wasHeatReady && Number($("burnUs").value) === 0) {
@@ -516,32 +513,20 @@ $("coilMode").onchange = () => {
 };
 $("printBtn").onclick = async () => {
   const rows = Number($("rowCount").value),
-    burnUs = Number($("burnUs").value),
-    feedMm = Number($("rowMm").value),
-    speedMmS = Number($("rowSpeed").value);
+    burnUs = Number($("burnUs").value);
   if (
     !Number.isInteger(rows) ||
     rows < 1 ||
     rows > 500 ||
     burnUs < 0 ||
-    burnUs > Number($("burnUs").max) ||
-    !Number.isFinite(feedMm) ||
-    Math.abs(feedMm) > Number($("rowMm").max) ||
-    !(speedMmS >= Number($("rowSpeed").min)) ||
-    speedMmS > Number($("rowSpeed").max)
+    burnUs > Number($("burnUs").max)
   ) {
     toast("Check print settings and allowed ranges", "error");
     return;
   }
-  const feedSteps = Math.round(feedMm * STEPS_PER_MM);
-  if (Math.abs(feedSteps) < 1) {
-    toast("Each solid-print row needs at least one feed half-step", "error");
-    return;
-  }
-  const slices = burnUs > 0 ? DEFAULT_HEATER_SLICES : 1;
   if (
     !confirm(
-      `Queue ${rows} full-width black rows using one print event per row, with a ${burnUs} µs heat pulse and ${feedSteps} feed half-steps per row? Heater temperature, sensor and duty safeguards remain active.`,
+      `Queue ${rows} full-width black rows using four print events per row, one feed half-step per event (four steps per row), a fixed 15 ms step tick, and ${burnUs} µs heat per event? Heater temperature, sensor and duty safeguards remain active.`,
     )
   )
     return;
@@ -551,16 +536,13 @@ $("printBtn").onclick = async () => {
     const r = await send("print-solid", {
       rows,
       burnUs,
-      distanceMm: feedMm,
-      speedMmS,
-      slices,
       releaseAfter: $("coilMode").value === "release",
     });
     toast(`${r.rows ?? rows} rows accepted by printer`, "success");
     log(
       burnUs === 0
-        ? `Heatless row test queued · ${rows} rows`
-        : `Solid print queued · ${rows} rows · 1 event/row · ${burnUs} µs per row · ${slices} slice${slices === 1 ? "" : "s"}`,
+        ? `Heatless row test queued · ${rows} rows · 4 steps/row`
+        : `Solid print queued · ${rows} rows · 4 events/row · ${burnUs} µs per event · 4 steps/row`,
       "success",
     );
   } catch (e) {
