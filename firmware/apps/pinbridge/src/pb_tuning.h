@@ -55,6 +55,7 @@
 #define PB_TUNE_TEMP_ABORT_C 75               /* STOCK inhibit level: abort a row already heating */
 #define PB_TUNE_TEMP_RESUME_C 50              /* STOCK resume level: leave HOT wait below this */
 #define PB_TUNE_HOT_WAIT_MAX_MS 60000u        /* OWNER: a row waiting for the head to cool fails OVERTEMP after this */
+#define PB_TUNE_EXECUTOR_STALL_TIMEOUT_MS 900u /* no step/shift/slice progress means fail safe, not silent forever */
 
 /* ---- Battery (SDK built-in quarter-VBAT channel, HAL already scales it to mV) ------- */
 #define PB_TUNE_BATTERY_MIN_MV 3400u          /* OWNER: refuse to heat below this; verify `ADC vbat` against a meter */

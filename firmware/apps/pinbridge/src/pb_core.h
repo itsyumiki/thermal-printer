@@ -112,6 +112,9 @@ typedef struct {
     uint8_t tbp_exec_stage, tbp_exec_slice;
     uint16_t tbp_exec_bit;
     uint32_t tbp_exec_deadline, tbp_exec_progress_at;
+    uint32_t tbp_exec_watchdog_at, tbp_exec_watchdog_steps, tbp_exec_watchdog_remaining;
+    uint16_t tbp_exec_watchdog_bit;
+    uint8_t tbp_exec_watchdog_stage, tbp_exec_watchdog_slice;
     uint32_t tbp_heat_window_start, tbp_heat_used_us;
     uint32_t tbp_hot_since;
     uint8_t tbp_hot_wait, tbp_row_flags, tbp_row_snap_valid;
@@ -777,6 +780,7 @@ static void pb_tbp_terminal(pb_core *c, uint8_t state, const uint8_t *body, uint
     pb_tbp_terminal_id(c, c->tbp_current.id, state, body, len);
     c->tbp_running = 0;
     c->tbp_exec_stage = 0;
+    c->tbp_exec_watchdog_stage = 0xFFu;
     if (state == 3u && !pb_tbp_used(c) && !c->step_active)
         pb_coils_idle(c);
 }
@@ -838,6 +842,7 @@ static void pb_tbp_cancel_work(pb_core *c, uint8_t reason) {
     c->tbp_qcount = 0;
     c->tbp_running = 0;
     c->tbp_exec_stage = 0;
+    c->tbp_exec_watchdog_stage = 0xFFu;
     c->wiggle_request = c->wiggle_stage = c->wiggle_paper_samples = 0;
     c->wiggle_pause_until_ms = c->wiggle_paper_sample_ms = 0;
     c->step_active = 0;
@@ -853,6 +858,36 @@ static void pb_tbp_fail_stop(pb_core *c, uint8_t code, uint8_t arg) {
     pb_heater_off(c);
     pb_tbp_terminal(c, 4u, error, sizeof error);
     pb_tbp_cancel_work(c, 3u);
+}
+static void pb_tbp_executor_watchdog_snapshot(pb_core *c, uint32_t now) {
+    c->tbp_exec_watchdog_at = now;
+    c->tbp_exec_watchdog_stage = c->tbp_exec_stage;
+    c->tbp_exec_watchdog_slice = c->tbp_exec_slice;
+    c->tbp_exec_watchdog_bit = c->tbp_exec_bit;
+    c->tbp_exec_watchdog_steps = c->step_completed;
+    c->tbp_exec_watchdog_remaining = c->step_remaining;
+}
+/* Intentional timed waits have their own deadlines. Every other executor stage must
+ * show measurable step/shift/slice progress within the stall window. */
+static int pb_tbp_executor_watchdog_poll(pb_core *c, uint32_t now) {
+    if (!c->tbp_running) return 0;
+    if (c->tbp_current.op == 0x12u || c->tbp_exec_stage == 7u || c->tbp_exec_stage == 8u) {
+        pb_tbp_executor_watchdog_snapshot(c, now);
+        return 0;
+    }
+    if (c->tbp_exec_watchdog_stage != c->tbp_exec_stage ||
+        c->tbp_exec_watchdog_slice != c->tbp_exec_slice ||
+        c->tbp_exec_watchdog_bit != c->tbp_exec_bit ||
+        c->tbp_exec_watchdog_steps != c->step_completed ||
+        c->tbp_exec_watchdog_remaining != c->step_remaining) {
+        pb_tbp_executor_watchdog_snapshot(c, now);
+        return 0;
+    }
+    if ((uint32_t)(now - c->tbp_exec_watchdog_at) >= PB_TUNE_EXECUTOR_STALL_TIMEOUT_MS) {
+        pb_tbp_fail_stop(c, 0x1Fu, 1u); /* INTERNAL: executor made no measurable progress */
+        return 1;
+    }
+    return 0;
 }
 static int pb_tbp_heat_window_expired(uint32_t now, uint32_t start) {
     uint32_t window = PB_TBP_DUTY_WINDOW_MS;
@@ -922,6 +957,8 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         c->tbp_qcount--;
         c->tbp_running = 1;
         c->tbp_exec_stage = 0;
+        c->tbp_exec_watchdog_stage = 0xFFu;
+        c->tbp_exec_watchdog_at = now;
         c->tbp_hot_wait = 0;
         c->tbp_row_flags = 0;
         c->tbp_row_snap_valid = 0;
@@ -932,6 +969,7 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         c->tbp_exec_progress_at = now + 1000u;
     }
     cmd = &c->tbp_current;
+    if (pb_tbp_executor_watchdog_poll(c, now)) return;
     if (cmd->op == 0x12u) {
         uint16_t ms = (uint16_t)(((uint16_t)cmd->data[0] << 8) | cmd->data[1]);
         if (!c->tbp_exec_stage) {

@@ -245,6 +245,13 @@ int main(int argc, char **argv) {
                 }
                 continue;
             }
+            if (sscanf(s, "@advance-no-step %u", &a) == 1) {
+                for (b = 0; b < a; b++) {
+                    now_ms++;
+                    if (now_ms % 10 == 0) pb_poll(&c); /* simulate a dead step-timer ISR */
+                }
+                continue;
+            }
             if (sscanf(s, "@poll-bound %u", &a) == 1) {
                 uint32_t before = now_ms;
                 pb_poll(&c);
