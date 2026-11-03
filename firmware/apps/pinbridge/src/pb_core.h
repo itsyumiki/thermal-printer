@@ -135,6 +135,7 @@ typedef struct {
     uint32_t step_gap_ms, step_dwell_ms;
     uint32_t boot_ms, button_down_ms, led_change_ms;
     uint8_t power_ready, button_was_down, led_mode, led_phase, led_pulses;
+    uint8_t wiggle_request, wiggle_stage; /* power-on motor check: 0 idle, 1 forward leg, 2 reverse leg */
     int scratch_p[PB_MAX_PINS];
     char *scratch_v[17];
 } pb_core;
@@ -241,6 +242,7 @@ static void pb_safe_pin(pb_core *c, unsigned i) {
 }
 static void pb_safe_state(pb_core *c) {
     unsigned i;
+    c->wiggle_request = c->wiggle_stage = 0;
     c->step_active = 0;
     c->step_done_pending = 0;
     c->tbp_feed_train_active = 0;
@@ -459,6 +461,7 @@ static void pb_power_led_poll(pb_core *c, uint32_t now) {
                 c->button_down_ms = now;
             } else if ((uint32_t)(now - c->button_down_ms) >= 1000u) {
                 c->power_ready = 1;
+                c->wiggle_request = 1;
                 c->button_was_down = 2u;
                 (void)pb_printer_pin(c, "PA1", 1);
             }
@@ -473,6 +476,7 @@ static void pb_power_led_poll(pb_core *c, uint32_t now) {
             c->button_down_ms = now;
         } else if ((uint32_t)(now - c->button_down_ms) >= 1000u) {
             pb_heater_off(c);
+            c->wiggle_request = c->wiggle_stage = 0;
             c->step_active = 0;
             (void)pb_printer_pin(c, "PA1", 0);
             c->power_ready = 0;
@@ -500,6 +504,44 @@ static void pb_power_led_poll(pb_core *c, uint32_t now) {
         (void)pb_printer_pin(c, "PC7", 1);
     } else if (c->led_mode == 2)
         (void)pb_printer_pin(c, "PC7", 1);
+}
+
+/* Power-on motor check: PB_TUNE_BOOT_WIGGLE_STEPS half-steps forward, then the same number back,
+ * so the paper ends where it started. Nonblocking: it reuses the legacy stepper, so the power
+ * button, USB and watchdog keep running. Motor only; the heater is never touched. Anything that
+ * clears step_active (HELLO, ESTOP, FLUSH, watchdog, USB detach, shutdown) cancels it, and a
+ * wiggle is only started when nothing else is using the motor. */
+static void pb_boot_wiggle_poll(pb_core *c) {
+    uint8_t active, done;
+    if (c->wiggle_request) {
+        c->wiggle_request = 0;
+        if (PB_TUNE_BOOT_WIGGLE_STEPS && !c->wiggle_stage && !pb_tbp_used(c) && !c->step_active &&
+            !c->tbp_stopped && !c->emergency_abort_requested) {
+            if (!pb_all_outputs(c, pb_motor_pins, 4)) pb_motor_outputs_init(c);
+            if (pb_all_outputs(c, pb_motor_pins, 4)) {
+                c->wiggle_stage = 1;
+                pb_step_start(c, 0, PB_TUNE_BOOT_WIGGLE_STEPS + 1u, 0u, PB_TUNE_BOOT_WIGGLE_PERIOD_US);
+            } else
+                pb_motor_outputs_release(c);
+        }
+        return;
+    }
+    if (!c->wiggle_stage)
+        return;
+    active = c->step_active; /* read before step_done_pending: the tick ISR clears active, then sets done */
+    done = c->step_done_pending;
+    if (done) {
+        c->step_done_pending = 0;
+        if (c->wiggle_stage == 1) {
+            c->wiggle_stage = 2;
+            pb_step_start(c, 1, PB_TUNE_BOOT_WIGGLE_STEPS + 1u, 0u, PB_TUNE_BOOT_WIGGLE_PERIOD_US);
+        } else {
+            c->wiggle_stage = 0;
+            if (!pb_tbp_used(c)) pb_coils_idle(c);
+        }
+    } else if (!active) {
+        c->wiggle_stage = 0; /* cancelled by a safe state, HELLO or shutdown */
+    }
 }
 
 static uint16_t pb_tbp_crc(const uint8_t *p, size_t n) {
@@ -721,6 +763,7 @@ static void pb_tbp_cancel_work(pb_core *c, uint8_t reason) {
     c->tbp_qcount = 0;
     c->tbp_running = 0;
     c->tbp_exec_stage = 0;
+    c->wiggle_request = c->wiggle_stage = 0;
     c->step_active = 0;
     c->step_done_pending = 0;
     c->tbp_feed_train_active = 0;
@@ -775,6 +818,7 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
     unsigned qi;
     if (c->emergency_abort_requested) {
         pb_heater_off(c);
+        c->wiggle_request = c->wiggle_stage = 0;
         c->step_active = 0;
         c->step_done_pending = 0;
         c->tbp_feed_train_active = 0;
@@ -1558,6 +1602,7 @@ static void pb_rx(pb_core *c, const uint8_t *data, size_t len) {
 static void pb_poll(pb_core *c) {
     uint32_t now = pb_now(c);
     pb_power_led_poll(c, now);
+    pb_boot_wiggle_poll(c);
     if (c->step_done_pending) {
         c->step_done_pending = 0;
         if (!c->tbp_running) {

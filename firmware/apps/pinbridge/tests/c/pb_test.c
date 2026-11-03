@@ -412,6 +412,67 @@ int main(int argc, char **argv) {
         if (c.power_ready || (outs[pp] & (1u << pb)))
             fail(ln, "one-second runtime hold did not cut power");
     }
+    /* Power-on wiggle: after the boot hold latches power, the paper motor moves
+       PB_TUNE_BOOT_WIGGLE_STEPS half-steps forward and the same number back (net zero),
+       then the coils are released. A cancel mid-wiggle must stop it for good. */
+    if (pb_pin("PA9") >= 0) {
+        int bi = pb_pin("PB1"), run;
+        unsigned bp, bb, i, k, seen_rev = 0, was_hiz;
+        if (bi < 0)
+            fail(ln, "power button pin missing");
+        bp = pb_defs[bi].port; bb = pb_defs[bi].bit;
+        for (run = 0; run < 2; run++) {
+            memset(outs, 0, sizeof outs);
+            memset(pads, 0, sizeof pads);
+            now_ms = 0;
+            pb_init(&c, &h);
+            for (k = 0; k < 4; k++) {
+                static const char *const mp[4] = {"PA9", "PA10", "PC3", "PC2"};
+                if (c.pins[pb_pin(mp[k])].mode != PB_HIZ)
+                    fail(ln, "stepper pins are not released at boot");
+            }
+            outs[bp] &= (uint16_t)~(1u << bb); /* hold the power button */
+            for (i = 0; i < 4500; i++) {
+                now_ms++;
+                pb_step_tick(&c);
+                if (now_ms % 10 == 0)
+                    pb_poll(&c);
+                if (c.wiggle_stage == 2 && !seen_rev) {
+                    seen_rev = 1;
+                    if (c.step_completed != PB_TUNE_BOOT_WIGGLE_STEPS || !c.step_reverse)
+                        fail(ln, "wiggle did not reverse after the forward leg");
+                }
+                if (run == 1 && c.wiggle_stage == 1 && c.step_completed >= 20) {
+                    pb_safe_state(&c); /* cancel mid-wiggle */
+                    break;
+                }
+            }
+            if (run == 0) {
+                if (c.wiggle_stage || c.step_active || !seen_rev)
+                    fail(ln, "wiggle did not finish");
+                if (c.step_completed != 2u * PB_TUNE_BOOT_WIGGLE_STEPS || c.step_phase != 0)
+                    fail(ln, "wiggle was not net zero");
+            } else {
+                for (i = 0; i < 100; i++) {
+                    now_ms++;
+                    pb_step_tick(&c);
+                    if (now_ms % 10 == 0)
+                        pb_poll(&c);
+                }
+                if (c.wiggle_stage || c.step_active || c.step_completed >= 40u)
+                    fail(ln, "cancelled wiggle kept moving");
+            }
+            was_hiz = 1;
+            for (k = 0; k < 4; k++) {
+                static const char *const mp[4] = {"PA9", "PA10", "PC3", "PC2"};
+                if (c.pins[pb_pin(mp[k])].mode != PB_HIZ)
+                    was_hiz = 0;
+            }
+            if (!was_hiz)
+                fail(ln, "stepper coils left energized after the wiggle");
+            seen_rev = 0;
+        }
+    }
     printf("PASS %s\n", argv[1]);
     return 0;
 }

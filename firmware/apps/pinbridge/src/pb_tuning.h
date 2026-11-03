@@ -71,5 +71,7 @@
 #define PB_TUNE_STEPPER_DEFAULT_DWELL_US 1000u
 #define PB_TUNE_COIL_HOLD_MS 0u /* conservative default: release coils */
 #define PB_TUNE_COIL_HOLD_MAX_MS 10000u /* OWNER: longest idle coil hold CONFIG may request */
+#define PB_TUNE_BOOT_WIGGLE_STEPS 200u /* OWNER: half-steps forward, then back, at power-on; 0 disables */
+#define PB_TUNE_BOOT_WIGGLE_PERIOD_US 6000u /* PROVISIONAL: per half-step; the stock wiggle timing is not recovered */
 
 #endif /* PB_TUNING_H */
