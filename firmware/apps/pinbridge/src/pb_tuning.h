@@ -65,6 +65,7 @@
 #define PB_TUNE_PAPER_PRESENT_LEVEL 0u
 
 /* ---- Motor ------------------------------------------------------------------------- */
+#define PB_TUNE_STEPS_PER_MM 32u /* OWNER assumption: 160 half-steps = 5 mm; ruler verification pending */
 #define PB_TUNE_STEPPER_MIN_PERIOD_US 1000u /* PROVISIONAL firmware floor */
 #define PB_TUNE_STEPPER_DEFAULT_PERIOD_US 1000u /* OWNER 2026-11-03: non-printing moves default to the 1 ms floor (was the 6 ms matrix demo) */
 #define PB_TUNE_STEPPER_DEFAULT_GAP_US 1000u

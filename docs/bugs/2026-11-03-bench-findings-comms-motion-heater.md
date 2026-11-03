@@ -151,6 +151,10 @@ wiggle when it happens would tell reset from USB glitch. Same open question as b
   half-steps and measure the paper with a ruler, then fix `STEPS_PER_MM` and the docs.
 - Boot wiggle today is `PB_TUNE_BOOT_WIGGLE_STEPS = 200` half-steps = 6.25 mm at 32/mm, not 5 mm.
 
+### Step 4 implementation note (distance calibration contract)
+
+Added `PB_TUNE_STEPS_PER_MM` beside the firmware motor tuning and a host source-contract test that keeps it equal to `STEPS_PER_MM`. Both remain 32 half-steps/mm based on the owner's stated 160 half-steps = 5 mm. This is **not a completed physical calibration**: a ruler measurement is explicitly pending for the owner's post-software hardware pass; if it differs, update both constants and rerun conversion tests.
+
 ## 4. Boot wiggle [source]
 Current behavior (`pb_boot_wiggle_poll`, `pb_core.h:533`): forward 200 half-steps, then **immediately** back
 200 (stage 1 to 2 with no pause, `pb_step_start` called in the same poll), on power-on, with no paper check.

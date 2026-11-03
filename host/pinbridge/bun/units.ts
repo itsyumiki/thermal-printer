@@ -1,5 +1,5 @@
 // Paper-feed units. The firmware counts half-steps and a per-half-step period in microseconds;
-// the host and UI speak millimetres and mm/s. Mechanism: 160 half-steps = 5 mm.
+// the host and UI speak millimetres and mm/s. Assumption: 160 half-steps = 5 mm; ruler check pending.
 export const STEPS_PER_MM = 32;
 export const MIN_PERIOD_US = 1000; // firmware floor (PB_TUNE_STEPPER_MIN_PERIOD_US)
 export const MAX_PERIOD_US = 65000;
