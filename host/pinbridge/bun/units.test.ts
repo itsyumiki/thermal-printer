@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   MAX_SPEED_MM_S,
+  effectivePeriodUs,
   mmToSteps,
   motionFromMessage,
   periodUsToSpeed,
@@ -22,6 +23,9 @@ describe("paper-feed units", () => {
     expect(speedToPeriodUs(31.25)).toBe(1000);
     expect(periodUsToSpeed(1000)).toBe(31.25);
     expect(speedToPeriodUs(15.625)).toBe(2000);
+    expect(speedToPeriodUs(15)).toBe(3000);
+    expect(effectivePeriodUs(1042)).toBe(2000);
+    expect(periodUsToSpeed(1042)).toBe(15.625);
     expect(periodUsToSpeed(6000)).toBeCloseTo(5.2083, 3);
     expect(speedToPeriodUs(periodUsToSpeed(6000))).toBe(6000);
   });
@@ -44,6 +48,9 @@ describe("paper-feed units", () => {
     expect(
       motionFromMessage({ steps: 80, periodUs: 3000 }, { periodUs: 6000 }),
     ).toEqual({ steps: 80, periodUs: 3000 });
+    expect(
+      motionFromMessage({ steps: 80, periodUs: 1042 }, { periodUs: 6000 }),
+    ).toEqual({ steps: 80, periodUs: 2000 });
     expect(motionFromMessage({}, { steps: 8, periodUs: 1000 })).toEqual({
       steps: 8,
       periodUs: 1000,

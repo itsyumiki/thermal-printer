@@ -15,11 +15,18 @@ export function stepsToMm(steps: number): number {
   return steps / STEPS_PER_MM;
 }
 
+/** The step timer advances in whole milliseconds, so the effective period rounds up. */
+export function effectivePeriodUs(periodUs: number): number {
+  if (!Number.isFinite(periodUs) || periodUs < 0)
+    throw new Error("Period must be a non-negative number of microseconds");
+  return periodUs === 0 ? 0 : Math.ceil(periodUs / 1000) * 1000;
+}
+
 /** Fastest and slowest feed speed the firmware accepts, in mm/s. */
 export const MAX_SPEED_MM_S = 1e6 / MIN_PERIOD_US / STEPS_PER_MM; // 31.25
 export const MIN_SPEED_MM_S = 1e6 / MAX_PERIOD_US / STEPS_PER_MM; // ~0.48
 
-/** Feed speed in mm/s -> microseconds per half-step. Throws outside the firmware's range. */
+/** Feed speed in mm/s -> effective microseconds per half-step (rounded up to the 1 ms tick). */
 export function speedToPeriodUs(mmPerSecond: number): number {
   if (!Number.isFinite(mmPerSecond) || mmPerSecond <= 0)
     throw new Error("Speed must be a positive number of mm/s");
@@ -28,11 +35,13 @@ export function speedToPeriodUs(mmPerSecond: number): number {
     throw new Error(
       `Speed must be between ${MIN_SPEED_MM_S.toFixed(2)} and ${MAX_SPEED_MM_S.toFixed(2)} mm/s`,
     );
-  return period;
+  return effectivePeriodUs(period);
 }
 
 export function periodUsToSpeed(periodUs: number): number {
-  return 1e6 / periodUs / STEPS_PER_MM;
+  const effective = effectivePeriodUs(periodUs);
+  if (effective <= 0) throw new Error("Period must be positive");
+  return 1e6 / effective / STEPS_PER_MM;
 }
 
 /**
@@ -48,9 +57,9 @@ export function motionFromMessage(
     msg?.distanceMm !== undefined && msg.distanceMm !== null
       ? mmToSteps(Number(msg.distanceMm))
       : Number(msg?.steps ?? defaults.steps);
-  const periodUs =
+  const requestedPeriodUs =
     msg?.speedMmS !== undefined && msg.speedMmS !== null
       ? speedToPeriodUs(Number(msg.speedMmS))
       : Number(msg?.periodUs ?? defaults.periodUs);
-  return { steps, periodUs };
+  return { steps, periodUs: effectivePeriodUs(requestedPeriodUs) };
 }

@@ -426,6 +426,28 @@ $("clearLog").onclick = () => $("log").replaceChildren();
 $("moveMm").oninput = () => {
   $("moveMmReadout").textContent = "+" + $("moveMm").value;
 };
+function updateEffectiveSpeed(inputId, outputId) {
+  const requested = Number($(inputId).value);
+  const output = $(outputId);
+  if (!Number.isFinite(requested) || requested <= 0) {
+    output.textContent = "Effective: — mm/s";
+    return;
+  }
+  const periodUs = Math.round(1e6 / (requested * 32));
+  if (periodUs < 1000 || periodUs > 65000) {
+    output.textContent = "Effective: outside firmware range";
+    return;
+  }
+  const effectivePeriodUs = Math.ceil(periodUs / 1000) * 1000;
+  const effectiveSpeed = 1e6 / effectivePeriodUs / 32;
+  output.textContent = `Effective: ${effectiveSpeed.toFixed(2)} mm/s`;
+}
+$("rowSpeed").oninput = () =>
+  updateEffectiveSpeed("rowSpeed", "rowSpeedEffective");
+$("moveSpeed").oninput = () =>
+  updateEffectiveSpeed("moveSpeed", "moveSpeedEffective");
+updateEffectiveSpeed("rowSpeed", "rowSpeedEffective");
+updateEffectiveSpeed("moveSpeed", "moveSpeedEffective");
 $("feedBtn").onclick = () =>
   safeSend("move", {
     distanceMm: Number($("moveMm").value),
