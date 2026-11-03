@@ -273,20 +273,25 @@ static void tx_task(void *priv) {
             os_sem_pend(&tx_sem, 1);
     }
 }
-/* Timer 1 is reserved for the printhead pulse deadline in this app. The BR23
- * timer block supports a crystal-clocked, divided-by-four count (6 ticks/us at
+/* TIMER3 is reserved for the printhead pulse deadline in this app. Do NOT use TIMER1: the SDK's
+ * usr_timer (sys_hi_timer_add, which drives the 1 ms stepper tick) runs on it, and claiming it
+ * here stopped the stepper clock (PDIAG: timer registered, ticks=0). TIMER0/2 are SDK delay and
+ * handshake timers; TIMER3 is only used by the SDK IR-remote key driver, which this app lacks.
+ * The BR23 timer block supports a crystal-clocked, divided-by-four count (6 ticks/us at
  * the SDK's 24 MHz OSC_Hz setting). The 2.5 ms maximum pulse is 15,000 ticks. */
+#define PB_HEATER_TIMER JL_TIMER3
+#define PB_HEATER_TIMER_IRQ IRQ_TIME3_IDX
 ___interrupt
 void pb_heater_timer_isr(void) {
-    JL_TIMER1->CON = BIT(14); /* stop timer and acknowledge the pending interrupt */
+    PB_HEATER_TIMER->CON = BIT(14); /* stop timer and acknowledge the pending interrupt */
     ports[1]->OUT &= ~(1u << 11); /* PB11 low directly; no task wakeup required */
     heater_timer_armed = 0;
 }
 static void pb_heater_timer_init(void) {
-    JL_TIMER1->CON = BIT(14);
-    JL_TIMER1->CNT = 0;
+    PB_HEATER_TIMER->CON = BIT(14);
+    PB_HEATER_TIMER->CNT = 0;
     heater_timer_armed = 0;
-    request_irq(IRQ_TIME1_IDX, 5, pb_heater_timer_isr, 0);
+    request_irq(PB_HEATER_TIMER_IRQ, 5, pb_heater_timer_isr, 0);
     heater_timer_ready = 1;
 }
 static int hal_heater_pulse_start(void *ctx, unsigned usec) {
@@ -296,12 +301,12 @@ static int hal_heater_pulse_start(void *ctx, unsigned usec) {
     ticks = ((24000000u / 4u) * usec + 500000u) / 1000000u;
     if (!ticks || ticks > 0xffffu) return -1;
     local_irq_disable();
-    JL_TIMER1->CON = BIT(14);
-    JL_TIMER1->CNT = 0;
-    JL_TIMER1->PRD = ticks;
+    PB_HEATER_TIMER->CON = BIT(14);
+    PB_HEATER_TIMER->CNT = 0;
+    PB_HEATER_TIMER->PRD = ticks;
     ports[1]->OUT |= (1u << 11);
     heater_timer_armed = 1;
-    JL_TIMER1->CON = (0b10u << 2) | (0b0001u << 4) | BIT(1) | BIT(0);
+    PB_HEATER_TIMER->CON = (0b10u << 2) | (0b0001u << 4) | BIT(1) | BIT(0);
     local_irq_enable();
     return 0;
 }
@@ -312,7 +317,7 @@ static int hal_heater_pulse_active(void *ctx) {
 static void hal_heater_pulse_cancel(void *ctx) {
     (void)ctx;
     local_irq_disable();
-    JL_TIMER1->CON = BIT(14);
+    PB_HEATER_TIMER->CON = BIT(14);
     heater_timer_armed = 0;
     ports[1]->OUT &= ~(1u << 11);
     local_irq_enable();

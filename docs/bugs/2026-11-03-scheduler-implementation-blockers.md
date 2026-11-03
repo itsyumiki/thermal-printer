@@ -5,9 +5,9 @@ Status: **row scheduling and asynchronous heater shutoff are implemented in sour
 ## Hardware timer implementation
 
 - The BR23 SDK's `JL_TIMER_TypeDef` exposes `CON`, `CNT`, `PRD`, and `PWM` registers. SDK `timer_pwm_init` configures the crystal source with `(0b10 << 2)`, a divide-by-four prescaler with `(0b0001 << 4)`, and the counter enable bit. The SDK IR timer ISR acknowledges its interrupt with bit 14 and registers `IRQ_TIME3_IDX`; its setup shows bit 1 enables timer interrupts.
-- Pinbridge now reserves `JL_TIMER1` / `IRQ_TIME1_IDX` for heater pulse deadlines. The timer runs from the 24 MHz crystal divided by four (6 MHz, about 0.167 us per count); the 2,500 us software pulse cap fits within 15,000 counts. The timer ISR stops/acknowledges the timer and directly drives PB11 low without waiting for the command task.
+- Pinbridge now reserves `JL_TIMER3` / `IRQ_TIME3_IDX` (moved off TIMER1, which the SDK usr_timer/stepper tick needs) for heater pulse deadlines. The timer runs from the 24 MHz crystal divided by four (6 MHz, about 0.167 us per count); the 2,500 us software pulse cap fits within 15,000 counts. The timer ISR stops/acknowledges the timer and directly drives PB11 low without waiting for the command task.
 - Pulse start and cancellation execute with local interrupts disabled while timer and output state are updated. `pb_heater_off`, abort, disconnect and fault paths cancel the timer and force PB11 low. Timer-start failure fails the row closed rather than falling back to a blocking pulse on the production adapter.
-- TIMER1 is reserved for this app's heater driver; don't enable SDK TIMER1 PWM users concurrently. The exact timer interrupt latency and clock tolerance still need hardware measurement. No build or hardware timing test was run in this change.
+- TIMER3 is reserved for this app's heater driver; don't enable SDK TIMER3 (IR key) users concurrently. The exact timer interrupt latency and clock tolerance still need hardware measurement. No build or hardware timing test was run in this change.
 
 ## Scheduler changes
 
@@ -19,4 +19,4 @@ Status: **row scheduling and asynchronous heater shutoff are implemented in sour
 
 ## Remaining acceptance work
 
-The portable simulation verifies state and ordering, not real TIMER1 register behavior, pulse-off jitter, GPIO electrical latency, physical darkness, or thermal behavior. Firmware compilation and physical timing acceptance have intentionally not been run. Do not raise pulse limits to compensate for timing defects.
+The portable simulation verifies state and ordering, not real TIMER3 register behavior, pulse-off jitter, GPIO electrical latency, physical darkness, or thermal behavior. Firmware compilation and physical timing acceptance have intentionally not been run. Do not raise pulse limits to compensate for timing defects.

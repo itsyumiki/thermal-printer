@@ -28,7 +28,7 @@
 #define PB_TUNE_HEATER_NOMINAL_PULSE_US 1500u /* PROVISIONAL; old demo default */
 #define PB_TUNE_HEATER_REQUEST_MAX_US PB_TUNE_HEATER_SLICE_MAX_US /* legacy PHEAT/PEVENT input */
 #define PB_TUNE_HEATER_BURN_MAX_US 10000u   /* OWNER: >= 4 events x 2.22 ms (stock row at best quality) */
-#define PB_TUNE_HEATER_TIMER_TICK_US 1u     /* protocol input granularity; BR23 TIMER1 handles pulse shutoff */
+#define PB_TUNE_HEATER_TIMER_TICK_US 1u     /* protocol input granularity; BR23 TIMER3 handles pulse shutoff */
 #define PB_TUNE_HEATER_GUARD_US 100u        /* OWNER: minimum heater-off gap between slices (pre-sprint-3 value) */
 #define PB_TUNE_HEATER_DUTY_WINDOW_MS 200u  /* OWNER */
 #define PB_TUNE_HEATER_DUTY_BUDGET_US 60000u /* OWNER: 30 % of the window; stock full-black is ~33-37 % */

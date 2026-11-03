@@ -24,6 +24,16 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("if (core.step_active)", source)
         self.assertNotIn("sys_s_hi_timer_add(NULL, pb_step_timer, 1)", source)
 
+    def test_heater_timer_does_not_claim_sdk_usr_timer_hardware_timer(self):
+        # usr_timer (sys_hi_timer_add) runs on TIMER1; claiming it stopped the stepper tick
+        # (bench PDIAG 2026-11-03: timer registered, ticks=0, no boot wiggle).
+        source = APP.read_text(encoding="utf-8")
+        code = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        self.assertNotIn("JL_TIMER1", code)
+        self.assertNotIn("IRQ_TIME1_IDX", code)
+        self.assertIn("#define PB_HEATER_TIMER JL_TIMER3", source)
+        self.assertIn("#define PB_HEATER_TIMER_IRQ IRQ_TIME3_IDX", source)
+
     def test_motor_phase_callback_uses_irq_safe_port_writer(self):
         printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
         phase = printer[printer.index("static void pb_drive_motor_phase"):printer.index("/* A head port") if "/* A head port" in printer else printer.index("/* Shift one fully validated")]
