@@ -17,7 +17,7 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         source = APP.read_text(encoding="utf-8")
         self.assertIn("sys_hi_timer_add(NULL, pb_step_timer, 1)", source)
         self.assertIn("sys_hi_timer_del(step_timer_id)", source)
-        self.assertIn("if (core.step_active || core.wiggle_stage)", source)
+        self.assertIn("if (core.step_active)", source)
         self.assertNotIn("sys_s_hi_timer_add(NULL, pb_step_timer, 1)", source)
 
     def test_host_and_firmware_share_the_same_half_steps_per_mm_assumption(self):

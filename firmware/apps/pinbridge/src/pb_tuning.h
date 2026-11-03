@@ -72,7 +72,12 @@
 #define PB_TUNE_STEPPER_DEFAULT_DWELL_US 1000u
 #define PB_TUNE_COIL_HOLD_MS 0u /* conservative default: release coils */
 #define PB_TUNE_COIL_HOLD_MAX_MS 10000u /* OWNER: longest idle coil hold CONFIG may request */
-#define PB_TUNE_BOOT_WIGGLE_STEPS 200u /* OWNER: half-steps forward, then back, at power-on; 0 disables */
-#define PB_TUNE_BOOT_WIGGLE_PERIOD_US 1000u /* OWNER 2026-11-03: per half-step (was 6000); the stock wiggle timing is not recovered */
+#define PB_TUNE_BOOT_WIGGLE_MM 5u /* OWNER requirement: 5 mm out and back; direction still needs hardware confirmation */
+#define PB_TUNE_BOOT_WIGGLE_STEPS (PB_TUNE_BOOT_WIGGLE_MM * PB_TUNE_STEPS_PER_MM) /* derived half-steps */
+#define PB_TUNE_BOOT_WIGGLE_PAUSE_MS 30u /* OWNER requirement: hold coils briefly at each direction/release boundary */
+#define PB_TUNE_BOOT_WIGGLE_PAPER_SAMPLE_MS 10u
+#define PB_TUNE_BOOT_WIGGLE_PAPER_SAMPLES 3u
+#define PB_TUNE_BOOT_WIGGLE_OUT_REVERSE 0u /* PROVISIONAL: flag 0 is forward; verify that forward pushes paper out */
+#define PB_TUNE_BOOT_WIGGLE_PERIOD_US 1000u /* OWNER 2026-11-03: per half-step; stock wiggle timing not recovered */
 
 #endif /* PB_TUNING_H */

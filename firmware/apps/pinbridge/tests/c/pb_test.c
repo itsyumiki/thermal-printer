@@ -419,18 +419,24 @@ int main(int argc, char **argv) {
         if (c.power_ready || (outs[pp] & (1u << pb)))
             fail(ln, "one-second runtime hold did not cut power");
     }
-    /* Power-on wiggle: after the boot hold latches power, the paper motor moves
-       PB_TUNE_BOOT_WIGGLE_STEPS half-steps forward and the same number back (net zero),
-       then the coils are released. A cancel mid-wiggle must stop it for good. */
+    /* Boot wiggle checks: stable paper required, exact derived distance, pauses with coils held,
+       and cancellation must stop motion. The outward physical direction remains owner-verified. */
     if (pb_pin("PA9") >= 0) {
-        int bi = pb_pin("PB1"), run;
-        unsigned bp, bb, i, k, seen_rev = 0, was_hiz;
-        if (bi < 0)
-            fail(ln, "power button pin missing");
+        int bi = pb_pin("PB1"), pi = pb_pin("PB3"), run;
+        unsigned bp, bb, pp, pb, i, k;
+        if (bi < 0 || pi < 0) fail(ln, "power button or paper pin missing");
         bp = pb_defs[bi].port; bb = pb_defs[bi].bit;
-        for (run = 0; run < 2; run++) {
+        pp = pb_defs[pi].port; pb = pb_defs[pi].bit;
+        if (PB_TUNE_BOOT_WIGGLE_MM != 5u ||
+            PB_TUNE_BOOT_WIGGLE_STEPS != PB_TUNE_BOOT_WIGGLE_MM * PB_TUNE_STEPS_PER_MM ||
+            PB_TUNE_BOOT_WIGGLE_STEPS != 160u)
+            fail(ln, "boot wiggle is not derived from 5 mm and the configured calibration");
+        for (run = 0; run < 4; run++) {
+            unsigned seen_pause = 0, seen_reverse = 0, seen_release_pause = 0;
+            unsigned pause_since = 0, release_since = 0, saw_any_wiggle = 0, saw_motion = 0;
             memset(outs, 0, sizeof outs);
             memset(pads, 0, sizeof pads);
+            if (run == 2) pads[pp] |= (uint16_t)(1u << pb); /* no paper: PB3 high */
             now_ms = 0;
             pb_init(&c, &h);
             for (k = 0; k < 4; k++) {
@@ -442,42 +448,72 @@ int main(int argc, char **argv) {
             for (i = 0; i < 4500; i++) {
                 now_ms++;
                 pb_step_tick(&c);
-                if (now_ms % 10 == 0)
-                    pb_poll(&c);
-                if (c.wiggle_stage == 2 && !seen_rev) {
-                    seen_rev = 1;
-                    if (c.step_completed != PB_TUNE_BOOT_WIGGLE_STEPS || !c.step_reverse)
-                        fail(ln, "wiggle did not reverse after the forward leg");
-                }
-                if (run == 1 && c.wiggle_stage == 1 && c.step_completed >= 20) {
-                    pb_safe_state(&c); /* cancel mid-wiggle */
+                if (run == 3 && now_ms == 1010u) pads[pp] |= (uint16_t)(1u << pb); /* paper disappears during debounce */
+                if (now_ms % 10 == 0) pb_poll(&c);
+                if (c.wiggle_stage) saw_any_wiggle = 1;
+                if ((c.wiggle_stage >= 1u && c.wiggle_stage <= 4u) || c.step_active) saw_motion = 1;
+                if (run == 1 && c.wiggle_stage == 1u && c.step_completed >= 20u) {
+                    pb_safe_state(&c); /* cancel mid-outward leg */
                     break;
+                }
+                if (run != 0) continue;
+                if (c.wiggle_stage == 2u && !seen_pause) {
+                    seen_pause = 1;
+                    pause_since = now_ms;
+                    if (c.step_active || c.step_completed != PB_TUNE_BOOT_WIGGLE_STEPS)
+                        fail(ln, "outward leg did not pause after exactly 5 mm");
+                    for (k = 0; k < 4; k++) {
+                        static const char *const mp[4] = {"PA9", "PA10", "PC3", "PC2"};
+                        if (c.pins[pb_pin(mp[k])].mode == PB_HIZ)
+                            fail(ln, "coils were released during the direction pause");
+                    }
+                }
+                if (c.wiggle_stage == 3u && !seen_reverse) {
+                    seen_reverse = 1;
+                    if (!seen_pause || now_ms - pause_since < PB_TUNE_BOOT_WIGGLE_PAUSE_MS ||
+                        c.step_reverse == PB_TUNE_BOOT_WIGGLE_OUT_REVERSE ||
+                        c.step_completed != PB_TUNE_BOOT_WIGGLE_STEPS)
+                        fail(ln, "reverse leg started without the configured pause or direction change");
+                }
+                if (c.wiggle_stage == 4u && !seen_release_pause) {
+                    seen_release_pause = 1;
+                    release_since = now_ms;
+                    if (c.step_active || c.step_completed != 2u * PB_TUNE_BOOT_WIGGLE_STEPS)
+                        fail(ln, "final pause did not begin after the return leg completed");
+                    for (k = 0; k < 4; k++) {
+                        static const char *const mp[4] = {"PA9", "PA10", "PC3", "PC2"};
+                        if (c.pins[pb_pin(mp[k])].mode == PB_HIZ)
+                            fail(ln, "coils were released before the final pause");
+                    }
                 }
             }
             if (run == 0) {
-                if (c.wiggle_stage || c.step_active || !seen_rev)
-                    fail(ln, "wiggle did not finish");
+                if (c.wiggle_stage || c.step_active || !seen_pause || !seen_reverse || !seen_release_pause)
+                    fail(ln, "boot wiggle did not complete every stage");
                 if (c.step_completed != 2u * PB_TUNE_BOOT_WIGGLE_STEPS || c.step_phase != 0)
-                    fail(ln, "wiggle was not net zero");
-            } else {
+                    fail(ln, "boot wiggle was not net zero");
+                if (now_ms - release_since < PB_TUNE_BOOT_WIGGLE_PAUSE_MS)
+                    fail(ln, "coils released before the final pause elapsed");
+            } else if (run == 1) {
                 for (i = 0; i < 100; i++) {
                     now_ms++;
                     pb_step_tick(&c);
-                    if (now_ms % 10 == 0)
-                        pb_poll(&c);
+                    if (now_ms % 10 == 0) pb_poll(&c);
                 }
                 if (c.wiggle_stage || c.step_active || c.step_completed >= 40u)
                     fail(ln, "cancelled wiggle kept moving");
+            } else if (run == 2) {
+                if (saw_any_wiggle || c.wiggle_stage || c.step_active || c.step_completed)
+                    fail(ln, "boot wiggle moved despite no paper");
+            } else {
+                if (saw_motion || c.wiggle_stage || c.step_active || c.step_completed)
+                    fail(ln, "boot wiggle moved after paper disappeared during debounce");
             }
-            was_hiz = 1;
             for (k = 0; k < 4; k++) {
                 static const char *const mp[4] = {"PA9", "PA10", "PC3", "PC2"};
                 if (c.pins[pb_pin(mp[k])].mode != PB_HIZ)
-                    was_hiz = 0;
+                    fail(ln, "stepper coils left energized after boot wiggle handling");
             }
-            if (!was_hiz)
-                fail(ln, "stepper coils left energized after the wiggle");
-            seen_rev = 0;
         }
     }
     printf("PASS %s\n", argv[1]);

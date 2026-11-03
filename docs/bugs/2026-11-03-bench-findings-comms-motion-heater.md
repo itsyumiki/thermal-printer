@@ -169,6 +169,10 @@ Required:
 - W4. Confirm which direction is "out" (reverse flag 0 = forward) on the real mechanism.
 - Test: extend a C transcript/sim test (tick loop with a paper pin) for pause, distance and the no-paper skip.
 
+### Step 5 implementation note (boot wiggle)
+
+The wiggle now derives 160 half-steps from `PB_TUNE_BOOT_WIGGLE_MM=5` and the shared 32 half-steps/mm assumption. It requires a valid paper-present reading plus two more present samples 10 ms apart before moving; absent/invalid or unstable paper skips the wiggle. The out leg is followed by a 30 ms coil-held pause, then the return leg, then another 30 ms coil-held pause before release. C transcript-side simulation checks exact step count/net-zero phase, both pauses and coil hold, cancellation, and no-paper skip. The outward flag is provisionally forward (`reverse=0`); the actual physical direction and distance calibration remain owner hardware checks after software tasks. No physical behavior is claimed.
+
 ## 5. Temperature shows raw counts [source]
 - STAT/INFO carry `head_temp_raw` in ADC counts by design (spec lines 242, 266). The UI prints "raw"
   (`app.js:183`). Firmware already converts to degrees C for the heat gate (`pb_sensor_head_temp_c`, the stock

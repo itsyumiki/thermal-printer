@@ -280,7 +280,7 @@ static void pb_step_timer(void *priv) {
 /* The SDK's low-power-safe sys_s_hi_timer may stretch its period during sleep.
  * Use the awake 1 ms timer only while motion/boot wiggle is active, then release it. */
 static void sync_step_timer(void) {
-    if (core.step_active || core.wiggle_stage) {
+    if (core.step_active) {
         if (!step_timer_id) {
             step_timer_id = sys_hi_timer_add(NULL, pb_step_timer, 1);
             if (!step_timer_id) {
