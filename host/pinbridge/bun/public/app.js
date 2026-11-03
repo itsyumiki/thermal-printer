@@ -9,6 +9,7 @@ const state = {
   jobs: new Map(),
   requestSeq: 0,
   reconnectDelay: 500,
+  reconnectTimer: null,
   retryCount: 0,
   printTotal: 0,
   printDone: 0,
@@ -369,14 +370,40 @@ function handleMessage(m) {
     return;
   }
 }
+function scheduleSocketReconnect() {
+  if (state.reconnectTimer !== null) return;
+  const delay = state.reconnectDelay;
+  log(`Retrying host WebSocket in ${delay} ms`, "warn");
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null;
+    connectSocket();
+  }, delay);
+  state.reconnectDelay = Math.min(8000, state.reconnectDelay * 1.7);
+}
 function connectSocket() {
+  if (
+    state.ws &&
+    (state.ws.readyState === WebSocket.CONNECTING ||
+      state.ws.readyState === WebSocket.OPEN)
+  )
+    return;
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${scheme}//${location.host}/ws`);
+  let ws;
+  try {
+    log(`Connecting to host WebSocket at ${scheme}//${location.host}/ws`);
+    ws = new WebSocket(`${scheme}//${location.host}/ws`);
+  } catch (err) {
+    log(`Could not create host WebSocket: ${err}`, "error");
+    scheduleSocketReconnect();
+    return;
+  }
   state.ws = ws;
   ws.onopen = () => {
+    if (state.reconnectTimer !== null) clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
     state.socketUp = true;
     state.reconnectDelay = 500;
-    log("Host link established", "success");
+    log("Host WebSocket connected", "success");
     void send("ports")
       .then((r) => renderPorts(r.ports || []))
       .catch(() => {});
@@ -389,13 +416,19 @@ function connectSocket() {
       log("Invalid host message: " + err, "error");
     }
   };
-  ws.onerror = () => {};
-  ws.onclose = () => {
+  ws.onerror = () => {
+    log("Host WebSocket connection error", "warn");
+  };
+  ws.onclose = (event) => {
+    if (state.ws !== ws) return;
     state.socketUp = false;
+    state.ws = null;
     setConnection({ state: "reconnecting" });
-    log("Host socket closed · retrying", "warn");
-    setTimeout(connectSocket, state.reconnectDelay);
-    state.reconnectDelay = Math.min(8000, state.reconnectDelay * 1.7);
+    log(
+      `Host WebSocket closed (code ${event.code}${event.reason ? `: ${event.reason}` : ""})`,
+      "warn",
+    );
+    scheduleSocketReconnect();
   };
 }
 function renderPorts(ports) {
