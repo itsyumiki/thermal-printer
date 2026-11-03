@@ -16,6 +16,7 @@ extern u32 adc_get_value(u32 ch);
 #define PB_USB 0
 #define PB_RING 1024
 static pb_core core;
+static u16 step_timer_id;
 static OS_SEM rx_sem, cmd_sem, tx_sem;
 static volatile u8 detached, rx_overflow, estop_fast_requested, hello_fast_clear_requested, fast_estop_id;
 static u8 ring[PB_RING], usb_rx_ring[PB_RING];
@@ -276,6 +277,23 @@ static void pb_step_timer(void *priv) {
         core.step_done_pending = 0;
     } else pb_step_tick(&core);
 }
+/* The SDK's low-power-safe sys_s_hi_timer may stretch its period during sleep.
+ * Use the awake 1 ms timer only while motion/boot wiggle is active, then release it. */
+static void sync_step_timer(void) {
+    if (core.step_active || core.wiggle_stage) {
+        if (!step_timer_id) {
+            step_timer_id = sys_hi_timer_add(NULL, pb_step_timer, 1);
+            if (!step_timer_id) {
+                /* Fail safe rather than leave an accepted motion waiting on a missing timer. */
+                pb_tbp_cancel_work(&core, 3u);
+                pb_safe_state(&core);
+            }
+        }
+    } else if (step_timer_id) {
+        sys_hi_timer_del(step_timer_id);
+        step_timer_id = 0;
+    }
+}
 static void command_task(void *priv) {
     u8 b[64];
     unsigned n, ticks = 0;
@@ -291,8 +309,8 @@ static void command_task(void *priv) {
     };
     (void)priv;
     pb_init(&core, &h);
+    step_timer_id = 0;
     if (estop_fast_requested) core.emergency_abort_requested = 1;
-    sys_s_hi_timer_add(NULL, pb_step_timer, 1);
     for (;;) {
         os_sem_pend(&cmd_sem, 1);
         if (detached) {
@@ -330,6 +348,7 @@ static void command_task(void *priv) {
             }
         }
         pb_poll(&core);
+        sync_step_timer();
         if (++ticks >= 10) {
             ticks = 0;
             cdc_set_wakeup_handler(pb_wakeup);
