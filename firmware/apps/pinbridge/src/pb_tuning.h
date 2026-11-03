@@ -66,12 +66,12 @@
 
 /* ---- Motor ------------------------------------------------------------------------- */
 #define PB_TUNE_STEPPER_MIN_PERIOD_US 1000u /* PROVISIONAL firmware floor */
-#define PB_TUNE_STEPPER_DEFAULT_PERIOD_US 6000u /* prior matrix demo: 6 ms */
+#define PB_TUNE_STEPPER_DEFAULT_PERIOD_US 1000u /* OWNER 2026-11-03: non-printing moves default to the 1 ms floor (was the 6 ms matrix demo) */
 #define PB_TUNE_STEPPER_DEFAULT_GAP_US 1000u
 #define PB_TUNE_STEPPER_DEFAULT_DWELL_US 1000u
 #define PB_TUNE_COIL_HOLD_MS 0u /* conservative default: release coils */
 #define PB_TUNE_COIL_HOLD_MAX_MS 10000u /* OWNER: longest idle coil hold CONFIG may request */
 #define PB_TUNE_BOOT_WIGGLE_STEPS 200u /* OWNER: half-steps forward, then back, at power-on; 0 disables */
-#define PB_TUNE_BOOT_WIGGLE_PERIOD_US 6000u /* PROVISIONAL: per half-step; the stock wiggle timing is not recovered */
+#define PB_TUNE_BOOT_WIGGLE_PERIOD_US 1000u /* OWNER 2026-11-03: per half-step (was 6000); the stock wiggle timing is not recovered */
 
 #endif /* PB_TUNING_H */

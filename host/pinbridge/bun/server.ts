@@ -615,7 +615,7 @@ export class PrinterLink {
       }
       case "move": {
         const n = Number(msg.steps),
-          period = Number(msg.periodUs);
+          period = Number(msg.periodUs ?? 1000);
         const timeout = Math.min(
           60000,
           Math.ceil((Math.abs(n) * period) / 1000) + 2000,
