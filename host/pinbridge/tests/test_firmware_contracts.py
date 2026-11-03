@@ -34,9 +34,28 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("#define PB_HEATER_TIMER JL_TIMER3", source)
         self.assertIn("#define PB_HEATER_TIMER_IRQ IRQ_TIME3_IDX", source)
         self.assertIn("irq_unmask_set(PB_HEATER_TIMER_IRQ, 0);", source)
-        # BR23 SDK timer setup uses bits 10+ for the clock source and BIT(2) for IRQ enable.
-        self.assertIn("(6u << 10) | (0b0001u << 4) | BIT(2) | BIT(1) | BIT(0)", source)
-        self.assertNotIn("(0b10u << 2)", source)
+        # SDK handshake_timer.c/irflt.c recipe: oscillator clock (BIT(3:2)=0b10), /4, IE, run.
+        self.assertIn("(0b10u << 2) | (0b0001u << 4) | BIT(1) | BIT(0)", source)
+        self.assertNotIn("(6u << 10)", source)
+
+    def test_heater_pulse_cannot_outlive_a_dead_timer_interrupt(self):
+        # Bench 2026-11-03 (build 0663d703): ROWs failed FAILED 1F/01 after ~0.9 s because the
+        # TIMER3 IRQ never ended the pulse, leaving PB11 high until the executor stall watchdog.
+        source = APP.read_text(encoding="utf-8")
+        start = source[source.index("static int hal_heater_pulse_start"):source.index("static int hal_heater_pulse_active")]
+        self.assertIn("PB_HEATER_PULSE_MARGIN_US", start)
+        self.assertIn("PB_HEATER_TIMER->CON & BIT(15)", start)  # pending flag works without an IRQ
+        self.assertIn("ports[1]->OUT &= ~(1u << 11)", start)  # forced low on the software bound
+        self.assertIn("core.heater_overruns++", start)
+        self.assertIn("return -1;", start)
+        self.assertIn("core.heater_isr_count++", source)
+
+    def test_heater_diagnostics_command(self):
+        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
+        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
+        self.assertIn('pb_eq(v[0], "PHDIAG")', core)
+        for field in ("starts=", "isr=", "poll=", "over=", "cnt=", "con="):
+            self.assertIn(field, printer)
 
     def test_motor_phase_callback_uses_irq_safe_port_writer(self):
         printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")

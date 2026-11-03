@@ -286,6 +286,7 @@ void pb_heater_timer_isr(void) {
     PB_HEATER_TIMER->CON = BIT(14); /* stop timer and acknowledge the pending interrupt */
     ports[1]->OUT &= ~(1u << 11); /* PB11 low directly; no task wakeup required */
     heater_timer_armed = 0;
+    core.heater_isr_count++;
 }
 static void pb_heater_timer_init(void) {
     PB_HEATER_TIMER->CON = BIT(14);
@@ -297,20 +298,54 @@ static void pb_heater_timer_init(void) {
     irq_unmask_set(PB_HEATER_TIMER_IRQ, 0);
     heater_timer_ready = 1;
 }
+/* Software margin beyond the programmed pulse before the in-line wait gives up. */
+#define PB_HEATER_PULSE_MARGIN_US 2000u
 static int hal_heater_pulse_start(void *ctx, unsigned usec) {
     uint32_t ticks;
+    unsigned spent;
+    int pending_seen = 0;
     (void)ctx;
     if (!heater_timer_ready || !usec || usec > 2500u) return -1;
     ticks = ((24000000u / 4u) * usec + 500000u) / 1000000u;
     if (!ticks || ticks > 0xffffu) return -1;
+    core.heater_pulse_starts++;
     local_irq_disable();
     PB_HEATER_TIMER->CON = BIT(14);
     PB_HEATER_TIMER->CNT = 0;
     PB_HEATER_TIMER->PRD = ticks;
     ports[1]->OUT |= (1u << 11);
     heater_timer_armed = 1;
-    PB_HEATER_TIMER->CON = (6u << 10) | (0b0001u << 4) | BIT(2) | BIT(1) | BIT(0);
+    /* SDK recipe (handshake_timer.c / irflt.c): BIT(3:2)=0b10 oscillator clock, BIT(7:4)=1
+     * prescale (24 MHz / 4), BIT(1) interrupt enable, BIT(0) run. */
+    PB_HEATER_TIMER->CON = (0b10u << 2) | (0b0001u << 4) | BIT(1) | BIT(0);
     local_irq_enable();
+    /* Finish the pulse in-line, bounded. The timer ISR normally drops PB11 and clears
+     * heater_timer_armed first. If the interrupt is not delivered, the timer's own pending flag
+     * (BIT(15), usable without an IRQ) ends the pulse. If the timer is not counting at all, the
+     * software bound (pulse + margin) forces PB11 low and the start reports failure. PB11 can
+     * therefore never stay high for more than a few ms, whatever the timer does. */
+    for (spent = 0; heater_timer_armed && spent < usec + PB_HEATER_PULSE_MARGIN_US; spent += 10u) {
+        if (PB_HEATER_TIMER->CON & BIT(15)) {
+            pending_seen = 1;
+            break;
+        }
+        hal_delay_us(NULL, 10u);
+    }
+    if (heater_timer_armed) {
+        local_irq_disable();
+        core.heater_last_cnt = PB_HEATER_TIMER->CNT;
+        core.heater_last_con = PB_HEATER_TIMER->CON;
+        PB_HEATER_TIMER->CON = BIT(14);
+        ports[1]->OUT &= ~(1u << 11);
+        heater_timer_armed = 0;
+        local_irq_enable();
+        if (pending_seen) {
+            core.heater_poll_ends++;
+        } else {
+            core.heater_overruns++;
+            return -1;
+        }
+    }
     return 0;
 }
 static int hal_heater_pulse_active(void *ctx) {

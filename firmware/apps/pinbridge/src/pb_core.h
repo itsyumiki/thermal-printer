@@ -143,6 +143,8 @@ typedef struct {
     volatile uint32_t step_timer_callbacks;
     volatile uint16_t step_timer_id;
     volatile uint8_t step_timer_reg_failures;
+    volatile uint32_t heater_pulse_starts, heater_isr_count, heater_poll_ends, heater_overruns;
+    volatile uint32_t heater_last_cnt, heater_last_con;
     uint32_t step_scheduled_total, step_segment_remaining;
     pb_step_segment step_segments[PB_TBP_QUEUE_DEPTH];
     uint8_t step_seg_head, step_seg_count, tbp_feed_train_active;
@@ -1736,7 +1738,7 @@ static void pb_command(pb_core *c, char *line) {
         pb_reply(c, message);
     }
     if (pb_eq(v[0], "PHEAD") || pb_eq(v[0], "PLATCH") || pb_eq(v[0], "PHEAT") ||
-        pb_eq(v[0], "PSTEP") || pb_eq(v[0], "PSTEPSTAT") || pb_eq(v[0], "PDIAG") ||
+        pb_eq(v[0], "PSTEP") || pb_eq(v[0], "PSTEPSTAT") || pb_eq(v[0], "PDIAG") || pb_eq(v[0], "PHDIAG") ||
         pb_eq(v[0], "PEVENT"))
         pb_printer_command(c, v, n);
     else if (pb_eq(v[0], "HEL") || pb_eq(v[0], "DBG") || pb_eq(v[0], "WDG") || pb_eq(v[0], "RST"))

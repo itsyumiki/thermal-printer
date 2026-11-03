@@ -449,6 +449,27 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
         c->last_feed = pb_now(c);
         return;
     }
+    if (pb_eq(v[0], "PHDIAG")) {
+        char b[120] = "ok hdiag starts=";
+        size_t z = strlen(b);
+        if (n != 1) {
+            pb_error(c, "arg", "PHDIAG");
+            return;
+        }
+        (void)pb_num(b, sizeof b, &z, c->heater_pulse_starts);
+        (void)pb_append(b, sizeof b, &z, " isr=");
+        (void)pb_num(b, sizeof b, &z, c->heater_isr_count);
+        (void)pb_append(b, sizeof b, &z, " poll=");
+        (void)pb_num(b, sizeof b, &z, c->heater_poll_ends);
+        (void)pb_append(b, sizeof b, &z, " over=");
+        (void)pb_num(b, sizeof b, &z, c->heater_overruns);
+        (void)pb_append(b, sizeof b, &z, " cnt=");
+        (void)pb_num(b, sizeof b, &z, c->heater_last_cnt);
+        (void)pb_append(b, sizeof b, &z, " con=");
+        (void)pb_num(b, sizeof b, &z, c->heater_last_con);
+        pb_reply(c, b);
+        return;
+    }
     if (pb_eq(v[0], "PDIAG")) {
         char b[160] = "ok diag step=";
         size_t z = strlen(b);
