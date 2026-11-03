@@ -7,7 +7,6 @@ import {
   row,
   move,
   decodeInfo,
-  MAX_HEATER_SLICE_US,
   DEFAULT_HEATER_SLICES,
 } from "./tbp.ts";
 
@@ -61,12 +60,13 @@ describe("TBP v1 framing", () => {
   test("uses one full-duration pulse by default for timing tests", () => {
     expect(DEFAULT_HEATER_SLICES).toBe(1);
   });
-  test("enforces the conservative per-slice heater cap", () => {
+  test("does not enforce heater limits on the host (firmware owns them)", () => {
     const mask = new Uint8Array(48).fill(255);
-    expect(MAX_HEATER_SLICE_US).toBe(2500);
-    expect(row(mask, 2500, 4, 6000, 1)[48]).toBe(9);
-    expect(() => row(mask, 2501, 4, 6000, 1)).toThrow(/at most 2500/);
-    expect(row(mask, 10000, 4, 6000, 4)[48]).toBe(39);
+    expect(row(mask, 2501, 4, 6000, 1)[48]).toBe(9);
+    expect(row(mask, 40000, 4, 6000, 1)[48]).toBe(156);
+    expect(row(mask, 60000, 4, 6000, 4)[48]).toBe(234);
+    // Only the 16-bit wire field is checked here.
+    expect(() => row(mask, 65536, 4, 6000, 4)).toThrow(/16-bit/);
   });
   test("encodes signed motion in two's complement", () => {
     expect([...move(-200, 3000)]).toEqual([255, 255, 255, 56, 11, 184]);

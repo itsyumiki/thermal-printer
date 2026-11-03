@@ -37,7 +37,7 @@
 < ok done
 @hw PA9=hiz PA10=hiz PC3=hiz PC2=hiz
 # Argument checks
-> PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 10001 2
+> PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 30001 2
 < err arg PEVENT
 > PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 2000 9
 < err arg PEVENT

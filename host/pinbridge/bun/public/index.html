@@ -115,7 +115,6 @@
                     id="burnUs"
                     type="number"
                     min="0"
-                    max="0"
                     value="0"
                     disabled
                   /><small>µs</small></span
@@ -132,10 +131,10 @@
             <div class="notice" id="heaterNotice">
               <span>!</span>
               <p>
-                Temporary timing-test pulse envelope: 10000 µs. Firmware thermal
-                and duty safeguards remain active; heating stays disabled until
-                sensor and firmware gates are valid. Burn remains zero by
-                default.
+                Heat limits are enforced by the firmware only (this page checks
+                none). Firmware thermal and duty safeguards remain active;
+                heating stays disabled until sensor and firmware gates are
+                valid. Burn remains zero by default.
               </p>
             </div>
             <div class="progress-wrap hidden" id="progressWrap">

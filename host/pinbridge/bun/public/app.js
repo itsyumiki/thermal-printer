@@ -17,7 +17,6 @@ const state = {
 };
 const pending = new Map();
 const STEPS_PER_MM = 32;
-const MAX_HEATER_SLICE_US = 2500;
 function log(message, level = "info") {
   const row = document.createElement("div");
   row.className = `log-entry ${level}`;
@@ -142,22 +141,21 @@ function setConnection(c) {
     (info.battMinRaw !== 0xffff || !!(info.caps & 0x04)) &&
     (info.caps & requiredSensors) === requiredSensors
   );
-  // burnUs is the TOTAL per row (split over 4 events); the firmware enforces its own
-  // per-event cap, row total and duty budget, so the field only mirrors the row total.
-  $("burnUs").max = String(heatReady ? info.burnMaxUs : 0);
+  // burnUs is the TOTAL per row (split over 4 events). No limit is enforced here: the firmware
+  // owns the per-event cap, row total, duty budget and temperature gates and rejects mistakes.
   $("burnUs").disabled = !heatReady;
   if (heatReady && !wasHeatReady && Number($("burnUs").value) === 0) {
     // Old checker demo: 2000 us per event x 4 events = 8000 us per row (stock is ~2.9-8.9 ms).
-    $("burnUs").value = String(Math.min(8000, info.burnMaxUs));
+    $("burnUs").value = "8000";
   }
   state.heatReady = heatReady;
   if (!heatReady) {
     $("burnUs").value = "0";
     $("heaterNotice").querySelector("p").textContent =
-      `Heating disabled until temperature, battery and paper sensors are valid. Conservative per-slice cap: ${MAX_HEATER_SLICE_US} µs; thermal and duty safeguards remain active. Only heatless feed tests are allowed until sensor gates are valid.`;
+      `Heating disabled until temperature, battery and paper sensors are valid. Thermal and duty safeguards remain active in the firmware. Only heatless feed tests are allowed until sensor gates are valid.`;
   } else {
     $("heaterNotice").querySelector("p").textContent =
-      `Heat is the total per row, split over 4 events (≤ ${MAX_HEATER_SLICE_US} µs each, so ${info.burnMaxUs} µs max per row). The firmware also enforces its duty budget and temperature limits.`;
+      `Heat is the total per row, split over 4 events. No limit is checked in this page: the firmware enforces the per-event cap, row total (reports ${info.burnMaxUs} µs), duty budget and temperature limits, and thermal and duty safeguards remain active.`;
   }
   $("printBtn").textContent = "";
   const printLabel = document.createElement("span");
@@ -519,15 +517,8 @@ $("printBtn").onclick = async () => {
     toast("Rows must be a whole number from 1 to 500", "error");
     return;
   }
-  if (
-    !Number.isFinite(burnUs) ||
-    burnUs < 0 ||
-    burnUs > Number($("burnUs").max)
-  ) {
-    toast(
-      `Heat per row must be 0 to ${$("burnUs").max} µs (firmware row limit)`,
-      "error",
-    );
+  if (!Number.isInteger(burnUs) || burnUs < 0) {
+    toast("Heat per row must be a whole number of µs, 0 or more", "error");
     return;
   }
   if (

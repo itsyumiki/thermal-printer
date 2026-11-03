@@ -34,12 +34,12 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("#define PB_HEATER_TIMER JL_TIMER3", source)
         self.assertIn("#define PB_HEATER_TIMER_IRQ IRQ_TIME3_IDX", source)
         self.assertIn("irq_unmask_set(PB_HEATER_TIMER_IRQ, 0);", source)
-        # SDK handshake_timer.c recipe: oscillator clock (BIT(3:2)=0b10), /4, run, clear pending.
+        # SDK handshake_timer.c recipe: oscillator clock (BIT(3:2)=0b10), /16 (table index 2), run, clear pending.
         # BIT(1) is IR-capture mode (bench: CNT ran past PRD with no pending flag), never set it.
-        self.assertIn("(0b10u << 2) | (0b0001u << 4) | BIT(0) | BIT(14)", source)
+        self.assertIn("(0b10u << 2) | (0b0010u << 4) | BIT(0) | BIT(14)", source)
         self.assertNotIn("BIT(1) | BIT(0)", source)
         self.assertNotIn("(6u << 10)", source)
-        self.assertIn("ticks = usec * 6u;", source)  # the 6e6*usec product overflowed u32 > 715 us
+        self.assertIn("ticks = (usec * 3u + 1u) / 2u;", source)  # /16 prescale: 1.5 ticks/us; PRD is 16 bits
         self.assertNotIn("(24000000u / 4u) * usec", source)
 
     def test_heater_pulse_cannot_outlive_a_dead_timer_interrupt(self):
@@ -121,18 +121,17 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("for (i = 0; i < 384u && c->tbp_exec_bit < 384u; i++)", core)
         self.assertIn("if (c->tbp_exec_bit < 384u) return;", core)
 
-    def test_host_heater_slice_limit_matches_firmware_tuning(self):
+    def test_heat_limits_live_only_in_firmware(self):
+        # Owner request 2026-11-04: one place to manage heat limits. The firmware enforces them;
+        # the host encoder and the WebUI must not carry their own copies.
         tuning = TUNING.read_text(encoding="utf-8")
         tbp = TBP.read_text(encoding="utf-8")
         app = WEB_APP.read_text(encoding="utf-8")
-        firmware_match = re.search(r"#define PB_TUNE_HEATER_SLICE_MAX_US (\d+)u", tuning)
-        host_match = re.search(r"MAX_HEATER_SLICE_US = (\d+);", tbp)
-        ui_match = re.search(r"const MAX_HEATER_SLICE_US = (\d+);", app)
-        self.assertIsNotNone(firmware_match)
-        self.assertIsNotNone(host_match)
-        self.assertIsNotNone(ui_match)
-        self.assertEqual(int(firmware_match.group(1)), int(host_match.group(1)))
-        self.assertEqual(int(firmware_match.group(1)), int(ui_match.group(1)))
+        self.assertIsNotNone(re.search(r"#define PB_TUNE_HEATER_SLICE_MAX_US \d+u", tuning))
+        self.assertIsNotNone(re.search(r"#define PB_TUNE_HEATER_BURN_MAX_US \d+u", tuning))
+        self.assertNotIn("MAX_HEATER_SLICE_US", tbp)
+        self.assertNotIn("MAX_HEATER_SLICE_US", app)
+        self.assertNotIn('$("burnUs").max', app)
         self.assertIn("one shift/latch per row", app)
         self.assertIn("four synchronized events", app)
         self.assertIn("four feed edges", app)

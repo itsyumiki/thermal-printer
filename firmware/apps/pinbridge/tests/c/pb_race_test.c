@@ -39,7 +39,7 @@ static unsigned mock_heater_active, mock_heater_fail_start, mock_heater_long_wai
 static uint32_t mock_heater_deadline;
 static int mock_heater_start(void *ctx, unsigned usec) {
     (void)ctx;
-    if (mock_heater_fail_start || !usec || usec > 2500u || mock_heater_active) return -1;
+    if (mock_heater_fail_start || !usec || usec > PB_TUNE_HEATER_SLICE_MAX_US || mock_heater_active) return -1;
     mock_heater_active = 1;
     mock_heater_deadline = now_ms + (usec + 999u) / 1000u;
     wr(NULL, 1u, (uint16_t)(1u << 11), (uint16_t)(1u << 11));

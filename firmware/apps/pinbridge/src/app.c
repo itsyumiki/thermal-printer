@@ -277,8 +277,9 @@ static void tx_task(void *priv) {
  * usr_timer (sys_hi_timer_add, which drives the 1 ms stepper tick) runs on it, and claiming it
  * here stopped the stepper clock (PDIAG: timer registered, ticks=0). TIMER0/2 are SDK delay and
  * handshake timers; TIMER3 is only used by the SDK IR-remote key driver, which this app lacks.
- * The BR23 timer block supports a crystal-clocked, divided-by-four count (6 ticks/us at
- * the SDK's 24 MHz OSC_Hz setting). The 2.5 ms maximum pulse is 15,000 ticks. */
+ * The BR23 timer block supports a crystal-clocked, divided-by-sixteen count (1.5 ticks/us at
+ * the SDK's 24 MHz OSC_Hz setting; prescale table index 2 = /16). PRD is 16 bits, so the longest
+ * pulse is 65535 / 1.5 = 43.7 ms; PB_TUNE_HEATER_SLICE_MAX_US (30 ms) is 45,000 ticks. */
 #define PB_HEATER_TIMER JL_TIMER3
 #define PB_HEATER_TIMER_IRQ IRQ_TIME3_IDX
 ___interrupt
@@ -305,8 +306,8 @@ static int hal_heater_pulse_start(void *ctx, unsigned usec) {
     unsigned spent;
     int pending_seen = 0;
     (void)ctx;
-    if (!heater_timer_ready || !usec || usec > 2500u) return -1;
-    ticks = usec * 6u; /* 24 MHz / 4 = 6 ticks per us; the old (6e6 * usec) product overflowed u32 above 715 us */
+    if (!heater_timer_ready || !usec || usec > PB_TUNE_HEATER_SLICE_MAX_US) return -1;
+    ticks = (usec * 3u + 1u) / 2u; /* 24 MHz / 16 = 1.5 ticks per us (rounded); fits u32 for any usec */
     if (!ticks || ticks > 0xffffu) return -1;
     core.heater_pulse_starts++;
     local_irq_disable();
@@ -316,11 +317,12 @@ static int hal_heater_pulse_start(void *ctx, unsigned usec) {
     ports[1]->OUT |= (1u << 11);
     heater_timer_armed = 1;
     /* SDK handshake_timer.c recipe, which polls BIT(15) at the compare: BIT(3:2)=0b10 oscillator,
-     * BIT(7:4)=1 prescale /4 (6 ticks/us), BIT(0) run in plain timer mode, BIT(14) clear pending.
+     * BIT(7:4)=2 prescale /16 (1.5 ticks/us; table index 2, was 1 = /4 until the 2026-11-04 heat
+     * experiment needed pulses above 10.9 ms), BIT(0) run in plain timer mode, BIT(14) clear pending.
      * Do NOT set BIT(1): bench 2026-11-04 showed CNT free-running past PRD with no pending flag
      * and no IRQ (PHDIAG cnt=21177 > PRD 3750), i.e. BIT(1) is the IR-capture mode, not an
      * interrupt enable (irflt.c sets it because the IR filter needs capture). */
-    PB_HEATER_TIMER->CON = (0b10u << 2) | (0b0001u << 4) | BIT(0) | BIT(14);
+    PB_HEATER_TIMER->CON = (0b10u << 2) | (0b0010u << 4) | BIT(0) | BIT(14);
     local_irq_enable();
     /* Finish the pulse in-line, bounded. The timer ISR normally drops PB11 and clears
      * heater_timer_armed first. If the interrupt is not delivered, the timer's own pending flag

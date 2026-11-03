@@ -24,8 +24,6 @@ export const STATE = {
   PROGRESS: 6,
 } as const;
 
-/** Conservative maximum duration of each heater slice; firmware also enforces row-total and thermal/duty gates. */
-export const MAX_HEATER_SLICE_US = 2500;
 export const DEFAULT_HEATER_SLICES = 1;
 export type Frame = { id: number; op: number; data: Uint8Array };
 export function crc16(bytes: Uint8Array): number {
@@ -105,7 +103,7 @@ export function row(
     throw new Error("A print row must be exactly 48 bytes (384 dots)");
   if (!Number.isInteger(burnUs) || burnUs < 0 || burnUs > 65535)
     throw new Error(
-      "Row burn time must be 0..65535 µs (the firmware enforces its own INFO limits)",
+      "Row burn time must fit the 16-bit wire field (0..65535 µs); the firmware enforces the real heat limits",
     );
   if (!Number.isInteger(steps) || steps < -128 || steps > 127)
     throw new Error("Row steps must be -128..127");
@@ -121,10 +119,6 @@ export function row(
     slices > Math.max(1, Math.abs(steps))
   )
     throw new Error("Invalid heat slices");
-  if (Math.ceil(burnUs / slices) > MAX_HEATER_SLICE_US)
-    throw new Error(
-      `Each heat slice must be at most ${MAX_HEATER_SLICE_US} µs`,
-    );
   return join(
     mask,
     u16(burnUs),

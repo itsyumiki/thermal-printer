@@ -337,7 +337,7 @@ export class PrinterLink {
     this.scheduleReconnect(1400);
   }
   onLine(line: string) {
-    if (this.diagWaiter && this.diagWaiter.match(line.trim())) return;
+    if (this.textWaiter && this.textWaiter.match(line.trim())) return;
     let f;
     try {
       f = decode(line);
@@ -713,7 +713,6 @@ export class PrinterLink {
     if (
       !i ||
       i.burnMaxUs <= 0 ||
-      burnUs > i.burnMaxUs ||
       i.burnTickUs <= 0 ||
       i.guardUs <= 0 ||
       i.dutyWindowMs <= 0 ||
@@ -728,8 +727,49 @@ export class PrinterLink {
       );
     }
   }
-  /** Plain-text firmware diagnostics (PDIAG/PHDIAG/PSTEPSTAT). Read-only, whitelisted, one at a time. */
-  private diagWaiter: { match: (line: string) => boolean } | null = null;
+  /** Send one plain-text firmware command and resolve with the first reply line matching `expect`. */
+  private textWaiter: { match: (line: string) => boolean } | null = null;
+  async textCommand(
+    cmd: string,
+    expect: RegExp,
+    timeoutMs = 2000,
+  ): Promise<string> {
+    if (!this.serial?.isOpen || this.state !== "connected")
+      throw new Error("UART is not connected");
+    if (this.textWaiter) throw new Error("Another text command is in progress");
+    return await new Promise<string>((resolve, reject) => {
+      const done = (fn: () => void) => {
+        clearTimeout(timer);
+        this.textWaiter = null;
+        fn();
+      };
+      const timer = setTimeout(
+        () =>
+          done(() =>
+            reject(new Error(`${cmd.split(" ")[0]}: no reply from firmware`)),
+          ),
+        timeoutMs,
+      );
+      this.textWaiter = {
+        match: (line) => {
+          if (expect.test(line)) {
+            done(() => resolve(line));
+            return true;
+          }
+          if (/^err /.test(line)) {
+            done(() => resolve(line)); // callers decide what an err reply means
+            return true;
+          }
+          return false;
+        },
+      };
+      this.dbg("TX", `text ${cmd.slice(0, 40)}`);
+      this.serial!.write(cmd + "\n", (e) => {
+        if (e) done(() => reject(e));
+      });
+    });
+  }
+  /** Read-only firmware diagnostics (PDIAG/PHDIAG/PSTEPSTAT). */
   async diag(cmd: string): Promise<string> {
     const allowed: Record<string, RegExp> = {
       PDIAG: /^ok diag /,
@@ -739,37 +779,61 @@ export class PrinterLink {
     const expect = allowed[cmd];
     if (!expect) throw new Error(`Unknown diagnostic command: ${cmd}`);
     if (this.mock) return `ok mock ${cmd.toLowerCase()} (no hardware)`;
-    if (!this.serial?.isOpen || this.state !== "connected")
-      throw new Error("UART is not connected");
-    if (this.diagWaiter) throw new Error("Another diagnostic is in progress");
-    return await new Promise<string>((resolve, reject) => {
-      const done = (fn: () => void) => {
-        clearTimeout(timer);
-        this.diagWaiter = null;
-        fn();
-      };
-      const timer = setTimeout(
-        () => done(() => reject(new Error(`${cmd}: no reply from firmware`))),
-        2000,
-      );
-      this.diagWaiter = {
-        match: (line) => {
-          if (expect.test(line)) {
-            done(() => resolve(line));
-            return true;
+    const reply = await this.textCommand(cmd, expect);
+    if (/^err /.test(reply))
+      throw new Error(`${cmd}: firmware said "${reply}"`);
+    return reply;
+  }
+  /**
+   * A/B test: print solid black rows the way the old checker demo did, with the firmware's legacy
+   * PEVENT command (shift + latch + software-timed heat pulse + one half-step, per event, four
+   * events per row). If this prints dark while the normal row print is white, the TBP row
+   * executor (hardware pulse timer / one shift per row) is the suspect, not the head or paper.
+   */
+  async legacyPrint(rows: number, heatUs: number) {
+    const EVENT_MS = 6;
+    if (this.mock) return { rows, events: rows * 4, refused: {}, mock: true };
+    if (this.pending.size || this.outbound.length)
+      throw new Error("Printer is busy with a queued job");
+    this.stopRequested = false;
+    for (const cmd of [
+      "MOD PB10 lo",
+      "MOD PB9 lo",
+      "MOD PB8 hi",
+      "MOD PB11 lo",
+    ]) {
+      const r = await this.textCommand(cmd, /^ok/);
+      if (!r.startsWith("ok")) throw new Error(`${cmd}: ${r}`);
+    }
+    const hex = "FF".repeat(48);
+    const refused: Record<string, number> = {};
+    let next = performance.now();
+    let doneRows = 0;
+    try {
+      for (let row = 0; row < rows && !this.stopRequested; row++) {
+        for (let ev = 0; ev < 4 && !this.stopRequested; ev++) {
+          const wait = next - performance.now();
+          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+          next = Math.max(next, performance.now()) + EVENT_MS;
+          const r = await this.textCommand(
+            `PEVENT ${hex} 2 1 2 ${heatUs} 1`,
+            /^ok event$/,
+          );
+          if (r.startsWith("err ")) {
+            refused[r] = (refused[r] ?? 0) + 1;
+            // A duty refusal just skips this event's heat; anything else is a real stop.
+            if (!/^err duty/.test(r)) throw new Error(`PEVENT refused: ${r}`);
           }
-          if (/^err /.test(line)) {
-            done(() => reject(new Error(`${cmd}: firmware said "${line}"`)));
-            return true;
-          }
-          return false;
-        },
-      };
-      this.dbg("TX", `text ${cmd}`);
-      this.serial!.write(cmd + "\n", (e) => {
-        if (e) done(() => reject(e));
-      });
-    });
+        }
+        doneRows++;
+        this.emit("print-progress", { done: doneRows, total: rows });
+      }
+    } finally {
+      try {
+        await this.transact(OP.COILS, Uint8Array.of(0), true);
+      } catch {}
+    }
+    return { rows: doneRows, events: doneRows * 4, refused };
   }
   async command(action: string, msg: any) {
     switch (action) {
@@ -780,6 +844,16 @@ export class PrinterLink {
           cmd: String(msg.cmd),
           reply: await this.diag(String(msg.cmd)),
         };
+      case "legacy-print": {
+        const rows = Math.max(
+          1,
+          Math.min(100, Math.trunc(Number(msg.rows ?? 24))),
+        );
+        // No host-side upper bound: the firmware rejects out-of-range heat itself.
+        const heatUs = Math.max(0, Math.trunc(Number(msg.heatUs ?? 1500)));
+        if (heatUs > 0) this.requireHeatReady(heatUs);
+        return await this.legacyPrint(rows, heatUs);
+      }
       case "connect": {
         const requested = String(msg.path ?? "");
         this.path = requested || autoPath;

@@ -367,9 +367,9 @@ A stationary burn (`steps = 0`) is legal and is the building block for gray (sec
 
 | Limit | Behaviour |
 |---|---|
-| `burn_max_us` per ROW | 10000 us. Larger values are rejected at parse with ERR RANGE, offset 48. A single heater pulse (`ceil(burn_us / slices)`) may not exceed the per-slice maximum of 2500 us (also ERR RANGE offset 48). Values are owner decisions derived from stock evidence (best stock quality 2.22 ms per event, hard cutoff 6 ms), not bench measurements. |
+| `burn_max_us` per ROW | 60000 us (TEST-ONLY since 2026-11-04; was 10000). Larger values are rejected at parse with ERR RANGE, offset 48. A single heater pulse (`ceil(burn_us / slices)`) may not exceed the per-slice maximum of 30000 us (TEST-ONLY; was 2500) (also ERR RANGE offset 48). Values are owner decisions derived from stock evidence (best stock quality 2.22 ms per event, hard cutoff 6 ms), not bench measurements. |
 | Duty: at most `duty_max_us` heater-on per `duty_window_ms` | 60000 us per 200 ms. A row that does not fit waits with heat off (DUTY_WAIT flag, QUEUED progress); a single row larger than the budget fails INTERNAL. Window accounting is a fixed (not sliding) window. |
-| `guard_us` and `burn_tick_us` | 100 us gap between slices; 1 us request granularity. Firmware uses BR23 TIMER3 (24 MHz crystal divided by four) for asynchronous pulse shutoff; interrupt latency still requires hardware measurement. |
+| `guard_us` and `burn_tick_us` | 100 us gap between slices; 1 us request granularity. Firmware uses BR23 TIMER3 (24 MHz crystal divided by sixteen, 1.5 ticks/us) for asynchronous pulse shutoff; interrupt latency still requires hardware measurement. |
 | Head temperature | Stock conversion of PC4. Heating may not *start* at or above 70 degC; a row already heating aborts at 75 degC (OVERTEMP, fail-stop, queue cancelled). A hot row waits with heat off until the head is below 50 degC (state WAIT_HOT, EVENT HOT, HOT_WAIT flag) and fails OVERTEMP after 60 s. |
 | Battery | Quarter-VBAT SDK channel in mV; below 3400 mV a heat row fails LOWBAT. |
 | Paper | PB3 low = present. Absent at start or before any slice: FAILED NOPAPER. |
