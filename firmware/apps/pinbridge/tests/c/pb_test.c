@@ -166,6 +166,30 @@ int main(int argc, char **argv) {
                 memmove(p + strlen(PB_CFG_HASH_STR), p + 5, strlen(p + 5) + 1);
                 memcpy(p, PB_CFG_HASH_STR, strlen(PB_CFG_HASH_STR));
             }
+            p = strstr(exp, "{build}");
+            if (p) {
+                char build_hex[9];
+                char *hexline = exp;
+                char pair[3];
+                uint8_t expected_raw[64];
+                size_t hexlen, rawlen, j;
+                uint16_t expected_crc;
+                snprintf(build_hex, sizeof build_hex, "%08lX", (unsigned long)PB_BUILD_ID);
+                memmove(p + 8, p + 7, strlen(p + 7) + 1);
+                memcpy(p, build_hex, 8);
+                hexlen = strlen(hexline);
+                if (hexlen < 4 || (hexlen & 1u) || hexlen / 2u > sizeof expected_raw)
+                    fail(ln, "invalid dynamic build-id transcript frame");
+                rawlen = hexlen / 2u;
+                for (j = 0; j < rawlen; j++) {
+                    pair[0] = hexline[j * 2u];
+                    pair[1] = hexline[j * 2u + 1u];
+                    pair[2] = 0;
+                    expected_raw[j] = (uint8_t)strtoul(pair, 0, 16);
+                }
+                expected_crc = pb_tbp_crc(expected_raw, rawlen - 2u);
+                snprintf(hexline + hexlen - 4u, 5, "%04X", expected_crc);
+            }
             p = strstr(exp, "{int}");
             if (p) {
                 char *q = strchr(output, '\n');

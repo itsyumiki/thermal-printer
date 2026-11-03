@@ -234,6 +234,10 @@ Added a 900 ms progress watchdog for non-timed executor stages. It observes stag
 
 On firmware RX-ring overflow, the adapter now clears the ring and both partial-line scanners enter discard-until-newline mode, preventing a tail fragment from being parsed as a new frame. `tbp-rx-resync.txt` simulates that state, discards the first truncated line, and verifies the next complete STAT works. On the host, `Uart.discardPartialLine()` clears only an incomplete buffered line; it is called before every HELLO send/retry. HELLO uses 400 ms transaction attempts plus 100 ms backoff and retries on the same open UART through timeouts or malformed INFO instead of closing the port. Fake-UART and static contract tests cover this recovery policy. These are host/C tests; physical USB overflow/recovery still needs validation.
 
+### Step 8 / build ID implementation note
+
+CI passes `github.sha` into `scripts/build-app.sh`; the applied firmware header receives `PB_BUILD_ID` from the first eight SHA hex digits, and HELLO writes that u32 into INFO. `BUILD-INFO.txt` records the full source SHA and the encoded ID. The host displays the ID in its connection toast and decodes it as before. The HELLO transcript uses a `{build}` placeholder so both the default-zero host C runner and a custom nonzero-ID C build exercise the exact INFO frame. The actual SDK build still needs CI after the commit is pushed; historical hardware traces with `build_id=0` remain unidentifiable.
+
 ## 8. Suggested order (one behavior per commit, firmware changes validated by CI only)
 1. Host: BUSY and credit handling, no `drop()` for protocol conditions, reserved control credit, raw lines in the UI log (H1-H5).
 2. Firmware: link policy replaces the 5 s watchdog (F3), COILS (F4), control plane always answers (F1, F2) with tests; spec and matrix.

@@ -34,6 +34,9 @@ typedef struct {
 } pb_pin_state;
 #define PB_MAX_PINS 16u
 #define PB_TBP_QUEUE_DEPTH 4u
+#ifndef PB_BUILD_ID
+#define PB_BUILD_ID 0u /* CI overrides with the first 32 bits of the source commit SHA. */
+#endif
 #define PB_TBP_DATA_MAX 54u
 #define PB_TBP_MIN_PERIOD_US PB_TUNE_STEPPER_MIN_PERIOD_US
 /* Heater limits advertised in INFO and enforced here. Values come from pb_tuning.h; INFO caps are
@@ -1338,6 +1341,10 @@ static int pb_tbp_line(pb_core *c, const char *line) {
                             (uint8_t)(PB_TBP_DUTY_MAX_US >> 8), (uint8_t)PB_TBP_DUTY_MAX_US,
                             (uint8_t)(PB_TBP_SHIFT_US >> 8), (uint8_t)PB_TBP_SHIFT_US,
                             0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        info[1] = (uint8_t)(PB_BUILD_ID >> 24);
+        info[2] = (uint8_t)(PB_BUILD_ID >> 16);
+        info[3] = (uint8_t)(PB_BUILD_ID >> 8);
+        info[4] = (uint8_t)PB_BUILD_ID;
         pb_sensor_snapshot caps_snap;
         /* Capabilities reflect what the sensors can really deliver right now. */
         pb_sensors_sample(c, &caps_snap);

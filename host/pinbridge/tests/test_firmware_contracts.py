@@ -8,6 +8,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 APP = ROOT / "firmware/apps/pinbridge/src/app.c"
 WEB_APP = ROOT / "host/pinbridge/bun/public/app.js"
 SERVER = ROOT / "host/pinbridge/bun/server.ts"
+BUILD_SCRIPT = ROOT / "scripts/build-app.sh"
+WORKFLOW = ROOT / ".github/workflows/pinbridge.yml"
 WEB_HTML = ROOT / "host/pinbridge/bun/public/index.html"
 TUNING = ROOT / "firmware/apps/pinbridge/src/pb_tuning.h"
 TBP = ROOT / "host/pinbridge/bun/tbp.ts"
@@ -21,6 +23,15 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("sys_hi_timer_del(step_timer_id)", source)
         self.assertIn("if (core.step_active)", source)
         self.assertNotIn("sys_s_hi_timer_add(NULL, pb_step_timer, 1)", source)
+
+    def test_ci_embeds_source_sha_in_hello_build_id(self):
+        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
+        script = BUILD_SCRIPT.read_text(encoding="utf-8")
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("info[1] = (uint8_t)(PB_BUILD_ID >> 24)", core)
+        self.assertIn("PINBRIDGE_BUILD_SHA", script)
+        self.assertIn("#define PB_BUILD_ID 0x${BUILD_ID}u", script)
+        self.assertIn("PINBRIDGE_BUILD_SHA: ${{ github.sha }}", workflow)
 
     def test_hello_recovery_retries_without_port_drop_and_discards_partial_lines(self):
         server = SERVER.read_text(encoding="utf-8")

@@ -70,10 +70,15 @@ describe("TBP v1 framing", () => {
   test("decodes 38-byte INFO payload", () => {
     const info = Uint8Array.of(3, ...new Uint8Array(38));
     info[1] = 1;
+    info[2] = 0x12;
+    info[3] = 0x34;
+    info[4] = 0x56;
+    info[5] = 0x78;
     info[6] = 1;
     info[7] = 128;
     const parsed = decodeInfo(info);
     expect(parsed.version).toBe(1);
+    expect(parsed.buildId).toBe(0x12345678);
     expect(parsed.dots).toBe(384);
   });
 });

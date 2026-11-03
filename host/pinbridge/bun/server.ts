@@ -249,7 +249,11 @@ export class PrinterLink {
       this.startKeepalive();
       this.emit("toast", {
         level: "success",
-        message: "Printer connected · TBP v" + this.info.version,
+        message:
+          `Printer connected · TBP v${this.info.version} · build ` +
+          Number(this.info.buildId ?? 0)
+            .toString(16)
+            .padStart(8, "0"),
       });
       this.emit("printer", { info: this.info, status: this.status });
     } catch (e) {

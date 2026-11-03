@@ -231,7 +231,7 @@ Starts or restarts a session.
 | Offset | Field | Type | Meaning |
 |---|---|---|---|
 | 0 | proto_ver | u8 | Protocol version implemented |
-| 1 | build_id | u32 | Firmware build id |
+| 1 | build_id | u32 | First 8 hex digits of the source commit SHA, interpreted as a big-endian u32; zero means not injected/unknown |
 | 5 | dots | u16 | 384 |
 | 7 | queue_depth | u8 | Queued-command capacity |
 | 8 | max_window | u8 | Max outstanding commands without a terminal status (at most 127) |

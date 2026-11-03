@@ -50,6 +50,18 @@ git -C "$BUILD" -c advice.detachedHead=false checkout -q "$SDK_COMMIT"
 echo "== applying app '$APP'"
 TARGET=$(python3 "$HERE/apply_app.py" "$APPDIR" "$BUILD")
 echo "   make target: $TARGET"
+if [ "$APP" = pinbridge ]; then
+    BUILD_SHA=${PINBRIDGE_BUILD_SHA:-${GITHUB_SHA:-}}
+    if [ -z "$BUILD_SHA" ]; then BUILD_SHA=$(git -C "$ROOT" rev-parse HEAD); fi
+    BUILD_ID=$(printf '%s' "$BUILD_SHA" | cut -c1-8)
+    case "$BUILD_ID" in
+        ''|*[!0-9a-fA-F]*) die "invalid source commit SHA for build id: $BUILD_SHA" ;;
+    esac
+    PB_CORE="$BUILD/apps/spp_and_le/include/pb_core.h"
+    [ -f "$PB_CORE" ] || die "applied pb_core.h missing: $PB_CORE"
+    sed -i "s/^#define PB_BUILD_ID 0u.*/#define PB_BUILD_ID 0x${BUILD_ID}u/" "$PB_CORE"
+    echo "   build id: 0x$(printf '%s' "$BUILD_ID" | tr '[:lower:]' '[:upper:]') (SHA ${BUILD_SHA})"
+fi
 
 mkdir -p "$OUT"
 LOG=$OUT/build.log
@@ -71,6 +83,10 @@ cp "$TOOLS/sdk.elf" "$TOOLS/sdk.map" "$OUT/"
     echo "app:           $APP"
     echo "built:         $(date -u +%FT%TZ)"
     echo "sdk commit:    $SDK_COMMIT"
+    if [ "$APP" = pinbridge ]; then
+        echo "source commit: ${BUILD_SHA:-unknown}"
+        echo "build id:      0x$(printf '%s' "${BUILD_ID:-00000000}" | tr '[:lower:]' '[:upper:]')"
+    fi
     echo "make target:   $TARGET"
     echo "compiler:      $("$JIELI_PREFIX/pi32v2/bin/clang" --version | head -1)"
     echo "app.bin bytes: $(wc -c <"$OUT/app.bin")"

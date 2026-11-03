@@ -39,6 +39,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
+      PINBRIDGE_BUILD_SHA: ${{ github.sha }}
       JL_HOME: ${{ github.workspace }}/.ci/jl
       SDK_REV: fdc018de81629e21e594d677cf05f87d288be0f0
       TOOLCHAIN_SHA256: a1545cddbc451a06bac43eb5cd96d831470c42a97c5c0b1f98879a20fc7647bd
@@ -121,7 +122,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pinbridge-br23-${{ github.run_id }}
+          name: pinbridge-br23-${{ github.sha }}
           retention-days: 14
           if-no-files-found: warn
           path: |
