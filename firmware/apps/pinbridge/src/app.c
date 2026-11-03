@@ -306,7 +306,7 @@ static int hal_heater_pulse_start(void *ctx, unsigned usec) {
     int pending_seen = 0;
     (void)ctx;
     if (!heater_timer_ready || !usec || usec > 2500u) return -1;
-    ticks = ((24000000u / 4u) * usec + 500000u) / 1000000u;
+    ticks = usec * 6u; /* 24 MHz / 4 = 6 ticks per us; the old (6e6 * usec) product overflowed u32 above 715 us */
     if (!ticks || ticks > 0xffffu) return -1;
     core.heater_pulse_starts++;
     local_irq_disable();
@@ -315,21 +315,24 @@ static int hal_heater_pulse_start(void *ctx, unsigned usec) {
     PB_HEATER_TIMER->PRD = ticks;
     ports[1]->OUT |= (1u << 11);
     heater_timer_armed = 1;
-    /* SDK recipe (handshake_timer.c / irflt.c): BIT(3:2)=0b10 oscillator clock, BIT(7:4)=1
-     * prescale (24 MHz / 4), BIT(1) interrupt enable, BIT(0) run. */
-    PB_HEATER_TIMER->CON = (0b10u << 2) | (0b0001u << 4) | BIT(1) | BIT(0);
+    /* SDK handshake_timer.c recipe, which polls BIT(15) at the compare: BIT(3:2)=0b10 oscillator,
+     * BIT(7:4)=1 prescale /4 (6 ticks/us), BIT(0) run in plain timer mode, BIT(14) clear pending.
+     * Do NOT set BIT(1): bench 2026-11-04 showed CNT free-running past PRD with no pending flag
+     * and no IRQ (PHDIAG cnt=21177 > PRD 3750), i.e. BIT(1) is the IR-capture mode, not an
+     * interrupt enable (irflt.c sets it because the IR filter needs capture). */
+    PB_HEATER_TIMER->CON = (0b10u << 2) | (0b0001u << 4) | BIT(0) | BIT(14);
     local_irq_enable();
     /* Finish the pulse in-line, bounded. The timer ISR normally drops PB11 and clears
      * heater_timer_armed first. If the interrupt is not delivered, the timer's own pending flag
      * (BIT(15), usable without an IRQ) ends the pulse. If the timer is not counting at all, the
      * software bound (pulse + margin) forces PB11 low and the start reports failure. PB11 can
      * therefore never stay high for more than a few ms, whatever the timer does. */
-    for (spent = 0; heater_timer_armed && spent < usec + PB_HEATER_PULSE_MARGIN_US; spent += 10u) {
+    for (spent = 0; heater_timer_armed && spent < usec + PB_HEATER_PULSE_MARGIN_US; spent += 2u) {
         if (PB_HEATER_TIMER->CON & BIT(15)) {
             pending_seen = 1;
             break;
         }
-        hal_delay_us(NULL, 10u);
+        hal_delay_us(NULL, 2u);
     }
     if (heater_timer_armed) {
         local_irq_disable();

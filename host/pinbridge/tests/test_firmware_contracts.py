@@ -34,9 +34,13 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("#define PB_HEATER_TIMER JL_TIMER3", source)
         self.assertIn("#define PB_HEATER_TIMER_IRQ IRQ_TIME3_IDX", source)
         self.assertIn("irq_unmask_set(PB_HEATER_TIMER_IRQ, 0);", source)
-        # SDK handshake_timer.c/irflt.c recipe: oscillator clock (BIT(3:2)=0b10), /4, IE, run.
-        self.assertIn("(0b10u << 2) | (0b0001u << 4) | BIT(1) | BIT(0)", source)
+        # SDK handshake_timer.c recipe: oscillator clock (BIT(3:2)=0b10), /4, run, clear pending.
+        # BIT(1) is IR-capture mode (bench: CNT ran past PRD with no pending flag), never set it.
+        self.assertIn("(0b10u << 2) | (0b0001u << 4) | BIT(0) | BIT(14)", source)
+        self.assertNotIn("BIT(1) | BIT(0)", source)
         self.assertNotIn("(6u << 10)", source)
+        self.assertIn("ticks = usec * 6u;", source)  # the 6e6*usec product overflowed u32 > 715 us
+        self.assertNotIn("(24000000u / 4u) * usec", source)
 
     def test_heater_pulse_cannot_outlive_a_dead_timer_interrupt(self):
         # Bench 2026-11-03 (build 0663d703): ROWs failed FAILED 1F/01 after ~0.9 s because the
