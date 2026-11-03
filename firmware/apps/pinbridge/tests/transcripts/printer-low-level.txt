@@ -72,7 +72,7 @@
 @advance 30
 < !step done
 @hw PA9=hiz PA10=hiz PC3=hiz PC2=hiz
-> PHEAT 2501
+> PHEAT 10001
 < err arg PHEAT
 > PLATCH 1001
 < err arg PLATCH

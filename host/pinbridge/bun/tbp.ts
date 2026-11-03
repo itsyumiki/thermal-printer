@@ -24,8 +24,8 @@ export const STATE = {
   PROGRESS: 6,
 } as const;
 
-/** Firmware PB_TUNE_HEATER_SLICE_MAX_US; ROW burnUs is a total split across slices. */
-export const MAX_HEATER_SLICE_US = 2500;
+/** Temporary timing-test envelope; firmware still enforces row-total and thermal/duty gates. */
+export const MAX_HEATER_SLICE_US = 10000;
 export const DEFAULT_HEATER_SLICES = 4;
 export type Frame = { id: number; op: number; data: Uint8Array };
 export function crc16(bytes: Uint8Array): number {

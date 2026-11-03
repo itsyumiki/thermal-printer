@@ -17,7 +17,7 @@ const state = {
 };
 const pending = new Map();
 const STEPS_PER_MM = 32;
-const MAX_HEATER_SLICE_US = 2500;
+const MAX_HEATER_SLICE_US = 10000;
 const DEFAULT_HEATER_SLICES = 4;
 function log(message, level = "info") {
   const row = document.createElement("div");
@@ -147,10 +147,10 @@ function setConnection(c) {
   if (!heatReady) {
     $("burnUs").value = "0";
     $("heaterNotice").querySelector("p").textContent =
-      `Heating disabled until temperature, battery and paper sensors are valid. Per-slice cap: ${MAX_HEATER_SLICE_US} µs; up to ${DEFAULT_HEATER_SLICES} slices (row total ≤ ${MAX_HEATER_SLICE_US * DEFAULT_HEATER_SLICES} µs). Only heatless feed tests are allowed.`;
+      `Heating disabled until temperature, battery and paper sensors are valid. Timing-test pulse envelope: ${MAX_HEATER_SLICE_US} µs; thermal and duty safeguards remain active. Only heatless feed tests are allowed until sensor gates are valid.`;
   } else {
     $("heaterNotice").querySelector("p").textContent =
-      `Per-slice cap ${MAX_HEATER_SLICE_US} µs; heated rows use ${DEFAULT_HEATER_SLICES} slices (total ≤ ${Math.min(info.burnMaxUs, MAX_HEATER_SLICE_US * DEFAULT_HEATER_SLICES)} µs). Burn remains zero by default; physical validation is still required.`;
+      `Temporary timing-test pulse envelope ${MAX_HEATER_SLICE_US} µs; heated rows remain limited to ${info.burnMaxUs} µs total by firmware duty and thermal safeguards. Burn remains zero by default; physical validation is still required.`;
   }
   $("printBtn").textContent = "";
   const printLabel = document.createElement("span");
@@ -538,7 +538,7 @@ $("printBtn").onclick = async () => {
   const slices = burnUs > 0 ? DEFAULT_HEATER_SLICES : 1;
   if (
     !confirm(
-      `Queue ${rows} full-width black rows at ${burnUs} µs total per row across ${slices} slice(s) (≤ ${MAX_HEATER_SLICE_US} µs each)?`,
+      `Queue ${rows} full-width black rows at ${burnUs} µs total per row across ${slices} slice(s) (up to ${MAX_HEATER_SLICE_US} µs per pulse)?`,
     )
   )
     return;

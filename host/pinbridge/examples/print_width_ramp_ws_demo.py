@@ -88,7 +88,7 @@ def parse_args():
     parser.add_argument("--url", default="ws://127.0.0.1:8765/ws")
     parser.add_argument("--port", help="serial port if WebUI is not connected yet")
     parser.add_argument("--heat-us", type=int, default=2000,
-                        help="requested burn per ROW event (0..2500 us; safety gates apply)")
+                        help="requested burn per ROW event (0..10000 us; safety gates apply)")
     parser.add_argument("--event-ms", type=int, default=6,
                         help="event/step period in ms (2..65)")
     parser.add_argument("--steps-per-event", type=int, default=2,
@@ -96,8 +96,8 @@ def parse_args():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--yes", action="store_true", help="skip typed PRINT confirmation")
     args = parser.parse_args()
-    if not 0 <= args.heat_us <= 2500:
-        parser.error("--heat-us must be 0..2500 (configured per-event ceiling)")
+    if not 0 <= args.heat_us <= 10000:
+        parser.error("--heat-us must be 0..10000 (temporary timing-test envelope)")
     if not 2 <= args.event_ms <= 65:
         parser.error("--event-ms must be 2..65")
     if not 1 <= args.steps_per_event <= 8:

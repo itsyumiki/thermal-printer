@@ -92,7 +92,7 @@ def parse_args():
         "--heat-us",
         type=int,
         default=2000,
-        help="requested gated burn per ROW event (0..2500 us; owner limits are unmeasured)",
+        help="requested gated burn per ROW event (0..10000 us; owner limits are unmeasured)",
     )
     parser.add_argument(
         "--event-ms",
@@ -119,8 +119,8 @@ def parse_args():
     for name in ("bit_us", "hold_us", "latch_us"):
         if not 0 <= getattr(args, name) <= 1000:
             parser.error(f"--{name.replace('_', '-')} must be 0..1000")
-    if not 0 <= args.heat_us <= 2500:
-        parser.error("--heat-us must be 0..2500 (the configured per-slice ceiling)")
+    if not 0 <= args.heat_us <= 10000:
+        parser.error("--heat-us must be 0..10000 (the temporary timing-test envelope)")
     if not 2 <= args.event_ms <= 65:
         parser.error("--event-ms must be 2..65 (TBP ROW period is a u16 in microseconds)")
     if not 1 <= args.steps_per_event <= 8:

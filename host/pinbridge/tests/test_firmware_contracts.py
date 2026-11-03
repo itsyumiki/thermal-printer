@@ -69,6 +69,7 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertEqual(int(firmware_match.group(1)), int(host_match.group(1)))
         self.assertEqual(int(firmware_match.group(1)), int(ui_match.group(1)))
         self.assertIn("const slices = burnUs > 0 ? DEFAULT_HEATER_SLICES : 1;", app)
+        self.assertIn("thermal and duty safeguards remain active", app)
         self.assertIn("      slices,", app)
 
     def test_webui_shows_celsius_raw_tooltip_and_safety_limits(self):

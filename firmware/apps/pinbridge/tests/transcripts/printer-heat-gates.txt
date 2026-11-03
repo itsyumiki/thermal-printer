@@ -38,7 +38,7 @@
 > PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 2000 0
 < ok event
 @hw PB11=lo
-> PHEAT 2501
+> PHEAT 10001
 < err arg PHEAT
 @heat-used 59000
 > PHEAT 2000

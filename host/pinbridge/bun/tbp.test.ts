@@ -57,12 +57,12 @@ describe("TBP v1 framing", () => {
     expect(() => encode(0, OP.HELLO, Uint8Array.of(1))).toThrow();
     expect(decode(frame + "\r").id).toBe(1);
   });
-  test("enforces the per-slice heater ceiling while allowing a four-slice row total", () => {
+  test("allows timing-test pulses up to the row-total envelope", () => {
     const mask = new Uint8Array(48).fill(255);
-    expect(MAX_HEATER_SLICE_US).toBe(2500);
+    expect(MAX_HEATER_SLICE_US).toBe(10000);
     expect(row(mask, 8000, 8, 6000, 4)[53]).toBe(4);
-    expect(() => row(mask, 5000, 8, 6000, 1)).toThrow("2500 µs");
-    expect(() => row(mask, 10000, 8, 6000, 3)).toThrow("2500 µs");
+    expect(row(mask, 5000, 8, 6000, 1)[48]).toBe(19);
+    expect(row(mask, 10000, 8, 6000, 3)[48]).toBe(39);
   });
   test("encodes signed motion in two's complement", () => {
     expect([...move(-200, 3000)]).toEqual([255, 255, 255, 56, 11, 184]);
