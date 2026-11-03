@@ -1,11 +1,12 @@
 # Sprint 4 handoff — scheduler checkpoint
 
-Status: **partial checkpoint; Sprint 4 acceptance is not complete.** This is software-only work. No local firmware build, flash, or hardware validation was performed.
+Status: **scheduler implementation checkpoint; awaiting CI for this follow-up.** This is software-only work. No local firmware build, flash, or hardware validation was performed.
 
 ## Commits
 
 - `2c0a86b25e18094480d6d5ae84196ceca75476d4` — design decisions and truthful `COLD_START` result flag; transcript expectations updated.
 - `20a6e9cfbcd46089d6c7a6cbe45bde91f7273029` — Bun `print-job` endpoint and demo submits one multi-row request, consumes row progress and terminal completion.
+- `8593b53e76db4e5dd9c0ff4f7764a362a234ac46` — firmware feed segment ring, buffered terminal statuses, accurate fake-clock delay model, and scheduler transcripts.
 - `a67b1262a6ecf3e8aef3cd7413a320a30f337ad9` — initial handoff/journal update.
 
 ## Checks
@@ -17,7 +18,7 @@ Passed locally on the checkpoint:
 - `git diff --check` — passed.
 - `host/pinbridge/.venv/bin/python -m unittest discover -s host/pinbridge/tests -v` — 35 tests passed.
 - `python3 -m py_compile host/pinbridge/examples/print_matrix_square_ws_demo.py` — passed.
-- GitHub Actions [run 41587395888](https://github.com/itsyumiki/thermal-printer/actions/runs/41587395888) — both host checks and the remote C firmware build/package job passed. Artifact: `pinbridge-br23-41587395888` (663,477 bytes). This is a CI build result, not hardware validation.
+- Prior checkpoint GitHub Actions [run 41587395888](https://github.com/itsyumiki/thermal-printer/actions/runs/41587395888) passed host checks and remote C firmware build/package. Artifact: `pinbridge-br23-41587395888` (663,477 bytes). It predates the scheduler segment-ring follow-up; current CI run/artifact pending push. CI is not hardware validation.
 
 These checks establish software/mock behavior only. They do not establish physical feed direction, dot polarity, thermal safety, actual shift time, or continuous motion.
 
@@ -30,19 +31,21 @@ These checks establish software/mock behavior only. They do not establish physic
 
 ## What this checkpoint changes
 
-- ROW DONE can report `COLD_START` when a moving row begins with no active step sequence. `STRETCHED` and `LATE` remain clear because the executor does not yet implement reliable period stretching or a row-deadline detector.
+- ROW feed is now scheduled before shift/latch/burn so the timer-driven motor work overlaps row preparation. Compatible queued ROW/MOVE commands (same direction and effective millisecond period) extend the active phase train; terminal DONE frames are buffered until each command's cumulative phase-transition target is reached. The phase index and coil outputs are not reset at those compatible boundaries.
+- A ROW reports `COLD_START` when its movement must begin with no active phase train. It reports `LATE` when its own feed quota has already completed before shift/latch/burn reaches the motion handoff. `STRETCHED` remains clear because the executor does not yet implement period stretching.
 - The Bun host accepts one `print-job` request (up to 2000 ROWs), pipelines within the advertised queue depth, emits progress after terminal ROW statuses, and returns a final count. The demo builds one job with four identical TBP ROW events per logical image row and retains dry-run mode.
-- Firmware still executes each ROW's shift/latch/heat sequence before starting that ROW's movement. Thus the queue avoids a host request per event, and phase/coil state is retained while queued work remains, but **the motor still stops at ROW boundaries**. This fails the Sprint 4 continuous-feed acceptance criterion. The added `COLD_START` flag makes that limitation visible rather than hiding it.
+- The deterministic fake-HAL transcript `tbp-row-continuous.txt` checks row-to-row and row-to-MOVE handoff, cumulative step accounting, phase/direction, no-heat flags, and empty-queue completion. `tbp-row-estop-boundary.txt` checks ESTOP cancellation of both a pending terminal and the active row. The fake delay now accumulates microseconds accurately rather than treating every sub-millisecond GPIO wait as a full millisecond.
+- The feed scheduler now uses a bounded phase-segment ring for queued ROW/MOVE commands. Direction and effective-period changes are applied at phase boundaries without releasing coils or restarting the phase train. The fake-HAL transcript verifies a queued ROW/ROW/REV-MOVE sequence across both a direction and period change.
 
 ## Throughput limits
 
-No measured throughput is available. A serialized row pays shift + latch + heat work plus its motor interval; pre-shift is intentionally disabled. The stock 6 ms event cadence and 3 ms shift time are static estimates, not Pinbridge timing guarantees. The demo's four-event representation does not prove stock-equivalent dot placement or thermal behavior.
+No measured throughput is available. Feed segments overlap shift/latch/heat with the active motor phase train, including queued direction/effective-period changes at phase boundaries. Pre-shift remains disabled. The stock 6 ms event cadence and 3 ms shift time are static estimates, not Pinbridge timing guarantees. The demo's four-event representation does not prove stock-equivalent dot placement or thermal behavior.
 
 ## Required work before Sprint 4 can be called complete
 
-1. Refactor the firmware executor into a fake-clock-testable scheduler that can overlap row preparation and motion and hand off queued ROW/MOVE work without stopping the phase timer at row boundaries. Do not pre-shift unless hardware analysis proves it safe.
-2. Add deterministic scheduler-level tests for four-event accounting, phase sequence/direction, queue handoff, late shift, no-heat rows, burn slices, empty queue, and cancel/ESTOP at boundaries. Existing C transcripts cover protocol, gate, queue and cancellation behavior, but are not a complete scheduler model.
-3. Detect and test `STRETCHED`/`LATE` only from actual scheduler deadlines/effective periods. Keep all heater actions inside Sprint 3 gates and keep direct PB11-high blocked.
+1. Review the new scheduler code and transcripts for any remaining edge cases around segment-ring exhaustion and cancellation during a direction/period boundary. The current ring is bounded by TBP queue depth and enqueue credit accounting.
+2. The deterministic C transcripts now cover four events for one logical row, ROW/ROW and ROW/MOVE handoff, direction/period changes, forward/reverse phase order, no-heat flags, detected late shift, empty-queue completion, and ESTOP with a pending terminal. Existing gate transcripts cover sliced burns and fail-closed sensor/paper/battery behavior.
+3. Keep `STRETCHED` clear unless effective-period extension is explicitly detected; keep `LATE` tied to feed quota completion before row preparation handoff. Keep all heater actions inside Sprint 3 gates and keep direct PB11-high blocked.
 4. Run the three required local checks, push, then `gh run watch` and record the successful run and artifact here. No local firmware build or flash.
 
 ## Exact next step for Sprint 5
