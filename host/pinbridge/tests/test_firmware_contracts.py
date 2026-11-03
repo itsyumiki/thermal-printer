@@ -56,6 +56,11 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIsNotNone(host_match)
         self.assertEqual(int(firmware_match.group(1)), int(host_match.group(1)))
 
+    def test_row_shift_finishes_in_one_executor_poll(self):
+        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
+        self.assertIn("for (i = 0; i < 384u && c->tbp_exec_bit < 384u; i++)", core)
+        self.assertIn("if (c->tbp_exec_bit < 384u) return;", core)
+
     def test_host_heater_slice_limit_matches_firmware_tuning(self):
         tuning = TUNING.read_text(encoding="utf-8")
         tbp = TBP.read_text(encoding="utf-8")

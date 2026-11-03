@@ -1183,7 +1183,7 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
             uint16_t dmask = (uint16_t)(1u << pb_defs[pin_data].bit), cmask = (uint16_t)(1u << pb_defs[pin_clk].bit);
             void (*wr)(void *, unsigned, uint16_t, uint16_t) = c->h.write_port;
             if (c->h.write_port_fast && pb_port_free_of_motor(dport) && pb_port_free_of_motor(cport)) wr = c->h.write_port_fast;
-            for (i = 0; i < 48u && c->tbp_exec_bit < 384u; i++) {
+            for (i = 0; i < 384u && c->tbp_exec_bit < 384u; i++) {
                 unsigned idx = c->tbp_exec_bit++, byte = cmd->data[idx / 8u];
                 bit = (byte >> (idx & 7u)) & 1u;
                 wr(c->h.ctx, dport, dmask, bit ? dmask : 0);
