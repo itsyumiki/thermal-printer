@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, extname } from "node:path";
 import { Uart, listPorts } from "./uart.ts";
+import { motionFromMessage } from "./units.ts";
 import {
   OP,
   KIND,
@@ -614,8 +615,10 @@ export class PrinterLink {
         return { stopping: true };
       }
       case "move": {
-        const n = Number(msg.steps),
-          period = Number(msg.periodUs ?? 1000);
+        // The UI sends distanceMm / speedMmS; raw steps / periodUs still work for scripts.
+        const { steps: n, periodUs: period } = motionFromMessage(msg, {
+          periodUs: 1000,
+        });
         const timeout = Math.min(
           60000,
           Math.ceil((Math.abs(n) * period) / 1000) + 2000,
@@ -634,9 +637,11 @@ export class PrinterLink {
         const mask = Uint8Array.from({ length: 48 }, (_, i) =>
           msg.black === false ? 0 : 255,
         );
-        const burn = Number(msg.burnUs ?? 1500),
-          steps = Number(msg.steps ?? 8),
-          period = Number(msg.periodUs ?? 6000);
+        const burn = Number(msg.burnUs ?? 1500);
+        const { steps, periodUs: period } = motionFromMessage(msg, {
+          steps: 8,
+          periodUs: 6000,
+        });
         this.requireHeatReady(burn);
         const timeout = Math.min(
           30000,
@@ -675,8 +680,10 @@ export class PrinterLink {
                 return Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
               });
               const burn = Number(item.burnUs ?? 0);
-              const steps = Number(item.steps ?? 0);
-              const period = Number(item.periodUs ?? 0);
+              const { steps, periodUs: period } = motionFromMessage(item, {
+                steps: 0,
+                periodUs: 0,
+              });
               this.requireHeatReady(burn);
               const timeout = Math.min(
                 30000,
@@ -698,7 +705,10 @@ export class PrinterLink {
       case "print-solid": {
         const rows = Math.max(1, Math.min(500, Number(msg.rows ?? 24)));
         const burn = Number(msg.burnUs ?? 1500);
-        const period = Number(msg.periodUs ?? 6000);
+        const { steps, periodUs: period } = motionFromMessage(msg, {
+          steps: 8,
+          periodUs: 6000,
+        });
         this.requireHeatReady(burn);
         this.stopRequested = false;
         let sent = 0;
@@ -706,15 +716,14 @@ export class PrinterLink {
           if (this.stopRequested) break;
           const timeout = Math.min(
             30000,
-            Math.ceil((Math.abs(Number(msg.steps ?? 8)) * period) / 1000) +
-              5000,
+            Math.ceil((Math.abs(steps) * period) / 1000) + 5000,
           );
           await this.transact(
             OP.ROW,
             row(
               new Uint8Array(48).fill(255),
               burn,
-              Number(msg.steps ?? 8),
+              steps,
               period,
               Number(msg.slices ?? 1),
             ),

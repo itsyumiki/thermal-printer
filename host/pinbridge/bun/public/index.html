@@ -119,23 +119,28 @@
                   /><small>µs</small></span
                 ></label
               ><label
-                >Feed steps / row
-                <input
-                  id="rowSteps"
-                  type="number"
-                  min="-127"
-                  max="127"
-                  value="8" /></label
-              ><label
-                >Step period
+                >Feed per row
                 <span class="input-with-unit"
                   ><input
-                    id="periodUs"
+                    id="rowMm"
                     type="number"
-                    min="1000"
-                    max="65000"
-                    value="6000"
-                  /><small>µs</small></span
+                    min="-3.96875"
+                    max="3.96875"
+                    step="0.03125"
+                    value="0.25"
+                  /><small>mm</small></span
+                ></label
+              ><label
+                >Feed speed
+                <span class="input-with-unit"
+                  ><input
+                    id="rowSpeed"
+                    type="number"
+                    min="0.5"
+                    max="31.25"
+                    step="any"
+                    value="5.2083"
+                  /><small>mm/s</small></span
                 ></label
               >
             </div>
@@ -167,16 +172,23 @@
               <span class="panel-icon">↕</span>
             </div>
             <p class="panel-copy">
-              Move the platen using half-steps from the stock eight-state phase
-              sequence.
+              Move the paper a set distance in millimetres at a chosen speed (32
+              half-steps per mm; the host converts to the stock eight-state
+              phase sequence).
             </p>
             <div class="motion-readout">
               <div>
                 <span class="eyebrow">DISTANCE</span
-                ><strong id="moveStepsReadout">+80</strong
-                ><small>half-steps</small>
+                ><strong id="moveMmReadout">+2.5</strong><small>mm</small>
               </div>
-              <input id="moveSteps" type="range" min="1" max="500" value="80" />
+              <input
+                id="moveMm"
+                type="range"
+                min="0.5"
+                max="15"
+                step="0.5"
+                value="2.5"
+              />
               <div class="motion-directions">
                 <button class="btn btn-secondary" id="reverseBtn" disabled>
                   ← Retract</button
@@ -188,15 +200,16 @@
             <div class="divider"></div>
             <div class="field-grid two">
               <label
-                >Step period
+                >Feed speed
                 <span class="input-with-unit"
                   ><input
-                    id="movePeriod"
+                    id="moveSpeed"
                     type="number"
-                    min="1000"
-                    max="65000"
-                    value="1000"
-                  /><small>µs</small></span
+                    min="0.5"
+                    max="31.25"
+                    step="any"
+                    value="31.25"
+                  /><small>mm/s</small></span
                 ></label
               ><label
                 >Hold coils

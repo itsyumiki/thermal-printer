@@ -423,19 +423,19 @@ $("estopBtn").onclick = () => {
     safeSend("estop");
 };
 $("clearLog").onclick = () => $("log").replaceChildren();
-$("moveSteps").oninput = () => {
-  $("moveStepsReadout").textContent = "+" + $("moveSteps").value;
+$("moveMm").oninput = () => {
+  $("moveMmReadout").textContent = "+" + $("moveMm").value;
 };
 $("feedBtn").onclick = () =>
   safeSend("move", {
-    steps: Number($("moveSteps").value),
-    periodUs: Number($("movePeriod").value),
+    distanceMm: Number($("moveMm").value),
+    speedMmS: Number($("moveSpeed").value),
     releaseAfter: $("coilMode").value === "release",
   });
 $("reverseBtn").onclick = () =>
   safeSend("move", {
-    steps: -Number($("moveSteps").value),
-    periodUs: Number($("movePeriod").value),
+    distanceMm: -Number($("moveMm").value),
+    speedMmS: Number($("moveSpeed").value),
     releaseAfter: $("coilMode").value === "release",
   });
 $("releaseCoilsBtn").onclick = () => safeSend("coils", { enabled: false });
@@ -445,19 +445,18 @@ $("coilMode").onchange = () => {
 $("printBtn").onclick = async () => {
   const rows = Number($("rowCount").value),
     burnUs = Number($("burnUs").value),
-    steps = Number($("rowSteps").value),
-    periodUs = Number($("periodUs").value);
+    feedMm = Number($("rowMm").value),
+    speedMmS = Number($("rowSpeed").value);
   if (
     !Number.isInteger(rows) ||
     rows < 1 ||
     rows > 500 ||
     burnUs < 0 ||
     burnUs > Number($("burnUs").max) ||
-    !Number.isInteger(steps) ||
-    steps < -127 ||
-    steps > 127 ||
-    periodUs < 1000 ||
-    periodUs > 65000
+    !Number.isFinite(feedMm) ||
+    Math.abs(feedMm) > Number($("rowMm").max) ||
+    !(speedMmS >= Number($("rowSpeed").min)) ||
+    speedMmS > Number($("rowSpeed").max)
   ) {
     toast("Check print settings and allowed ranges", "error");
     return;
@@ -470,8 +469,8 @@ $("printBtn").onclick = async () => {
     const r = await send("print-solid", {
       rows,
       burnUs,
-      steps,
-      periodUs,
+      distanceMm: feedMm,
+      speedMmS,
       slices: 1,
       releaseAfter: $("coilMode").value === "release",
     });

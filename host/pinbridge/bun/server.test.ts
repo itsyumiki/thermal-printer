@@ -211,6 +211,26 @@ describe("TBP fake-transport retry behavior", () => {
     expect(progress).toEqual([1, 2, 3, 4, 5]);
   });
 
+  test("move converts mm and mm/s to firmware half-steps and microseconds", async () => {
+    const frames: any[] = [];
+    const { link } = fakeLink((wire, _n, current) => {
+      const frame = decode(wire);
+      frames.push(frame);
+      ack(current, frame.id);
+      done(current, frame.id);
+    });
+    await link.command("move", { distanceMm: 5, speedMmS: 31.25 });
+    await link.command("move", { distanceMm: -2.5, speedMmS: 15.625 });
+    await link.command("move", { steps: 80 }); // raw units keep working; default 1000 us
+    expect(frames.map((f) => f.op)).toEqual([0x11, 0x11, 0x11]);
+    expect([...frames[0].data]).toEqual([0, 0, 0, 160, 0x03, 0xe8]); // +160 half-steps @ 1000 us
+    expect([...frames[1].data]).toEqual([0xff, 0xff, 0xff, 0xb0, 0x07, 0xd0]); // -80 @ 2000 us
+    expect([...frames[2].data]).toEqual([0, 0, 0, 80, 0x03, 0xe8]);
+    await expect(
+      link.command("move", { distanceMm: 5, speedMmS: 40 }),
+    ).rejects.toThrow("mm/s");
+  });
+
   test("coil hold is bounded: it configures idle_hold_ms before energising", async () => {
     const frames: any[] = [];
     const { link, count } = fakeLink((wire, _n, current) => {
