@@ -502,9 +502,7 @@ static void pb_power_led_poll(pb_core *c, uint32_t now) {
             (void)pb_printer_pin(c, "PA1", 0);
             c->power_ready = 0;
             c->button_was_down = 2u;
-            c->led_mode = 0;
-            c->led_phase = 0;
-            c->led_change_ms = now;
+            pb_led_idle(c, now); /* power_ready is 0 now: the LED goes dark and stays dark */
         }
     } else
         c->button_was_down = 0;

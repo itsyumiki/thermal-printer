@@ -4,6 +4,8 @@
  *  - The LED stays dark during the one-second startup hold and starts blinking only after it.
  *  - A host HELLO before the startup hold completes does not light the LED early.
  *  - HELLO after power-on still flashes twice and then holds the LED on.
+ *  - Holding the button for one second after power-on cuts power and turns the LED dark for good
+ *    (with and without a connected host); a new startup hold powers on and blinks again.
  *
  * Host-side simulation only (no firmware build, no hardware). From the repo root:
  *   cc -std=gnu11 -O1 -Wall -I firmware/apps/pinbridge/src -o /tmp/pb_led_test \
@@ -122,9 +124,41 @@ static void hello_during_hold_keeps_led_dark(void) {
     CHECK(C.power_ready && pc7() == 1 && C.led_mode == 2, "with a host already connected the LED goes steady on after the hold");
 }
 
+/* After power-on, release the button, optionally connect a host, then hold for the shutdown. */
+static void shutdown_hold_goes_dark(int host_connected) {
+    unsigned seen;
+    begin();
+    wait_power_ready();
+    step(100);
+    button_pressed = 0; /* a completed hold must be released before the next one */
+    step(100);
+    if (host_connected) send_hello();
+    step(1500);
+    CHECK(host_connected ? (pc7() == 1 && C.led_mode == 2) : C.led_mode == 0, "LED should be on or blinking before shutdown");
+    button_pressed = 1;
+    step(850);
+    CHECK(C.power_ready && pa1() == 1, "shutdown must wait for the full one-second hold");
+    step(300);
+    CHECK(!C.power_ready && pa1() == 0, "holding the button for one second cuts power (PA1)");
+    CHECK(pc7() == 0 && C.led_mode == 4, "the LED goes dark when the shutdown hold completes");
+    button_pressed = 0;
+    seen = transitions;
+    step(5000);
+    CHECK(transitions == seen && pc7() == 0, "the LED stays dark after shutdown (no blinking)");
+    if (!host_connected) { /* a fresh startup hold works again after a shutdown */
+        button_pressed = 1;
+        wait_power_ready();
+        CHECK(C.power_ready && pa1() == 1, "the startup hold powers on again after a shutdown");
+        step(700);
+        CHECK(transitions > seen, "the LED blinks again once powered on");
+    }
+}
+
 int main(void) {
     startup_hold_then_blink();
     hello_during_hold_keeps_led_dark();
+    shutdown_hold_goes_dark(0);
+    shutdown_hold_goes_dark(1);
     printf("%s (%u failure%s)\n", failures ? "FAIL" : "PASS", failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;
 }
