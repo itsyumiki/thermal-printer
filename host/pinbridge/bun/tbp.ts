@@ -24,8 +24,8 @@ export const STATE = {
   PROGRESS: 6,
 } as const;
 
-/** Temporary timing-test envelope; firmware still enforces row-total and thermal/duty gates. */
-export const MAX_HEATER_SLICE_US = 10000;
+/** Conservative maximum duration of each heater slice; firmware also enforces row-total and thermal/duty gates. */
+export const MAX_HEATER_SLICE_US = 2500;
 export const DEFAULT_HEATER_SLICES = 1;
 export type Frame = { id: number; op: number; data: Uint8Array };
 export function crc16(bytes: Uint8Array): number {

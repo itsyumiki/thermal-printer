@@ -40,6 +40,8 @@
 @hw PB11=lo
 > PHEAT 10001
 < err arg PHEAT
+> PHEAT 2501
+< err arg PHEAT
 @heat-used 59000
 > PHEAT 2000
 < err duty PHEAT

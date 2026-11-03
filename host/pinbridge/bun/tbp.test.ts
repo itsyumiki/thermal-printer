@@ -61,12 +61,12 @@ describe("TBP v1 framing", () => {
   test("uses one full-duration pulse by default for timing tests", () => {
     expect(DEFAULT_HEATER_SLICES).toBe(1);
   });
-  test("allows timing-test pulses up to the row-total envelope", () => {
+  test("enforces the conservative per-slice heater cap", () => {
     const mask = new Uint8Array(48).fill(255);
-    expect(MAX_HEATER_SLICE_US).toBe(10000);
-    expect(row(mask, 8000, 8, 6000, 4)[53]).toBe(4);
-    expect(row(mask, 5000, 8, 6000, 1)[48]).toBe(19);
-    expect(row(mask, 10000, 8, 6000, 3)[48]).toBe(39);
+    expect(MAX_HEATER_SLICE_US).toBe(2500);
+    expect(row(mask, 2500, 4, 6000, 1)[48]).toBe(9);
+    expect(() => row(mask, 2501, 4, 6000, 1)).toThrow(/at most 2500/);
+    expect(row(mask, 10000, 4, 6000, 4)[48]).toBe(39);
   });
   test("encodes signed motion in two's complement", () => {
     expect([...move(-200, 3000)]).toEqual([255, 255, 255, 56, 11, 184]);

@@ -389,7 +389,7 @@ describe("TBP fake-transport retry behavior", () => {
       battMinRaw: 3400,
       caps: 0x0f,
     } as any;
-    const result = await link.command("print-solid", { rows: 4, burnUs: 8000 });
+    const result = await link.command("print-solid", { rows: 4, burnUs: 2000 });
     expect(result).toEqual({
       queued: true,
       rows: 4,
@@ -401,8 +401,8 @@ describe("TBP fake-transport retry behavior", () => {
     expect(frames).toHaveLength(16);
     expect(frames.every((frame) => frame.op === OP.ROW)).toBe(true);
     for (const frame of frames) {
-      expect(frame.data[48]).toBe(0x1f);
-      expect(frame.data[49]).toBe(0x40); // 8000 µs on each of four events
+      expect(frame.data[48]).toBe(0x07); // 2000 µs per event, below the conservative cap
+      expect(frame.data[49]).toBe(0xd0);
       expect(frame.data[50]).toBe(1); // one feed half-step per event
       expect(frame.data[51]).toBe(0x3a);
       expect(frame.data[52]).toBe(0x98); // fixed 15000 µs per half-step

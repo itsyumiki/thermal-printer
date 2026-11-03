@@ -24,9 +24,9 @@
 /* ---- Heater limits ------------------------------------------------------------------
  * Stock drives PB11 for 25..75 timer ticks of ~30 us per print event (0.72..2.22 ms,
  * quality bytes 0x31..0x35) with a hard 200-tick (6 ms) cutoff, four events per row.   */
-#define PB_TUNE_HEATER_SLICE_MAX_US 10000u  /* TEMP TIMING TEST: match row-total envelope; thermal/duty gates remain active */
+#define PB_TUNE_HEATER_SLICE_MAX_US 2500u   /* Conservative cap near stock-derived 2.22 ms/event; not hardware-validated */
 #define PB_TUNE_HEATER_NOMINAL_PULSE_US 1500u /* PROVISIONAL; old demo default */
-#define PB_TUNE_HEATER_REQUEST_MAX_US PB_TUNE_HEATER_BURN_MAX_US /* TEMP TIMING TEST: legacy PHEAT/PEVENT up to row envelope */
+#define PB_TUNE_HEATER_REQUEST_MAX_US PB_TUNE_HEATER_SLICE_MAX_US /* legacy PHEAT/PEVENT input */
 #define PB_TUNE_HEATER_BURN_MAX_US 10000u   /* OWNER: >= 4 events x 2.22 ms (stock row at best quality) */
 #define PB_TUNE_HEATER_TIMER_TICK_US 1u     /* software-timed (calibrated delay loop); pre-sprint-3 value */
 #define PB_TUNE_HEATER_GUARD_US 100u        /* OWNER: minimum heater-off gap between slices (pre-sprint-3 value) */

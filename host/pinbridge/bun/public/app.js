@@ -17,7 +17,7 @@ const state = {
 };
 const pending = new Map();
 const STEPS_PER_MM = 32;
-const MAX_HEATER_SLICE_US = 10000;
+const MAX_HEATER_SLICE_US = 2500;
 function log(message, level = "info") {
   const row = document.createElement("div");
   row.className = `log-entry ${level}`;
@@ -150,10 +150,10 @@ function setConnection(c) {
   if (!heatReady) {
     $("burnUs").value = "0";
     $("heaterNotice").querySelector("p").textContent =
-      `Heating disabled until temperature, battery and paper sensors are valid. Timing-test pulse envelope: ${MAX_HEATER_SLICE_US} µs; thermal and duty safeguards remain active. Only heatless feed tests are allowed until sensor gates are valid.`;
+      `Heating disabled until temperature, battery and paper sensors are valid. Conservative per-slice cap: ${MAX_HEATER_SLICE_US} µs; thermal and duty safeguards remain active. Only heatless feed tests are allowed until sensor gates are valid.`;
   } else {
     $("heaterNotice").querySelector("p").textContent =
-      `Temporary timing-test pulse envelope ${MAX_HEATER_SLICE_US} µs; heated rows remain limited to ${info.burnMaxUs} µs total by firmware duty and thermal safeguards. Burn remains zero by default; physical validation is still required.`;
+      `Conservative per-slice pulse cap ${MAX_HEATER_SLICE_US} µs; heated rows remain limited to ${info.burnMaxUs} µs total by firmware duty and thermal safeguards. Burn remains zero by default; physical validation is still required.`;
   }
   $("printBtn").textContent = "";
   const printLabel = document.createElement("span");
