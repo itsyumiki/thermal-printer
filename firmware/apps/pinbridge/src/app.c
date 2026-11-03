@@ -309,7 +309,7 @@ static int hal_heater_pulse_start(void *ctx, unsigned usec) {
     PB_HEATER_TIMER->PRD = ticks;
     ports[1]->OUT |= (1u << 11);
     heater_timer_armed = 1;
-    PB_HEATER_TIMER->CON = (0b10u << 2) | (0b0001u << 4) | BIT(1) | BIT(0);
+    PB_HEATER_TIMER->CON = (6u << 10) | (0b0001u << 4) | BIT(2) | BIT(1) | BIT(0);
     local_irq_enable();
     return 0;
 }

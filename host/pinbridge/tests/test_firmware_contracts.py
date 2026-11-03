@@ -34,6 +34,9 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("#define PB_HEATER_TIMER JL_TIMER3", source)
         self.assertIn("#define PB_HEATER_TIMER_IRQ IRQ_TIME3_IDX", source)
         self.assertIn("irq_unmask_set(PB_HEATER_TIMER_IRQ, 0);", source)
+        # BR23 SDK timer setup uses bits 10+ for the clock source and BIT(2) for IRQ enable.
+        self.assertIn("(6u << 10) | (0b0001u << 4) | BIT(2) | BIT(1) | BIT(0)", source)
+        self.assertNotIn("(0b10u << 2)", source)
 
     def test_motor_phase_callback_uses_irq_safe_port_writer(self):
         printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
