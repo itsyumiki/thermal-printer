@@ -29,6 +29,12 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIsNotNone(host_match)
         self.assertEqual(int(firmware_match.group(1)), int(host_match.group(1)))
 
+    def test_webui_shows_celsius_raw_tooltip_and_safety_limits(self):
+        script = WEB_APP.read_text(encoding="utf-8")
+        self.assertIn('Raw ADC: ${t.headTempRaw}', script)
+        self.assertIn('°C', script)
+        self.assertIn('Cutoff 70 °C · abort 75 °C · resume 50 °C', script)
+
     def test_webui_shows_tick_quantized_effective_speed(self):
         script = WEB_APP.read_text(encoding="utf-8")
         page = WEB_HTML.read_text(encoding="utf-8")

@@ -186,6 +186,10 @@ The wiggle now derives 160 half-steps from `PB_TUNE_BOOT_WIGGLE_MM=5` and the sh
 - Voltage reading is accepted by the owner as accurate enough (about 4.16 V in the trace); still to be checked
   against a meter, as `pb_tuning.h` says.
 
+### Step 6 implementation note (Celsius display)
+
+The host now converts `headTempRaw` with a generated TypeScript copy of the same stock table used by `pb_sensor_head_temp_c`. `scripts/check-pinbridge.sh` regenerates and compares that table against `pb_thermistor_table.h`, and unit tests cover raw 370 -> 24 °C, raw 412 -> 20 °C, a table boundary, and short/open/sentinel inputs. The UI displays °C, keeps the raw ADC count in a tooltip/footnote, and shows the 70 °C cutoff, 75 °C abort, and 50 °C resume limits. Invalid readings remain unavailable rather than being guessed. This is software parity evidence; physical sensor calibration remains unverified.
+
 ## 6. Does the heater work? [source + owner, hardware unverified]
 The owner's full-line print (UI "print full line", 5000 us heat) showed no visible color. **No ROW frame appears in
 the trace above**, so what the firmware answered to that print is unknown; capture it with `--debug`.

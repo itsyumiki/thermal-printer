@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, extname } from "node:path";
 import { Uart, listPorts } from "./uart.ts";
 import { motionFromMessage } from "./units.ts";
+import { headTempCFromRaw } from "./thermistor.ts";
 import {
   OP,
   KIND,
@@ -461,13 +462,15 @@ export class PrinterLink {
   }
   parseStatusBody(b: number[]) {
     const u = (i: number) => (b[i] ?? 255) * 256 + (b[i + 1] ?? 255);
+    const headTempRaw = u(5);
     return {
       state: b[0],
       queueUsed: b[1],
       queueDepth: b[2],
       runningId: b[3],
       lastTerminalId: b[4],
-      headTempRaw: u(5),
+      headTempRaw,
+      headTempC: headTempCFromRaw(headTempRaw),
       batteryRaw: u(7),
       batteryMv: u(9),
       paper: b[11],

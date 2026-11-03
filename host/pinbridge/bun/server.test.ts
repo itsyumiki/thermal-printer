@@ -40,6 +40,21 @@ afterEach(() => {
   }
 });
 
+describe("head temperature conversion", () => {
+  test("adds Celsius using the stock table while retaining raw ADC counts", () => {
+    const { link } = fakeLink(() => {});
+    const status = link.parseStatusBody([
+      3, 0, 4, 0, 0, 1, 114, 1, 244, 15, 160, 1, 0,
+    ]);
+    expect(status.headTempRaw).toBe(370);
+    expect(status.headTempC).toBe(24);
+    const invalid = link.parseStatusBody([
+      3, 0, 4, 0, 0, 255, 255, 1, 244, 15, 160, 1, 0,
+    ]);
+    expect(invalid.headTempC).toBeNull();
+  });
+});
+
 describe("debug frame logging", () => {
   test("is silent unless the debug flag is on", async () => {
     const out: string[] = [];

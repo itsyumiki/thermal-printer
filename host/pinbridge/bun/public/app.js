@@ -66,8 +66,9 @@ function setConnection(c) {
   if (Object.hasOwn(c, "info")) state.info = c.info;
   if (!state.connected) {
     state.telemetry = null;
-    $("tempValue").innerHTML = "— <small>raw</small>";
-    $("tempFoot").textContent = "Sensor not available";
+    $("tempValue").innerHTML = "— <small>°C</small>";
+    $("tempFoot").textContent =
+      "Sensor not available · cutoff 70 °C · abort 75 °C · resume 50 °C";
     $("batteryValue").innerHTML = "— <small>mV</small>";
     $("batteryFoot").textContent = "Waiting for telemetry";
     $("queueValue").textContent = "—";
@@ -169,8 +170,8 @@ function setTelemetry(t) {
   const batteryMvCalibrated = !!(caps & 0x04);
   const paperValid = !!(caps & 0x08);
   const temp =
-    tempValid && t.headTempRaw !== 65535 && t.headTempRaw != null
-      ? t.headTempRaw
+    tempValid && t.headTempC !== 65535 && t.headTempC != null
+      ? t.headTempC
       : null;
   const batt =
     batteryValid &&
@@ -180,14 +181,17 @@ function setTelemetry(t) {
       ? t.batteryMv
       : null;
   $("tempValue").innerHTML =
-    temp == null ? "— <small>raw</small>" : `${temp} <small>raw</small>`;
+    temp == null
+      ? "— <small>°C</small>"
+      : `<span title="Raw ADC: ${t.headTempRaw}">${temp} <small>°C</small></span>`;
+  const tempLimits = "Cutoff 70 °C · abort 75 °C · resume 50 °C";
   $("tempFoot").textContent = !tempValid
-    ? "Sensor mapping not validated"
+    ? `Sensor mapping not validated · ${tempLimits}`
     : t.flags & 1
-      ? "Temperature gate active"
+      ? `Temperature gate active · ${tempLimits}`
       : temp == null
-        ? "Sensor not available"
-        : "Raw ADC reading";
+        ? `Sensor not available · ${tempLimits}`
+        : `Stock table · raw ADC ${t.headTempRaw} · ${tempLimits}`;
   $("tempDot").className =
     "metric-dot " + (temp == null ? "" : t.flags & 1 ? "" : "good");
   $("batteryValue").innerHTML =
