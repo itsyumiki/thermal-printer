@@ -18,7 +18,7 @@ const state = {
 const pending = new Map();
 const STEPS_PER_MM = 32;
 const MAX_HEATER_SLICE_US = 10000;
-const DEFAULT_HEATER_SLICES = 4;
+const DEFAULT_HEATER_SLICES = 1;
 function log(message, level = "info") {
   const row = document.createElement("div");
   row.className = `log-entry ${level}`;
@@ -557,7 +557,7 @@ $("printBtn").onclick = async () => {
     log(
       burnUs === 0
         ? `Heatless row test queued · ${rows} rows`
-        : `Solid print queued · ${rows} rows · ${burnUs} µs total per row · ${slices} slices`,
+        : `Solid print queued · ${rows} rows · ${burnUs} µs total per row · ${slices} slice${slices === 1 ? "" : "s"}`,
       "success",
     );
   } catch (e) {

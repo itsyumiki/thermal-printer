@@ -358,7 +358,7 @@ describe("TBP fake-transport retry behavior", () => {
     ).rejects.toThrow("mm/s");
   });
 
-  test("print-solid splits total burn into four safe heater slices", async () => {
+  test("print-solid uses one full-duration heater pulse for timing tests", async () => {
     const frames: any[] = [];
     const { link } = fakeLink((wire, _n, current) => {
       const frame = decode(wire);
@@ -390,7 +390,7 @@ describe("TBP fake-transport retry behavior", () => {
     expect(frames[0].op).toBe(OP.ROW);
     expect(frames[0].data[48]).toBe(0x1f);
     expect(frames[0].data[49]).toBe(0x40);
-    expect(frames[0].data[53]).toBe(4);
+    expect(frames[0].data[53]).toBe(1);
   });
 
   test("coil hold is bounded: it configures idle_hold_ms before energising", async () => {

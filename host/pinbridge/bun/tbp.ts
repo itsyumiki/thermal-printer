@@ -26,7 +26,7 @@ export const STATE = {
 
 /** Temporary timing-test envelope; firmware still enforces row-total and thermal/duty gates. */
 export const MAX_HEATER_SLICE_US = 10000;
-export const DEFAULT_HEATER_SLICES = 4;
+export const DEFAULT_HEATER_SLICES = 1;
 export type Frame = { id: number; op: number; data: Uint8Array };
 export function crc16(bytes: Uint8Array): number {
   let crc = 0xffff;

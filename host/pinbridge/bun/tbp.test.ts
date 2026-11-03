@@ -8,6 +8,7 @@ import {
   move,
   decodeInfo,
   MAX_HEATER_SLICE_US,
+  DEFAULT_HEATER_SLICES,
 } from "./tbp.ts";
 
 describe("TBP v1 framing", () => {
@@ -56,6 +57,9 @@ describe("TBP v1 framing", () => {
     expect(() => decode("AA".repeat(261))).toThrow();
     expect(() => encode(0, OP.HELLO, Uint8Array.of(1))).toThrow();
     expect(decode(frame + "\r").id).toBe(1);
+  });
+  test("uses one full-duration pulse by default for timing tests", () => {
+    expect(DEFAULT_HEATER_SLICES).toBe(1);
   });
   test("allows timing-test pulses up to the row-total envelope", () => {
     const mask = new Uint8Array(48).fill(255);

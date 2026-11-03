@@ -68,6 +68,7 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIsNotNone(ui_match)
         self.assertEqual(int(firmware_match.group(1)), int(host_match.group(1)))
         self.assertEqual(int(firmware_match.group(1)), int(ui_match.group(1)))
+        self.assertIn("const DEFAULT_HEATER_SLICES = 1;", app)
         self.assertIn("const slices = burnUs > 0 ? DEFAULT_HEATER_SLICES : 1;", app)
         self.assertIn("thermal and duty safeguards remain active", app)
         self.assertIn("      slices,", app)
