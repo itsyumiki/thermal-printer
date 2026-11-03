@@ -358,13 +358,23 @@ describe("TBP fake-transport retry behavior", () => {
     ).rejects.toThrow("mm/s");
   });
 
-  test("print-solid matches checker timing with four heated events per logical row", async () => {
+  test("print-solid streams four demo-timed heater events per logical row", async () => {
     const frames: any[] = [];
+    const ids: number[] = [];
+    let writesBeforeFirstDone = 0;
+    let firstDoneSent = false;
     const { link } = fakeLink((wire, _n, current) => {
       const frame = decode(wire);
       frames.push(frame);
+      ids.push(frame.id);
       ack(current, frame.id);
-      done(current, frame.id);
+      if (frames.length === 3 && !firstDoneSent) {
+        writesBeforeFirstDone = frames.length;
+        firstDoneSent = true;
+        for (const id of ids) done(current, id);
+      } else if (firstDoneSent) {
+        done(current, frame.id);
+      }
     });
     link.info = {
       queueDepth: 4,
@@ -386,6 +396,7 @@ describe("TBP fake-transport retry behavior", () => {
       speedMmS: 5.2083,
     });
     expect(result).toEqual({ queued: true, rows: 1, stopped: false });
+    expect(writesBeforeFirstDone).toBe(3);
     expect(frames).toHaveLength(4);
     expect(frames.every((frame) => frame.op === OP.ROW)).toBe(true);
     for (const frame of frames) {

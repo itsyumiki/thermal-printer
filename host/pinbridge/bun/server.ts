@@ -884,7 +884,9 @@ export class PrinterLink {
           );
         this.requireHeatReady(burn);
         this.stopRequested = false;
-        let sent = 0;
+        let nextEvent = 0;
+        let completedEvents = 0;
+        const totalEvents = rows * eventsPerRow;
         const magnitude = Math.abs(steps);
         const direction = Math.sign(steps);
         const baseSteps = Math.floor(magnitude / eventsPerRow);
@@ -892,35 +894,57 @@ export class PrinterLink {
         const slices = Number(
           msg.slices ?? (burn > 0 ? DEFAULT_HEATER_SLICES : 1),
         );
-        for (let i = 0; i < rows; i++) {
-          for (let event = 0; event < eventsPerRow; event++) {
-            if (this.stopRequested) break;
+        // Keep a rolling window of ROWs in flight. Waiting for all four events
+        // at each line boundary starves the firmware queue and stalls the paper.
+        const workerCount = Math.max(
+          1,
+          Math.min(3, Number(this.info?.maxWindow ?? 4) - 1),
+        );
+        const worker = async () => {
+          while (!this.stopRequested) {
+            const eventIndex = nextEvent++;
+            if (eventIndex >= totalEvents) return;
+            const eventInRow = eventIndex % eventsPerRow;
             const eventSteps =
-              direction * (baseSteps + (event < extraSteps ? 1 : 0));
+              direction * (baseSteps + (eventInRow < extraSteps ? 1 : 0));
             const timeout = Math.min(
               30000,
               Math.ceil((Math.abs(eventSteps) * period) / 1000) + 5000,
             );
-            await this.transact(
-              OP.ROW,
-              row(
-                new Uint8Array(48).fill(255),
-                burn,
-                eventSteps,
-                period,
-                slices,
-              ),
-              true,
-              timeout,
-            );
+            try {
+              await this.transact(
+                OP.ROW,
+                row(
+                  new Uint8Array(48).fill(255),
+                  burn,
+                  eventSteps,
+                  period,
+                  slices,
+                ),
+                true,
+                timeout,
+              );
+            } catch (error) {
+              this.stopRequested = true;
+              throw error;
+            }
+            completedEvents++;
+            if (completedEvents % eventsPerRow === 0) {
+              this.emit("print-progress", {
+                done: completedEvents / eventsPerRow,
+                total: rows,
+              });
+            }
           }
-          if (this.stopRequested) break;
-          sent = i + 1;
-          this.emit("print-progress", { done: sent, total: rows });
-        }
+        };
+        await Promise.all(Array.from({ length: workerCount }, () => worker()));
         if (msg.releaseAfter)
           await this.transact(OP.COILS, Uint8Array.of(0), true);
-        return { queued: true, rows: sent, stopped: this.stopRequested };
+        return {
+          queued: true,
+          rows: Math.floor(completedEvents / eventsPerRow),
+          stopped: this.stopRequested,
+        };
       }
       case "coils":
         if (msg.enabled && !this.mock) {

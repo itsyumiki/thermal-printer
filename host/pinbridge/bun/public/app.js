@@ -125,6 +125,7 @@ function setConnection(c) {
   ])
     $(id).disabled = !state.connected;
   const info = state.info;
+  const wasHeatReady = state.heatReady;
   const requiredSensors = 0x01 | 0x02 | 0x08;
   const heatReady = !!(
     info &&
@@ -144,6 +145,11 @@ function setConnection(c) {
       : 0,
   );
   $("burnUs").disabled = !heatReady;
+  if (heatReady && !wasHeatReady && Number($("burnUs").value) === 0) {
+    // Match the known-good width-ramp demo once firmware sensor gates permit heat.
+    $("burnUs").value = String(Math.min(6000, info.burnMaxUs));
+  }
+  state.heatReady = heatReady;
   if (!heatReady) {
     $("burnUs").value = "0";
     $("heaterNotice").querySelector("p").textContent =
