@@ -64,6 +64,13 @@ describe("debug frame logging", () => {
     });
     link.debug = true;
     link.debugSink = (l) => out.push(l);
+    const uiLogs: string[] = [];
+    link.clients.add({
+      send: (wire) => {
+        const event = JSON.parse(wire);
+        if (event.type === "log") uiLogs.push(event.message);
+      },
+    });
     const wire = encode(1, OP.STAT).trim();
     await link.transact(OP.STAT, new Uint8Array(), true, 8);
     link.onLine("!wdg");
@@ -73,10 +80,48 @@ describe("debug frame logging", () => {
     expect(body.some((l) => l.startsWith("RX    id=1 op=81 "))).toBe(true);
     expect(body.some((l) => l.startsWith("RX    id=1 op=82 "))).toBe(true);
     expect(body[body.length - 1]).toBe('RX?   "!wdg" (Invalid TBP hex frame)');
+    expect(uiLogs).toContain('Ignored non-TBP UART line: "!wdg"');
   });
 });
 
 describe("TBP fake-transport retry behavior", () => {
+  test("retries BUSY on the same ID without dropping the UART", async () => {
+    const sent: string[] = [];
+    const { link, count } = fakeLink((wire, n, current) => {
+      sent.push(wire);
+      if (n === 1)
+        current.onLine(encode(1, KIND.ERR, Uint8Array.of(9, 0)).trim());
+      if (n === 2) {
+        ack(current, 1);
+        done(current, 1);
+      }
+    });
+    await link.transact(OP.MOVE, Uint8Array.of(0, 0, 0, 1, 3, 232), true, 500);
+    expect(count()).toBe(2);
+    expect(decode(sent[0]).id).toBe(decode(sent[1]).id);
+    expect(link.state).toBe("connected");
+  });
+
+  test("retries BUSY on the same ID without dropping the UART", async () => {
+    const sent: string[] = [];
+    const { link, count } = fakeLink((wire, n, current) => {
+      sent.push(wire);
+      if (n === 1)
+        setTimeout(
+          () => current.onLine(encode(1, KIND.ERR, Uint8Array.of(9, 0)).trim()),
+          0,
+        );
+      if (n === 2) {
+        ack(current, 1);
+        done(current, 1);
+      }
+    });
+    await link.transact(OP.MOVE, Uint8Array.of(0, 0, 0, 1, 3, 232), true, 500);
+    expect(count()).toBe(2);
+    expect(decode(sent[0]).id).toBe(decode(sent[1]).id);
+    expect(link.state).toBe("connected");
+  });
+
   test("retries the identical frame when ACK is lost", async () => {
     const sent: string[] = [];
     const { link, count } = fakeLink((wire, n, current) => {
@@ -105,37 +150,32 @@ describe("TBP fake-transport retry behavior", () => {
     expect(sent[0]).toBe(sent[1]);
   });
 
-  test("fills advertised window and releases one credit on terminal status", async () => {
+  test("reserves one window credit for STAT while data commands fill the rest", async () => {
     const sent: string[] = [];
     const { link, count } = fakeLink((wire) => sent.push(wire));
-    const jobs = [1, 2, 3, 4].map(() =>
-      link.transact(OP.STAT, new Uint8Array(), true, 100),
-    );
-    const fifth = link.transact(
-      OP.MOVE,
-      Uint8Array.of(0, 0, 0, 1, 3, 232),
-      true,
-      100,
+    const moveData = Uint8Array.of(0, 0, 0, 1, 3, 232);
+    const jobs = [1, 2, 3].map(() =>
+      link.transact(OP.MOVE, moveData, true, 100),
     );
     await Promise.resolve();
-    expect(count()).toBe(1);
-    expect([...link.pending.keys()]).toEqual([1, 2, 3, 4]);
-    ack(link, 1);
-    expect(count()).toBe(2);
-    expect(decode(sent[1]).id).toBe(2);
-    done(link, 1);
-    await jobs[0];
+    await Promise.resolve();
+    expect(link.pending.size).toBe(3);
+    const waitingMove = link.transact(OP.MOVE, moveData, true, 100);
+    const stat = link.transact(OP.STAT, new Uint8Array(), true, 100);
+    await Promise.resolve();
     await Promise.resolve();
     expect(link.pending.size).toBe(4);
-    for (const id of [2, 3, 4, 5]) {
+    expect([...link.pending.values()].some((p) => p.op === OP.STAT)).toBe(true);
+    for (const id of [1, 2, 3, 4]) {
       ack(link, id);
       done(link, id);
     }
+    await Promise.all([...jobs, stat]);
+    await Promise.resolve();
     expect(count()).toBe(5);
-    expect(decode(sent[4]).id).toBe(5);
-    await Promise.all(jobs.slice(1));
-    await fifth;
-    expect(link.nextId).toBe(6);
+    ack(link, 5);
+    done(link, 5);
+    await waitingMove;
     expect(link.pending.size).toBe(0);
   });
 
@@ -144,7 +184,7 @@ describe("TBP fake-transport retry behavior", () => {
       const id = decode(wire).id;
       if (id === 1) {
         setTimeout(() => {
-          current.onLine(encode(1, KIND.ERR, Uint8Array.of(5, 0)).trim());
+          current.onLine(encode(1, KIND.ERR, Uint8Array.of(10, 0)).trim());
         }, 0);
       }
     });
@@ -156,7 +196,7 @@ describe("TBP fake-transport retry behavior", () => {
       100,
     );
     const secondResult = second.catch((error) => error);
-    await expect(first).rejects.toThrow("TBP ERR 0x05");
+    await expect(first).rejects.toThrow("TBP ERR 0x0a");
     expect((await secondResult).message).toBe(
       "Blocked by preceding TBP command rejection",
     );
@@ -285,25 +325,19 @@ describe("TBP fake-transport retry behavior", () => {
     expect(count()).toBe(2);
   });
 
-  test("rejects callers waiting for credit when the active command is rejected", async () => {
+  test("keeps the UART open after a protocol-level rejection", async () => {
     const { link, count } = fakeLink((_wire, _n, current) => {
-      setTimeout(() => {
-        current.onLine(encode(1, KIND.ERR, Uint8Array.of(5, 0)).trim());
-      }, 0);
+      setTimeout(
+        () => current.onLine(encode(1, KIND.ERR, Uint8Array.of(10, 0)).trim()),
+        0,
+      );
     });
-    link.info.maxWindow = 1;
-    const first = link.transact(OP.STAT, new Uint8Array(), true, 100);
-    const second = link.transact(
-      OP.MOVE,
-      Uint8Array.of(0, 0, 0, 1, 3, 232),
-      true,
-      100,
-    );
-    const secondResult = second.catch((error) => error);
-    await expect(first).rejects.toThrow("TBP ERR 0x05");
-    expect((await secondResult).message).toBe("UART is not connected");
+    await expect(
+      link.transact(OP.MOVE, Uint8Array.of(0, 0, 0, 1, 3, 232), true, 100),
+    ).rejects.toThrow("TBP ERR 0x0a");
     expect(count()).toBe(1);
-    expect(link.state).toBe("reconnecting");
+    expect(link.state).toBe("connected");
+    expect(link.serial?.isOpen).toBe(true);
   });
 
   test("does not renumber an operation after ACK when terminal history is ambiguous", async () => {
@@ -321,7 +355,7 @@ describe("TBP fake-transport retry behavior", () => {
     ack(link, 1);
     link.onLine(encode(1, KIND.ERR, Uint8Array.of(6, 5)).trim());
     await expect(pending).rejects.toThrow("execution status is ambiguous");
-    expect(link.state).toBe("reconnecting");
+    expect(link.state).toBe("connected");
   });
 
   test("same-ID ERR SEQ retry advances the next ID after success", async () => {
@@ -342,14 +376,14 @@ describe("TBP fake-transport retry behavior", () => {
     expect(link.nextId).toBe(2);
   });
 
-  test("stops after three sends and enters reconnecting state", async () => {
+  test("stops after three sends but retains the UART connection", async () => {
     const { link, count } = fakeLink(() => {});
     await expect(
       link.transact(OP.STAT, new Uint8Array(), true, 5),
-    ).rejects.toThrow("TBP ACK timeout; reconnecting");
+    ).rejects.toThrow("TBP ACK timeout; link retained");
     expect(count()).toBe(3);
     expect(link.pending.size).toBe(0);
-    expect(link.state).toBe("reconnecting");
+    expect(link.state).toBe("connected");
   });
 
   test("HELLO starts a fresh host command-ID sequence", async () => {

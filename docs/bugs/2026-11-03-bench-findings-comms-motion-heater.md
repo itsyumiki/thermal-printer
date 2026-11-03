@@ -221,6 +221,10 @@ Findings from the source:
 8. Executor stuck-detection (F5), RX resync and HELLO loss (F6, 1.4), build id.
 
 ## 9. Acceptance
+
+### Step 1 implementation note (host robustness)
+
+Host changes are in progress on `pinbridge`: STAT/ESTOP can use the reserved final window credit, keepalive no longer skips solely because jobs are pending, BUSY/QFULL are retried with the same command ID, protocol-level ERR/sequence/timeout conditions no longer call the port-drop path, and raw non-TBP UART lines are emitted to the WebUI event log. The retry/credit and raw-line behavior has fake-transport coverage. These are host-side tests only; no device, firmware, or hardware evidence is implied. The allowed Bun, Python, generated-file, C transcript, and diff checks pass. Recovery from an ambiguous concurrent sequence mismatch is not yet complete: the host keeps the UART open and reports the ambiguity, but does not yet perform an automatic in-place resynchronization.
 - The host never closes the port in the fake-transport fault tests; reconnect only on transport loss.
 - STAT answers within the bound in every executor stage and with a full window; no raw `!wdg`.
 - A timed bench MOVE matches its reported effective period; UI mm/s is within 5% of a stopwatch measurement.

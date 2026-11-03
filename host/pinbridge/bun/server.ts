@@ -93,7 +93,7 @@ export class PrinterLink {
   startKeepalive() {
     if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
     this.keepaliveTimer = setInterval(() => {
-      if (this.state !== "connected" || this.pending.size) return;
+      if (this.state !== "connected") return;
       if (this.mock) {
         this.emit("printer", { info: this.info, status: this.status });
         return;
@@ -252,11 +252,11 @@ export class PrinterLink {
       this.drop("UART closed");
     }
   }
-  private async waitForCredit() {
-    while (
-      this.pending.size + this.creditReservations >=
-      Math.max(1, Number(this.info?.maxWindow ?? 1))
-    ) {
+  private async waitForCredit(op: number) {
+    const depth = Math.max(1, Number(this.info?.maxWindow ?? 1));
+    const control = op === OP.STAT || op === OP.ESTOP;
+    const limit = control ? depth : Math.max(1, depth - 1);
+    while (this.pending.size + this.creditReservations >= limit) {
       await new Promise<void>((resolve) => this.creditWaiters.push(resolve));
     }
     this.creditReservations++;
@@ -314,7 +314,10 @@ export class PrinterLink {
         "RX?",
         `${JSON.stringify(line)} (${e instanceof Error ? e.message : String(e)})`,
       );
-      this.emit("log", { level: "warn", message: "Ignored non-TBP UART line" });
+      this.emit("log", {
+        level: "warn",
+        message: `Ignored non-TBP UART line: ${JSON.stringify(line)}`,
+      });
       return;
     }
     this.dbg(
@@ -358,22 +361,41 @@ export class PrinterLink {
       const code = f.data[0] ?? 0,
         arg = f.data[1] ?? 0;
       if (p.timer) clearTimeout(p.timer);
+      // BUSY and QFULL mean the command was not accepted; retain its ID and
+      // retry after the queue has had time to advance, without closing UART.
+      if (!p.acked && (code === 5 || code === 9)) {
+        // Keep the sender lock: later command IDs must not overtake a rejected ID.
+        p.retries = Math.max(0, p.retries - 1);
+        p.timer = setTimeout(() => p.retry?.(), 100);
+        this.emit("command-retry", {
+          id: f.id,
+          code,
+          message: "Printer busy; retrying",
+        });
+        return;
+      }
       if (p.acked) {
-        this.drop("TBP ERR after ACK; execution status is ambiguous");
+        const error = new Error(
+          "TBP ERR after ACK; execution status is ambiguous",
+        );
+        this.pending.delete(f.id);
+        this.wakeCreditWaiters();
+        p.reject(error);
+        this.emit("log", { level: "warn", message: error.message });
         return;
       }
       // ERR SEQ is an explicit rejection: this frame was not accepted. Retry
       // the same payload at the printer's expected ID, but only when no other
       // transaction could be invalidated by that resynchronization.
       if (code === 6 && arg >= 1 && arg <= 255 && p.retry) {
-        if (p.acked) {
-          this.drop(
-            "TBP sequence error after ACK; execution status is ambiguous",
-          );
-          return;
-        }
         if (arg !== f.id && this.pending.size > 1) {
-          this.drop("TBP sequence mismatch with concurrent commands");
+          const error = new Error(
+            "TBP sequence mismatch with concurrent commands; resynchronization required",
+          );
+          this.pending.delete(f.id);
+          this.wakeCreditWaiters();
+          p.reject(error);
+          this.emit("log", { level: "warn", message: error.message });
           return;
         }
         this.releaseSend(f.id, false);
@@ -401,9 +423,10 @@ export class PrinterLink {
         later.reject(new Error("Blocked by preceding TBP command rejection"));
       }
       this.wakeCreditWaiters(true);
-      if (hasWaitingForCredit)
-        this.drop("TBP command rejected while commands are waiting for credit");
-      else this.dispatchSend();
+      if (hasWaitingForCredit) {
+        for (const resolve of this.creditWaiters.splice(0)) resolve();
+      }
+      this.dispatchSend();
       return;
     }
     if (f.op === KIND.STATUS) {
@@ -481,7 +504,7 @@ export class PrinterLink {
     }
     if (!this.serial?.isOpen || (this.state !== "connected" && op !== OP.HELLO))
       throw new Error("UART is not connected");
-    await this.waitForCredit();
+    await this.waitForCredit(op);
     this.creditReservations--;
     if (
       !this.serial?.isOpen ||
@@ -521,8 +544,11 @@ export class PrinterLink {
         if (!this.pending.has(id)) return;
         if (p.retries >= 3) {
           this.pending.delete(id);
-          reject(new Error("TBP ACK timeout; reconnecting"));
-          this.drop("TBP timeout");
+          const error = new Error("TBP ACK timeout; link retained");
+          reject(error);
+          this.wakeCreditWaiters();
+          this.releaseSend(id);
+          this.emit("log", { level: "warn", message: error.message });
           return;
         }
         const sendFrame = () => {
