@@ -78,6 +78,12 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         for field in ("step=", "phase=", "done=", "rem=", "timer=", "ticks=", "regfail=", "wiggle=", "request=", "rowpaper=", "power=", "abort="):
             self.assertIn(field, printer)
 
+    def test_websocket_startup_does_not_wait_for_remote_font_import(self):
+        css = (ROOT / "host/pinbridge/bun/public/style.css").read_text(encoding="utf-8")
+        html = WEB_HTML.read_text(encoding="utf-8")
+        self.assertNotIn("@import url(\"https://fonts.googleapis.com", css)
+        self.assertIn('<script type="module" src="/app.js"></script>', html)
+
     def test_ci_embeds_source_sha_in_hello_build_id(self):
         core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
         script = BUILD_SCRIPT.read_text(encoding="utf-8")
