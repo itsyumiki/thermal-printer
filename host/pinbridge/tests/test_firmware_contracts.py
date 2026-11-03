@@ -78,6 +78,16 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn('°C', script)
         self.assertIn('Cutoff 70 °C · abort 75 °C · resume 50 °C', script)
 
+    def test_webui_javascript_only_references_existing_dom_ids(self):
+        script = WEB_APP.read_text(encoding="utf-8")
+        page = WEB_HTML.read_text(encoding="utf-8")
+        ids = set(re.findall(r'\bid="([^"]+)"', page))
+        refs = set(re.findall(r'\$\("([^"]+)"\)', script))
+        self.assertEqual(refs - ids, set())
+        self.assertIn("function connectSocket()", script)
+        self.assertIn("connectSocket();", script)
+        self.assertIn("scheduleSocketReconnect();", script)
+
     def test_webui_shows_tick_quantized_effective_speed(self):
         script = WEB_APP.read_text(encoding="utf-8")
         page = WEB_HTML.read_text(encoding="utf-8")

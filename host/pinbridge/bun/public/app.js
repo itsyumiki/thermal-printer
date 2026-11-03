@@ -489,11 +489,8 @@ function updateEffectiveSpeed(inputId, outputId) {
   const effectiveSpeed = 1e6 / effectivePeriodUs / STEPS_PER_MM;
   output.textContent = `Effective: ${effectiveSpeed.toFixed(2)} mm/s`;
 }
-$("rowSpeed").oninput = () =>
-  updateEffectiveSpeed("rowSpeed", "rowSpeedEffective");
 $("moveSpeed").oninput = () =>
   updateEffectiveSpeed("moveSpeed", "moveSpeedEffective");
-updateEffectiveSpeed("rowSpeed", "rowSpeedEffective");
 updateEffectiveSpeed("moveSpeed", "moveSpeedEffective");
 $("feedBtn").onclick = () =>
   safeSend("move", {
