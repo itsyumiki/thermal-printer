@@ -1,6 +1,6 @@
 # Sprint 4 handoff — scheduler checkpoint
 
-Status: **scheduler implementation checkpoint; awaiting CI for this follow-up.** This is software-only work. No local firmware build, flash, or hardware validation was performed.
+Status: **Sprint 4 software gates pass in CI.** No local firmware build, flash, or hardware validation was performed; physical behavior and throughput remain unverified.
 
 ## Commits
 
@@ -18,7 +18,7 @@ Passed locally on the checkpoint:
 - `git diff --check` — passed.
 - `host/pinbridge/.venv/bin/python -m unittest discover -s host/pinbridge/tests -v` — 35 tests passed.
 - `python3 -m py_compile host/pinbridge/examples/print_matrix_square_ws_demo.py` — passed.
-- Prior checkpoint GitHub Actions [run 41587395888](https://github.com/itsyumiki/thermal-printer/actions/runs/41587395888) passed host checks and remote C firmware build/package. Artifact: `pinbridge-br23-41587395888` (663,477 bytes). It predates the scheduler segment-ring follow-up; current CI run/artifact pending push. CI is not hardware validation.
+- GitHub Actions [run 41590323938](https://github.com/itsyumiki/thermal-printer/actions/runs/41590323938) — both host checks and remote C firmware build/package passed for scheduler commit `8593b53` plus handoff update. Artifact: `pinbridge-br23-41590323938` (668,837 bytes). CI is not hardware validation.
 
 These checks establish software/mock behavior only. They do not establish physical feed direction, dot polarity, thermal safety, actual shift time, or continuous motion.
 
@@ -41,12 +41,13 @@ These checks establish software/mock behavior only. They do not establish physic
 
 No measured throughput is available. Feed segments overlap shift/latch/heat with the active motor phase train, including queued direction/effective-period changes at phase boundaries. Pre-shift remains disabled. The stock 6 ms event cadence and 3 ms shift time are static estimates, not Pinbridge timing guarantees. The demo's four-event representation does not prove stock-equivalent dot placement or thermal behavior.
 
-## Required work before Sprint 4 can be called complete
+## Acceptance and remaining limitations
 
-1. Review the new scheduler code and transcripts for any remaining edge cases around segment-ring exhaustion and cancellation during a direction/period boundary. The current ring is bounded by TBP queue depth and enqueue credit accounting.
-2. The deterministic C transcripts now cover four events for one logical row, ROW/ROW and ROW/MOVE handoff, direction/period changes, forward/reverse phase order, no-heat flags, detected late shift, empty-queue completion, and ESTOP with a pending terminal. Existing gate transcripts cover sliced burns and fail-closed sensor/paper/battery behavior.
-3. Keep `STRETCHED` clear unless effective-period extension is explicitly detected; keep `LATE` tied to feed quota completion before row preparation handoff. Keep all heater actions inside Sprint 3 gates and keep direct PB11-high blocked.
-4. Run the three required local checks, push, then `gh run watch` and record the successful run and artifact here. No local firmware build or flash.
+- The deterministic C transcripts cover four events for one logical row, ROW/ROW and ROW/MOVE handoff, direction/period changes, forward/reverse phase order, coil outputs retained at a boundary, no-heat flags, detected late shift, empty-queue completion, and ESTOP with a pending terminal. Existing gate transcripts cover sliced burns and fail-closed sensor/paper/battery behavior.
+- Required local checks pass; GitHub Actions run 41590323938 passes host checks and the remote C firmware build/package job.
+- `STRETCHED` remains clear because the scheduler does not explicitly stretch a segment's requested period. `LATE` is only set when the feed quota has completed before row preparation reaches the handoff.
+- Throughput, physical paper direction, dot polarity, shift/latch electrical timing, and thermal limits remain unmeasured. No hardware behavior is inferred from mock tests or CI.
+- All heating remains behind Sprint 3 gates. Direct PB11-high remains blocked. Pre-shifting remains disabled.
 
 ## Exact next step for Sprint 5
 
