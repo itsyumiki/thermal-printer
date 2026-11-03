@@ -1038,10 +1038,14 @@ if (import.meta.main) {
   await link.start();
   console.log(`Pinbridge host listening on http://${host}:${server.port}`);
   if (debugFrames) console.log("Debug: logging raw UART frames to stdout");
-  process.on("SIGINT", () => {
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    // Stop accepting requests and close live WebSockets before waiting on UART cleanup.
+    server.stop(true);
     void link.shutdown().finally(() => process.exit(0));
-  });
-  process.on("SIGTERM", () => {
-    void link.shutdown().finally(() => process.exit(0));
-  });
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
