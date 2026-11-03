@@ -337,6 +337,7 @@ export class PrinterLink {
     this.scheduleReconnect(1400);
   }
   onLine(line: string) {
+    if (this.diagWaiter && this.diagWaiter.match(line.trim())) return;
     let f;
     try {
       f = decode(line);
@@ -727,10 +728,58 @@ export class PrinterLink {
       );
     }
   }
+  /** Plain-text firmware diagnostics (PDIAG/PHDIAG/PSTEPSTAT). Read-only, whitelisted, one at a time. */
+  private diagWaiter: { match: (line: string) => boolean } | null = null;
+  async diag(cmd: string): Promise<string> {
+    const allowed: Record<string, RegExp> = {
+      PDIAG: /^ok diag /,
+      PHDIAG: /^ok hdiag /,
+      PSTEPSTAT: /^ok (busy|done)$/,
+    };
+    const expect = allowed[cmd];
+    if (!expect) throw new Error(`Unknown diagnostic command: ${cmd}`);
+    if (this.mock) return `ok mock ${cmd.toLowerCase()} (no hardware)`;
+    if (!this.serial?.isOpen || this.state !== "connected")
+      throw new Error("UART is not connected");
+    if (this.diagWaiter) throw new Error("Another diagnostic is in progress");
+    return await new Promise<string>((resolve, reject) => {
+      const done = (fn: () => void) => {
+        clearTimeout(timer);
+        this.diagWaiter = null;
+        fn();
+      };
+      const timer = setTimeout(
+        () => done(() => reject(new Error(`${cmd}: no reply from firmware`))),
+        2000,
+      );
+      this.diagWaiter = {
+        match: (line) => {
+          if (expect.test(line)) {
+            done(() => resolve(line));
+            return true;
+          }
+          if (/^err /.test(line)) {
+            done(() => reject(new Error(`${cmd}: firmware said "${line}"`)));
+            return true;
+          }
+          return false;
+        },
+      };
+      this.dbg("TX", `text ${cmd}`);
+      this.serial!.write(cmd + "\n", (e) => {
+        if (e) done(() => reject(e));
+      });
+    });
+  }
   async command(action: string, msg: any) {
     switch (action) {
       case "ports":
         return { ports: await this.ports() };
+      case "diag":
+        return {
+          cmd: String(msg.cmd),
+          reply: await this.diag(String(msg.cmd)),
+        };
       case "connect": {
         const requested = String(msg.path ?? "");
         this.path = requested || autoPath;

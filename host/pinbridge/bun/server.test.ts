@@ -548,3 +548,45 @@ describe("TBP fake-transport retry behavior", () => {
     expect(link.info).toBeNull();
   });
 });
+
+describe("text diagnostics", () => {
+  test("PDIAG sends the plain-text command and resolves with the firmware reply line", async () => {
+    const sent: string[] = [];
+    const { link } = fakeLink((wire, _n, l) => {
+      sent.push(wire);
+      queueMicrotask(() =>
+        l.onLine("ok diag step=0 phase=3 done=9 rem=0 ticks=1234"),
+      );
+    });
+    const r = await link.command("diag", { cmd: "PDIAG" });
+    expect(sent).toEqual(["PDIAG\n"]);
+    expect(r.reply).toContain("ticks=1234");
+  });
+
+  test("PHDIAG matches only its own reply and a firmware error rejects", async () => {
+    const { link } = fakeLink((wire, _n, l) => {
+      queueMicrotask(() => {
+        l.onLine("ok diag step=0"); // unrelated line is not taken as the answer
+        l.onLine(
+          wire.startsWith("PHDIAG")
+            ? "ok hdiag starts=1 isr=0 poll=1 over=0 cnt=1 con=25"
+            : "err bsy x",
+        );
+      });
+    });
+    expect((await link.command("diag", { cmd: "PHDIAG" })).reply).toContain(
+      "poll=1",
+    );
+    await expect(link.command("diag", { cmd: "PSTEPSTAT" })).rejects.toThrow(
+      /err bsy/,
+    );
+  });
+
+  test("only whitelisted read-only commands can be sent", async () => {
+    const { link, count } = fakeLink(() => {});
+    await expect(link.command("diag", { cmd: "SET PB11 1" })).rejects.toThrow(
+      /Unknown diagnostic/,
+    );
+    expect(count()).toBe(0);
+  });
+});

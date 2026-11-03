@@ -121,6 +121,10 @@ function setConnection(c) {
     "refreshStatus",
     "flushBtn",
     "estopBtn",
+    "diagStepBtn",
+    "diagHeaterBtn",
+    "diagBusyBtn",
+    "diagTickBtn",
   ])
     $(id).disabled = !state.connected;
   const info = state.info;
@@ -138,13 +142,13 @@ function setConnection(c) {
     (info.battMinRaw !== 0xffff || !!(info.caps & 0x04)) &&
     (info.caps & requiredSensors) === requiredSensors
   );
-  $("burnUs").max = String(
-    heatReady ? Math.min(info.burnMaxUs, MAX_HEATER_SLICE_US) : 0,
-  );
+  // burnUs is the TOTAL per row (split over 4 events); the firmware enforces its own
+  // per-event cap, row total and duty budget, so the field only mirrors the row total.
+  $("burnUs").max = String(heatReady ? info.burnMaxUs : 0);
   $("burnUs").disabled = !heatReady;
   if (heatReady && !wasHeatReady && Number($("burnUs").value) === 0) {
-    // Match the known-good width-ramp demo once firmware sensor gates permit heat.
-    $("burnUs").value = String(Math.min(6000, info.burnMaxUs));
+    // Old checker demo: 2000 us per event x 4 events = 8000 us per row (stock is ~2.9-8.9 ms).
+    $("burnUs").value = String(Math.min(8000, info.burnMaxUs));
   }
   state.heatReady = heatReady;
   if (!heatReady) {
@@ -153,7 +157,7 @@ function setConnection(c) {
       `Heating disabled until temperature, battery and paper sensors are valid. Conservative per-slice cap: ${MAX_HEATER_SLICE_US} µs; thermal and duty safeguards remain active. Only heatless feed tests are allowed until sensor gates are valid.`;
   } else {
     $("heaterNotice").querySelector("p").textContent =
-      `Conservative per-slice pulse cap ${MAX_HEATER_SLICE_US} µs; heated rows remain limited to ${info.burnMaxUs} µs total by firmware duty and thermal safeguards. Burn remains zero by default; physical validation is still required.`;
+      `Heat is the total per row, split over 4 events (≤ ${MAX_HEATER_SLICE_US} µs each, so ${info.burnMaxUs} µs max per row). The firmware also enforces its duty budget and temperature limits.`;
   }
   $("printBtn").textContent = "";
   const printLabel = document.createElement("span");
@@ -511,14 +515,19 @@ $("coilMode").onchange = () => {
 $("printBtn").onclick = async () => {
   const rows = Number($("rowCount").value),
     burnUs = Number($("burnUs").value);
+  if (!Number.isInteger(rows) || rows < 1 || rows > 500) {
+    toast("Rows must be a whole number from 1 to 500", "error");
+    return;
+  }
   if (
-    !Number.isInteger(rows) ||
-    rows < 1 ||
-    rows > 500 ||
+    !Number.isFinite(burnUs) ||
     burnUs < 0 ||
     burnUs > Number($("burnUs").max)
   ) {
-    toast("Check print settings and allowed ranges", "error");
+    toast(
+      `Heat per row must be 0 to ${$("burnUs").max} µs (firmware row limit)`,
+      "error",
+    );
     return;
   }
   if (
@@ -546,6 +555,62 @@ $("printBtn").onclick = async () => {
     toast(e.message, "error");
   } finally {
     $("printBtn").disabled = !state.connected;
+  }
+};
+// ---- Diagnostics: replaces typing PDIAG / PHDIAG into tio ----
+function diagShow(text, level = "info") {
+  $("diagOut").textContent = text;
+  log(text, level);
+}
+async function runDiag(cmd) {
+  try {
+    const r = await send("diag", { cmd });
+    diagShow(r.reply);
+    return r.reply;
+  } catch (e) {
+    diagShow(e.message, "error");
+    return null;
+  }
+}
+const diagField = (reply, key) => {
+  const m = new RegExp(`${key}=(\\d+)`).exec(reply ?? "");
+  return m ? Number(m[1]) : null;
+};
+$("diagStepBtn").onclick = () => runDiag("PDIAG");
+$("diagHeaterBtn").onclick = () => runDiag("PHDIAG");
+$("diagBusyBtn").onclick = () => runDiag("PSTEPSTAT");
+// Stepper tick-rate test: one short heatless feed at the 1000 us floor; compares the
+// firmware's step-timer callback count with wall-clock time. 1 ms tick -> ~1000/s.
+$("diagTickBtn").onclick = async () => {
+  $("diagTickBtn").disabled = true;
+  try {
+    const steps = 480;
+    const before = await runDiag("PDIAG");
+    const t0 = performance.now();
+    await send("move", {
+      distanceMm: steps / STEPS_PER_MM,
+      speedMmS: 31.25,
+      releaseAfter: true,
+    });
+    const ms = performance.now() - t0;
+    const after = await runDiag("PDIAG");
+    const a = diagField(before, "ticks"),
+      b = diagField(after, "ticks");
+    if (a === null || b === null) {
+      diagShow("Tick test: could not read ticks counter from PDIAG", "error");
+      return;
+    }
+    const rate = ((b - a) * 1000) / ms;
+    diagShow(
+      `Tick test: ${b - a} timer callbacks in ${ms.toFixed(0)} ms = ${rate.toFixed(0)}/s ` +
+        `(${(1000 / rate).toFixed(2)} ms per tick; ${steps} half-steps took ${ms.toFixed(0)} ms, ` +
+        `ideal at a 1 ms tick is ${steps} ms)`,
+      "success",
+    );
+  } catch (e) {
+    diagShow("Tick test failed: " + e.message, "error");
+  } finally {
+    $("diagTickBtn").disabled = !state.connected;
   }
 };
 connectSocket();

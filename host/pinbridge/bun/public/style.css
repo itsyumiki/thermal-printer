@@ -819,3 +819,11 @@ footer b {
     scroll-behavior: auto !important;
   }
 }
+.diag-panel {
+  margin-top: 14px;
+}
+.diag-panel pre {
+  margin: 12px 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

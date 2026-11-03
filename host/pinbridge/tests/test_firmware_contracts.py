@@ -162,8 +162,10 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertNotIn('id="rowMm"', page)
         self.assertNotIn('id="rowSpeed"', page)
         self.assertIn('id="moveSpeedEffective"', page)
-        self.assertIn("15 ms", page)
-        self.assertIn("step tick", page)
+        self.assertIn("6 ms step period", page)
+        self.assertIn("Heat per row, total", page)
+        self.assertNotIn("Heat per event", page)
+        self.assertNotIn("Math.min(info.burnMaxUs, MAX_HEATER_SLICE_US)", script)
 
 
 if __name__ == "__main__":

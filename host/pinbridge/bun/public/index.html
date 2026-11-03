@@ -109,7 +109,7 @@
                   max="500"
                   value="24" /></label
               ><label
-                >Heat per event (µs)
+                >Heat per row, total (µs)
                 <span class="input-with-unit"
                   ><input
                     id="burnUs"
@@ -124,8 +124,8 @@
               <div class="field-note">
                 <b>Fixed line cadence</b>
                 <small
-                  >4 print events per row · 1 feed half-step per event · 15 ms
-                  step tick</small
+                  >4 print events per row · 1 feed half-step per event · heat is
+                  split evenly over the 4 events · 6 ms step period</small
                 >
               </div>
             </div>
@@ -281,6 +281,27 @@
               ><span class="microcopy">Reconnect is automatic by default.</span>
             </div>
           </div>
+        </section>
+        <section class="panel diag-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">DIAGNOSTICS</p>
+              <h2>Firmware counters</h2>
+            </div>
+            <span class="panel-icon">≋</span>
+          </div>
+          <div class="job-actions">
+            <button class="btn btn-secondary" id="diagStepBtn" disabled>
+              Step timer (PDIAG)</button
+            ><button class="btn btn-secondary" id="diagHeaterBtn" disabled>
+              Heater timer (PHDIAG)</button
+            ><button class="btn btn-secondary" id="diagBusyBtn" disabled>
+              Stepper busy?</button
+            ><button class="btn btn-secondary" id="diagTickBtn" disabled>
+              Measure step tick (feeds ~15 mm)
+            </button>
+          </div>
+          <pre class="mono microcopy" id="diagOut">No diagnostic run yet.</pre>
         </section>
         <section class="panel console-panel">
           <div class="panel-head">
