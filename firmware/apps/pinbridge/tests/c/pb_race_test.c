@@ -34,6 +34,30 @@ static unsigned site_hits[MAX_SITE], total_site_hits[MAX_SITE];
 static pb_core *active_core;
 static unsigned latch_rises, clock_rises, heater_rises;
 static uint32_t heater_edge_steps[8];
+static void wr(void *x, unsigned p, uint16_t mask, uint16_t v);
+static unsigned mock_heater_active, mock_heater_fail_start, mock_heater_long_waits;
+static uint32_t mock_heater_deadline;
+static int mock_heater_start(void *ctx, unsigned usec) {
+    (void)ctx;
+    if (mock_heater_fail_start || !usec || usec > 2500u || mock_heater_active) return -1;
+    mock_heater_active = 1;
+    mock_heater_deadline = now_ms + (usec + 999u) / 1000u;
+    wr(NULL, 1u, (uint16_t)(1u << 11), (uint16_t)(1u << 11));
+    return 0;
+}
+static int mock_heater_active_poll(void *ctx) {
+    (void)ctx;
+    if (mock_heater_active && (int32_t)(now_ms - mock_heater_deadline) >= 0) {
+        mock_heater_active = 0;
+        wr(NULL, 1u, (uint16_t)(1u << 11), 0);
+    }
+    return (int)mock_heater_active;
+}
+static void mock_heater_cancel(void *ctx) {
+    (void)ctx;
+    mock_heater_active = 0;
+    wr(NULL, 1u, (uint16_t)(1u << 11), 0);
+}
 static void observe_pin(unsigned port, unsigned bit, unsigned old_level, unsigned new_level) {
     if (!old_level && new_level && active_core && port == 1u) {
         if (bit == 8u) latch_rises++;
@@ -74,7 +98,7 @@ static int adc(void *x, int ch, unsigned *r, unsigned *m) {
     return 0;
 }
 static uint32_t ms(void *x) { (void)x; return now_ms; }
-static void dly(void *x, unsigned us) { (void)x; (void)us; }
+static void dly(void *x, unsigned us) { (void)x; if (us >= 1000u) mock_heater_long_waits++; }
 static int tx(void *x, const char *s, size_t n) {
     (void)x;
     if (used + n < sizeof out - 1) { memcpy(out + used, s, n); used += n; out[used] = 0; }
@@ -145,24 +169,29 @@ static void parse(result *r) {
         p = e + 1;
     }
 }
-enum { K_MOVE, K_ROW, K_HEATED_ROW, K_HEATED_PAIR, K_MOVE_FWD_REV, K_MIXED, K_EXTEND_SWEEP, K_FORCED_UNREACHABLE, K_COUNT };
-static const char *const kname[K_COUNT] = {"MOVE +80", "ROW +40", "heated ROW four synchronized slices", "two continuous heated rows", "MOVE +80 then -80", "ROW+30,MOVE-30,ROW+30", "extend near end of train", "forced unreachable target"};
+enum { K_MOVE, K_ROW, K_HEATED_ROW, K_HEATED_PAIR, K_HEATER_FAIL, K_HEATER_CANCEL, K_MOVE_FWD_REV, K_MIXED, K_EXTEND_SWEEP, K_FORCED_UNREACHABLE, K_COUNT };
+static const char *const kname[K_COUNT] = {"MOVE +80", "ROW +40", "heated ROW four synchronized slices", "two continuous heated rows", "heater timer start failure", "heater timer cancellation", "MOVE +80 then -80", "ROW+30,MOVE-30,ROW+30", "extend near end of train", "forced unreachable target"};
 static unsigned variant; /* K_EXTEND_SWEEP: start offset (0..9 ms) and how close to the train end the 2nd MOVE arrives */
 
 static int trial(int kind, unsigned per, int site, int verbose) {
     static pb_core c;
-    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, dly, wr};
+    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, dly, wr,
+                mock_heater_start, mock_heater_active_poll, mock_heater_cancel};
     result r;
     unsigned per_ms = (per + 999u) / 1000u, expect_ids = 0, total_steps = 0, i;
-    int ok = 1, forced = 0;
+    int ok = 1, forced = 0, cancel_sent = 0;
     memset(&c, 0, sizeof c); memset(outs, 0, sizeof outs);
     active_core = &c; latch_rises = clock_rises = heater_rises = 0;
+    mock_heater_active = mock_heater_fail_start = mock_heater_long_waits = 0;
+    mock_heater_deadline = 0;
     memset(heater_edge_steps, 0, sizeof heater_edge_steps);
     used = 0; out[0] = 0; now_ms = 1000; armed_site = 0; memset(site_hits, 0, sizeof site_hits);
     pb_init(&c, &h);
     { uint8_t d[1] = {1}; send_frame(&c, 1, 0x01, d, 1); } /* HELLO */
     run(&c, 50); used = 0; out[0] = 0;
     latch_rises = clock_rises = heater_rises = 0;
+    mock_heater_active = mock_heater_fail_start = mock_heater_long_waits = 0;
+    mock_heater_deadline = 0;
     memset(heater_edge_steps, 0, sizeof heater_edge_steps);
     armed_site = site;
     switch (kind) {
@@ -173,6 +202,11 @@ static int trial(int kind, unsigned per, int site, int verbose) {
     case K_HEATED_PAIR:
         send_heated_row(&c, 2); send_heated_row(&c, 3);
         expect_ids = 2; total_steps = 8; per = 6000u; per_ms = 6u; break;
+    case K_HEATER_FAIL:
+        mock_heater_fail_start = 1; send_heated_row(&c, 2);
+        total_steps = 4; per = 6000u; per_ms = 6u; break;
+    case K_HEATER_CANCEL:
+        send_heated_row(&c, 2); total_steps = 4; per = 6000u; per_ms = 6u; break;
     case K_FORCED_UNREACHABLE: send_move(&c, 2, 80, per); break;
     case K_MOVE_FWD_REV: send_move(&c, 2, 80, per); run(&c, 20); send_move(&c, 3, -80, per); expect_ids = 2; total_steps = 160; break;
     case K_EXTEND_SWEEP:
@@ -185,17 +219,29 @@ static int trial(int kind, unsigned per, int site, int verbose) {
         send_row(&c, 2, 30, per); run(&c, 10); send_move(&c, 3, -30, per); run(&c, 10);
         send_row(&c, 4, 30, per); expect_ids = 3; total_steps = 90; break;
     }
+    {
     for (i = 0; i < total_steps * per_ms + (kind == K_FORCED_UNREACHABLE ? 1500u : 2500u); i++) {
         now_ms++;
         pb_step_tick(&c);
-        if ((kind == K_HEATED_ROW || kind == K_HEATED_PAIR) || now_ms % 10u == 0u) pb_poll(&c);
+        if ((kind == K_HEATED_ROW || kind == K_HEATED_PAIR || kind == K_HEATER_FAIL || kind == K_HEATER_CANCEL) || now_ms % 10u == 0u) pb_poll(&c);
+        if (kind == K_HEATER_CANCEL && mock_heater_active && !cancel_sent) {
+            send_frame(&c, 3, 0x03, NULL, 0); /* STOP while hardware pulse is active */
+            cancel_sent = 1;
+        }
         if (kind == K_FORCED_UNREACHABLE && !forced && c.tbp_running && c.step_active && c.tbp_feed_train_active) {
             c.tbp_feed_target += 1u; /* the pre-fix off-by-one: a target the train can never reach */
             forced = 1;
         }
     }
+    }
     parse(&r);
-    if (kind == K_FORCED_UNREACHABLE) {
+    if (kind == K_HEATER_FAIL) {
+        if (!r.failed[2] || r.done[2] || mock_heater_active || heater_rises ||
+            (outs[1] & (1u << 11)) || c.step_active) ok = 0;
+    } else if (kind == K_HEATER_CANCEL) {
+        if (!cancel_sent || !r.cancelled[2] || !r.done[3] || mock_heater_active ||
+            (outs[1] & (1u << 11)) || c.step_active) ok = 0;
+    } else if (kind == K_FORCED_UNREACHABLE) {
         if (!forced || !r.failed[2] || r.fail_code[2] != 0x1Fu || r.done[2]) ok = 0;
     } else {
         unsigned id;
@@ -208,16 +254,17 @@ static int trial(int kind, unsigned per, int site, int verbose) {
             (outs[1] & (1u << 11)) != 0u) ok = 0;
         for (j = 0; j < 4u * rows; j++)
             if (heater_edge_steps[j] != j + 1u) ok = 0;
+        if (mock_heater_long_waits) ok = 0; /* no blocking delay >= 1 ms in the pulse path */
     }
     for (i = 0; i < MAX_SITE; i++) total_site_hits[i] += site_hits[i];
     if (!ok || verbose)
         printf("%s kind=\"%s\" period=%uus site=%d hits=%u: completed=%u target=%u active=%u (expected %u steps)\n",
                ok ? "PASS" : "FAIL", kname[kind], per, site, site ? site_hits[site] : 0u,
                (unsigned)c.step_completed, (unsigned)c.tbp_feed_target, (unsigned)c.step_active, total_steps);
-    if ((kind == K_HEATED_ROW || kind == K_HEATED_PAIR) && (!ok || verbose))
+    if ((kind == K_HEATED_ROW || kind == K_HEATED_PAIR || kind == K_HEATER_FAIL || kind == K_HEATER_CANCEL) && (!ok || verbose))
         printf("  row observations: latch=%u clocks=%u heater=%u stage=%u slices=%u flags=%u\n",
                latch_rises, clock_rises, heater_rises, c.tbp_exec_stage, c.tbp_exec_slice, c.tbp_row_flags);
-    if ((kind == K_HEATED_ROW || kind == K_HEATED_PAIR) && (!ok || verbose)) {
+    if ((kind == K_HEATED_ROW || kind == K_HEATED_PAIR || kind == K_HEATER_FAIL || kind == K_HEATER_CANCEL) && (!ok || verbose)) {
         unsigned j; printf("  heater steps:"); for (j = 0; j < heater_rises; j++) printf(" %lu", (unsigned long)heater_edge_steps[j]); printf("\n");
     }
     return ok;
@@ -233,7 +280,7 @@ int main(int argc, char **argv) {
             for (si = 0; si < sizeof sites / sizeof *sites; si++) {
                 unsigned nv = ki == K_EXTEND_SWEEP ? 70u : 1u;
                 if (ki == K_FORCED_UNREACHABLE && sites[si] != 0) continue;
-                if ((ki == K_HEATED_ROW || ki == K_HEATED_PAIR) && (pi != 0u || si != 0u)) continue;
+                if ((ki == K_HEATED_ROW || ki == K_HEATED_PAIR || ki == K_HEATER_FAIL || ki == K_HEATER_CANCEL) && (pi != 0u || si != 0u)) continue;
                 for (variant = 0; variant < nv; variant++) {
                     cases++;
                     if (!trial((int)ki, periods[pi], sites[si], verbose)) fails++;

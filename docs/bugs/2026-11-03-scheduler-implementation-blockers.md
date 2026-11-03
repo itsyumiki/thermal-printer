@@ -1,23 +1,22 @@
 # Pinbridge scheduler follow-up — 2026-11-03
 
-Status: **software row sequencing is implemented and simulated; exact heater shutoff remains blocking and requires a finer-grained supported timer facility.** No firmware build or hardware run was performed.
+Status: **row scheduling and asynchronous heater shutoff are implemented in source and covered by portable-core simulation; hardware timing acceptance remains unverified.** No firmware build or hardware run was performed.
 
-## Timer findings
+## Hardware timer implementation
 
-- `app.c` registers motion with `sys_hi_timer_add(NULL, pb_step_timer, 1)` and cancels it with `sys_hi_timer_del`. The project SDK copy is `../sdk-pinbridge/include_lib/system/timer.h`. Its `sys_hi_timer_add` macro calls `usr_timer_add(..., priority=1)`; the API documentation explicitly gives `msec` as milliseconds and describes the callback as asynchronous on the hardware-timer timebase. The low-power `sys_s_hi_timer_add` uses priority 0 and its period can stretch when low-power ticks are skipped; the app correctly uses the priority-1 variant for active motion.
-- The SDK header declares the timer API but the matching timer implementation is not included in the checked-out source set. Exact callback interrupt/task context, jitter, in-flight deletion behavior and worst-case latency cannot be established from the declaration alone.
-- SDK examples use `JL_TIMER0` as a 1 us counter, but the examples poll its completion flag in a blocking loop. This is not a nonblocking heater-shutoff facility and must not be presented as one. The millisecond `sys_hi_timeout_add` family is too coarse to enforce stock-derived 0.72–2.22 ms pulses with suitable precision.
+- The BR23 SDK's `JL_TIMER_TypeDef` exposes `CON`, `CNT`, `PRD`, and `PWM` registers. SDK `timer_pwm_init` configures the crystal source with `(0b10 << 2)`, a divide-by-four prescaler with `(0b0001 << 4)`, and the counter enable bit. The SDK IR timer ISR acknowledges its interrupt with bit 14 and registers `IRQ_TIME3_IDX`; its setup shows bit 1 enables timer interrupts.
+- Pinbridge now reserves `JL_TIMER1` / `IRQ_TIME1_IDX` for heater pulse deadlines. The timer runs from the 24 MHz crystal divided by four (6 MHz, about 0.167 us per count); the 2,500 us software pulse cap fits within 15,000 counts. The timer ISR stops/acknowledges the timer and directly drives PB11 low without waiting for the command task.
+- Pulse start and cancellation execute with local interrupts disabled while timer and output state are updated. `pb_heater_off`, abort, disconnect and fault paths cancel the timer and force PB11 low. Timer-start failure fails the row closed rather than falling back to a blocking pulse on the production adapter.
+- TIMER1 is reserved for this app's heater driver; don't enable SDK TIMER1 PWM users concurrently. The exact timer interrupt latency and clock tolerance still need hardware measurement. No build or hardware timing test was run in this change.
 
-## Scheduler changes now implemented
+## Scheduler changes
 
 - Host `print-solid` sends one 54-byte `ROW` per logical image row, not four copies of the same bitmap. Each ROW contains four feed steps, a 6 ms effective period and four heater slices, so the firmware shifts and latches the bitmap once.
 - The host keeps a bounded window of compatible rows in flight. This lets firmware extend the continuous step train across row boundaries; row progress is counted only when the corresponding command reaches terminal completion.
 - The firmware records the absolute step range allocated to a row and gates heater slice `i` until the corresponding completed step edge. For four slices across four steps, each slice waits for one distinct edge. An incompatible existing feed train is waited out before head shifting begins; retry state avoids charging the rolling heat budget repeatedly.
-- The C race test now drives a heated ROW through the portable core and checks exactly 384 shift clocks, one latch edge, four heater rising edges, and that each heater edge occurs at its corresponding completed motor step. This is a simulation guarantee only; it does not establish physical timer jitter or pulse width.
+- The C race test checks exactly 384 shift clocks, one latch edge, four heater rising edges per row, each heater edge at its corresponding completed motor step, consecutive-row ordering, timer-start failure, and cancellation while a simulated pulse is active. It also asserts that the async pulse path never calls the HAL delay for a full heater-pulse duration.
 - Temperature, battery, paper-presence, overtemperature, per-slice, rolling-duty and abort gates are unchanged. The 2,500 us per-slice cap is retained; it is a conservative software ceiling, not a hardware-validated thermal limit.
 
-## Remaining implementation limitation
+## Remaining acceptance work
 
-PB11 pulses still use the existing calibrated `pb_wait_us` delay loop, which blocks the command task while a pulse is asserted. The motion ISR can continue independently, but the pulse-off deadline is not hardware-enforced and the control-plane latency during a pulse is not fully nonblocking. The SDK sources inspected here do not expose a documented, usable sub-millisecond one-shot shutoff API with verified callback and cancellation semantics. Do not claim that requirement is solved by the 1 ms motion timer or the blocking `JL_TIMER0` examples.
-
-The software simulation covers relative ordering, not actual event timing, GPIO electrical latency, timer jitter, darkness, or thermal behavior. A future timer implementation must make PB11 shutoff independent of the command poll loop and guarantee PB11 low on abort, disconnect, safety fault, timer failure, and new-row transitions. Do not raise pulse limits to compensate for timing defects.
+The portable simulation verifies state and ordering, not real TIMER1 register behavior, pulse-off jitter, GPIO electrical latency, physical darkness, or thermal behavior. Firmware compilation and physical timing acceptance have intentionally not been run. Do not raise pulse limits to compensate for timing defects.

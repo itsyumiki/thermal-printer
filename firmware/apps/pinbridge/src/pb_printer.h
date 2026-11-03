@@ -44,6 +44,8 @@ static int pb_printer_pin(pb_core *c, const char *name, unsigned level) {
 }
 static void pb_heater_off(pb_core *c) {
     int k = pb_pin("PB11");
+    c->tbp_heater_pending = 0;
+    if (c->h.heater_pulse_cancel) c->h.heater_pulse_cancel(c->h.ctx);
     if (k < 0) return;
     if (c->h.set_mode &&
         c->h.set_mode(c->h.ctx, pb_defs[k].port, pb_defs[k].bit, PB_LO, 0) >= 0) {

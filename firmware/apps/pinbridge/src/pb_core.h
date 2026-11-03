@@ -78,6 +78,10 @@ typedef struct {
     void (*delay_us)(void *, unsigned);
     /* Optional fast writer for ports not touched by interrupt-context code. */
     void (*write_port_fast)(void *, unsigned, uint16_t, uint16_t);
+    /* Optional asynchronous heater pulse. Start asserts PB11 and arms a hardware shutoff. */
+    int (*heater_pulse_start)(void *, unsigned);
+    int (*heater_pulse_active)(void *);
+    void (*heater_pulse_cancel)(void *);
 } pb_hal;
 typedef struct {
     uint8_t id, op, len, queued_status_sent;
@@ -112,7 +116,7 @@ typedef struct {
     uint8_t tbp_feed_deferred, tbp_feed_reverse;
     volatile uint8_t emergency_abort_requested;
     pb_tbp_command tbp_current;
-    uint8_t tbp_exec_stage, tbp_exec_slice;
+    uint8_t tbp_exec_stage, tbp_exec_slice, tbp_heater_pending;
     uint16_t tbp_exec_bit;
     uint32_t tbp_exec_deadline, tbp_exec_progress_at;
     uint32_t tbp_exec_watchdog_at, tbp_exec_watchdog_steps, tbp_exec_watchdog_remaining;
@@ -1227,6 +1231,12 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         }
         if (c->tbp_exec_stage == 3u) {
             if (c->emergency_abort_requested) { pb_heater_off(c); return; }
+            if (c->tbp_heater_pending) {
+                if (c->h.heater_pulse_active && c->h.heater_pulse_active(c->h.ctx)) return;
+                c->tbp_heater_pending = 0;
+                if (c->tbp_exec_slice < slices) pb_wait_us(c, PB_TBP_GUARD_US);
+                return;
+            }
             if (c->tbp_exec_slice < slices) {
                 /* Heater slice i may start only after its corresponding motor edge. */
                 if (steps) {
@@ -1253,6 +1263,20 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
                         pb_tbp_fail_stop(c, g == PB_GATE_HOT ? 0x12u : code, g == PB_GATE_HOT ? 0u : arg);
                         return;
                     }
+                    if (c->h.heater_pulse_start) {
+                        /* The hardware timer owns the pulse deadline. Do not busy-wait in
+                         * the command task while the printhead heater is energized. */
+                        if (c->h.heater_pulse_start(c->h.ctx, on) < 0) {
+                            pb_heater_off(c);
+                            pb_tbp_fail_stop(c, 0x1Fu, 0u);
+                            return;
+                        }
+                        { int heater = pb_pin("PB11");
+                          if (heater >= 0) { c->pins[heater].mode = PB_HI; c->pins[heater].level = 1; } }
+                        c->tbp_heater_pending = 1;
+                        return;
+                    }
+                    /* Portable-core fallback for HALs without a hardware pulse timer. */
                     (void)pb_printer_pin(c, "PB11", 1);
                     if (c->emergency_abort_requested) { pb_heater_off(c); return; }
                     pb_wait_us(c, on);

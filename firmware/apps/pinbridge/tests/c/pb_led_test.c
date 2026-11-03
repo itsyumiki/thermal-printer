@@ -69,7 +69,7 @@ static void step(unsigned n) {
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL t=%u: %s\n", now_ms, msg); failures++; } } while (0)
 
 static void begin(void) {
-    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, dly, wr};
+    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, dly, wr, 0, 0, 0};
     int i;
     memset(&C, 0, sizeof C); memset(outs, 0, sizeof outs); memset(pads, 0, sizeof pads);
     i = pb_pin("PC7"); pc7_port = pb_defs[i].port; pc7_bit = pb_defs[i].bit;

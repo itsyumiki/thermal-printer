@@ -17,6 +17,7 @@ extern u32 adc_get_value(u32 ch);
 #define PB_RING 1024
 static pb_core core;
 static u16 step_timer_id;
+static volatile u8 heater_timer_armed, heater_timer_ready;
 static OS_SEM rx_sem, cmd_sem, tx_sem;
 static volatile u8 detached, rx_overflow, estop_fast_requested, hello_fast_clear_requested, fast_estop_id;
 static u8 ring[PB_RING], usb_rx_ring[PB_RING];
@@ -26,6 +27,7 @@ static unsigned fast_line_len;
 static u8 fast_line_discard;
 static JL_PORT_FLASH_TypeDef *ports[4] = {JL_PORTA, JL_PORTB, JL_PORTC, JL_PORTD};
 static int hal_mode(void *ctx, unsigned port, unsigned bit, unsigned mode, unsigned level);
+static void hal_heater_pulse_cancel(void *ctx);
 static void pb_wakeup(void *dev) {
     (void)dev;
     os_sem_post(&rx_sem);
@@ -60,6 +62,7 @@ static void request_fast_abort(u8 id) {
     estop_fast_requested = 1;
     fast_estop_id = id;
     core.emergency_abort_requested = 1;
+    hal_heater_pulse_cancel(0);
     k = pb_pin("PB11");
     if (k >= 0) (void)hal_mode(0, pb_defs[k].port, pb_defs[k].bit, PB_LO, 0);
 }
@@ -270,6 +273,49 @@ static void tx_task(void *priv) {
             os_sem_pend(&tx_sem, 1);
     }
 }
+/* Timer 1 is reserved for the printhead pulse deadline in this app. The BR23
+ * timer block supports a crystal-clocked, divided-by-four count (6 ticks/us at
+ * the SDK's 24 MHz OSC_Hz setting). The 2.5 ms maximum pulse is 15,000 ticks. */
+static void pb_heater_timer_isr(void) {
+    JL_TIMER1->CON = BIT(14); /* stop timer and acknowledge the pending interrupt */
+    ports[1]->OUT &= ~(1u << 11); /* PB11 low directly; no task wakeup required */
+    heater_timer_armed = 0;
+}
+static void pb_heater_timer_init(void) {
+    JL_TIMER1->CON = BIT(14);
+    JL_TIMER1->CNT = 0;
+    heater_timer_armed = 0;
+    request_irq(IRQ_TIME1_IDX, 5, pb_heater_timer_isr, 0);
+    heater_timer_ready = 1;
+}
+static int hal_heater_pulse_start(void *ctx, unsigned usec) {
+    uint32_t ticks;
+    (void)ctx;
+    if (!heater_timer_ready || !usec || usec > 2500u) return -1;
+    ticks = ((OSC_Hz / 4u) * usec + 500000u) / 1000000u;
+    if (!ticks || ticks > 0xffffu) return -1;
+    local_irq_disable();
+    JL_TIMER1->CON = BIT(14);
+    JL_TIMER1->CNT = 0;
+    JL_TIMER1->PRD = ticks;
+    ports[1]->OUT |= (1u << 11);
+    heater_timer_armed = 1;
+    JL_TIMER1->CON = (0b10u << 2) | (0b0001u << 4) | BIT(1) | BIT(0);
+    local_irq_enable();
+    return 0;
+}
+static int hal_heater_pulse_active(void *ctx) {
+    (void)ctx;
+    return heater_timer_armed != 0;
+}
+static void hal_heater_pulse_cancel(void *ctx) {
+    (void)ctx;
+    local_irq_disable();
+    JL_TIMER1->CON = BIT(14);
+    heater_timer_armed = 0;
+    ports[1]->OUT &= ~(1u << 11);
+    local_irq_enable();
+}
 static void pb_step_timer(void *priv) {
     (void)priv;
     if (estop_fast_requested) {
@@ -306,8 +352,12 @@ static void command_task(void *priv) {
         .millis = hal_ms,
         .tx_write = hal_tx,
         .delay_us = hal_delay_us,
+        .heater_pulse_start = hal_heater_pulse_start,
+        .heater_pulse_active = hal_heater_pulse_active,
+        .heater_pulse_cancel = hal_heater_pulse_cancel,
     };
     (void)priv;
+    pb_heater_timer_init();
     pb_init(&core, &h);
     step_timer_id = 0;
     if (estop_fast_requested) core.emergency_abort_requested = 1;

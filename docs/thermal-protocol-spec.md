@@ -369,7 +369,7 @@ A stationary burn (`steps = 0`) is legal and is the building block for gray (sec
 |---|---|
 | `burn_max_us` per ROW | 10000 us. Larger values are rejected at parse with ERR RANGE, offset 48. A single heater pulse (`ceil(burn_us / slices)`) may not exceed the per-slice maximum of 2500 us (also ERR RANGE offset 48). Values are owner decisions derived from stock evidence (best stock quality 2.22 ms per event, hard cutoff 6 ms), not bench measurements. |
 | Duty: at most `duty_max_us` heater-on per `duty_window_ms` | 60000 us per 200 ms. A row that does not fit waits with heat off (DUTY_WAIT flag, QUEUED progress); a single row larger than the budget fails INTERNAL. Window accounting is a fixed (not sliding) window. |
-| `guard_us` and `burn_tick_us` | 100 us gap between slices; 1 us tick (software-timed, calibrated delay loop). |
+| `guard_us` and `burn_tick_us` | 100 us gap between slices; 1 us request granularity. Firmware uses BR23 TIMER1 (24 MHz crystal divided by four) for asynchronous pulse shutoff; interrupt latency still requires hardware measurement. |
 | Head temperature | Stock conversion of PC4. Heating may not *start* at or above 70 degC; a row already heating aborts at 75 degC (OVERTEMP, fail-stop, queue cancelled). A hot row waits with heat off until the head is below 50 degC (state WAIT_HOT, EVENT HOT, HOT_WAIT flag) and fails OVERTEMP after 60 s. |
 | Battery | Quarter-VBAT SDK channel in mV; below 3400 mV a heat row fails LOWBAT. |
 | Paper | PB3 low = present. Absent at start or before any slice: FAILED NOPAPER. |
@@ -525,7 +525,7 @@ Typical job: `HELLO`, `CONFIG`, several `ROW`s sent until credits or `T_target` 
 6. **Paper sensor** PB3 mapping is unvalidated; raw GPIO level is not advertised as paper presence.
 7. **Safe numeric limits** (`burn_max_us`, duty, `temp_limit_raw`, `batt_min_raw`, `guard_us`) remain unvalidated. The firmware reports zero heater capability until they are measured and reviewed.
 8. **Coil hold** thermal limits are unknown; current `idle_hold_ms=0` releases coils after motion and nonzero values are rejected.
-9. **Slice count:** the stock firmware fires four pulses per row across four phase steps. Firmware ROW scheduling now gates slice i on the corresponding completed feed edge, and the host `print-solid` path sends one ROW per logical row with four slices and four feed steps at 6 ms/step. The current pulse width still uses the blocking calibrated delay loop; exact shutoff jitter and physical darkness remain unverified.
+9. **Slice count:** the stock firmware fires four pulses per row across four phase steps. Firmware ROW scheduling now gates slice i on the corresponding completed feed edge, and the host `print-solid` path sends one ROW per logical row with four slices and four feed steps at 6 ms/step. The production adapter now starts a BR23 TIMER1 one-shot for each pulse and the interrupt drives PB11 low independently of the command task. Exact shutoff jitter and physical darkness remain unverified without a firmware/hardware run.
 10. **Queue depth** depends on free RAM. A ROW slot is 54 bytes; 32 slots is about 1.7 KB.
 11. **Throughput:** hex doubles the bytes. At 6 ms per row, about 167 rows/s is about 20 kB/s upstream; fine for USB-CDC, unverified on BLE. If BLE is the bottleneck, a binary-framed variant with the same fields can be added.
 12. **Sign encoding:** `steps` uses two's complement (-128 to 127), not sign-magnitude.

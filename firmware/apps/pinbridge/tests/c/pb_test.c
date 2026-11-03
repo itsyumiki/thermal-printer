@@ -84,7 +84,7 @@ static void consume(unsigned line, const char *expect) {
 }
 int main(int argc, char **argv) {
     pb_core c;
-    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, delay_us, wr}; /* wr doubles as the fast writer */
+    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, delay_us, wr, 0, 0, 0}; /* wr doubles as the fast writer */
     FILE *f;
     char line[2048];
     unsigned ln = 0;
