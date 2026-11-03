@@ -137,6 +137,21 @@ describe("TBP fake-transport retry behavior", () => {
     expect(link.state).toBe("connected");
   });
 
+  test("clears partial UART lines before every HELLO retransmission", async () => {
+    const { link, count } = fakeLink((_wire, n, current) => {
+      if (n === 2) {
+        ack(current, 1);
+        done(current, 1);
+      }
+    });
+    let discarded = 0;
+    (link.serial as any).discardPartialLine = () => discarded++;
+    await link.transact(OP.HELLO, Uint8Array.of(1), true, 8);
+    expect(count()).toBe(2);
+    expect(discarded).toBe(2);
+    expect(link.state).toBe("connected");
+  });
+
   test("retries the identical frame when ACK is lost", async () => {
     const sent: string[] = [];
     const { link, count } = fakeLink((wire, n, current) => {

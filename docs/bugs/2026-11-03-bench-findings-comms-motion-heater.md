@@ -230,6 +230,10 @@ Heated `print-solid` rows now use four slices by default; each slice is validate
 
 Added a 900 ms progress watchdog for non-timed executor stages. It observes stage changes, row shift bits/slices, completed steps and remaining steps; repeated PROGRESS messages alone do not reset it. DWELL, HOT_WAIT and DUTY_WAIT retain their own deadlines and are excluded. On a stall it reports FAILED/INTERNAL (`0x1F`, arg `1`), turns the heater off, cancels queued work and returns the motor to its safe state. `tbp-executor-stall-move.txt` and `tbp-executor-stall-row.txt` simulate a dead step-timer ISR while the command task still polls; both failed before the watchdog and pass after it. Portable C simulation only; no firmware build, CI, flash or hardware test.
 
+### Step 8 / F6 implementation note (RX resync and HELLO recovery)
+
+On firmware RX-ring overflow, the adapter now clears the ring and both partial-line scanners enter discard-until-newline mode, preventing a tail fragment from being parsed as a new frame. `tbp-rx-resync.txt` simulates that state, discards the first truncated line, and verifies the next complete STAT works. On the host, `Uart.discardPartialLine()` clears only an incomplete buffered line; it is called before every HELLO send/retry. HELLO uses 400 ms transaction attempts plus 100 ms backoff and retries on the same open UART through timeouts or malformed INFO instead of closing the port. Fake-UART and static contract tests cover this recovery policy. These are host/C tests; physical USB overflow/recovery still needs validation.
+
 ## 8. Suggested order (one behavior per commit, firmware changes validated by CI only)
 1. Host: BUSY and credit handling, no `drop()` for protocol conditions, reserved control credit, raw lines in the UI log (H1-H5).
 2. Firmware: link policy replaces the 5 s watchdog (F3), COILS (F4), control plane always answers (F1, F2) with tests; spec and matrix.

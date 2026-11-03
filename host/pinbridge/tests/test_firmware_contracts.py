@@ -7,6 +7,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 APP = ROOT / "firmware/apps/pinbridge/src/app.c"
 WEB_APP = ROOT / "host/pinbridge/bun/public/app.js"
+SERVER = ROOT / "host/pinbridge/bun/server.ts"
 WEB_HTML = ROOT / "host/pinbridge/bun/public/index.html"
 TUNING = ROOT / "firmware/apps/pinbridge/src/pb_tuning.h"
 TBP = ROOT / "host/pinbridge/bun/tbp.ts"
@@ -20,6 +21,20 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("sys_hi_timer_del(step_timer_id)", source)
         self.assertIn("if (core.step_active)", source)
         self.assertNotIn("sys_s_hi_timer_add(NULL, pb_step_timer, 1)", source)
+
+    def test_hello_recovery_retries_without_port_drop_and_discards_partial_lines(self):
+        server = SERVER.read_text(encoding="utf-8")
+        uart = (ROOT / "host/pinbridge/bun/uart.ts").read_text(encoding="utf-8")
+        self.assertIn("const HELLO_TIMEOUT_MS = 400", server)
+        self.assertIn("HELLO failed; retrying on open UART", server)
+        self.assertIn("this.serial.discardPartialLine()", server)
+        self.assertIn("discardPartialLine()", uart)
+
+    def test_rx_overflow_resynchronizes_at_the_next_newline(self):
+        app = APP.read_text(encoding="utf-8")
+        overflow = app[app.index("if (rx_overflow)"):app.index("while ((n = rx_ring_pop", app.index("if (rx_overflow)"))]
+        self.assertIn("core.discard = 1", overflow)
+        self.assertIn("fast_line_discard = 1", overflow)
 
     def test_host_and_firmware_share_the_same_half_steps_per_mm_assumption(self):
         tuning = TUNING.read_text(encoding="utf-8")

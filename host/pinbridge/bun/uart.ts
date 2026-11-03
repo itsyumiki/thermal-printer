@@ -56,6 +56,11 @@ export class Uart {
     readonly baudRate = 115200,
   ) {}
 
+  /** Drop an incomplete line before protocol recovery attempts; complete lines already delivered stay delivered. */
+  discardPartialLine() {
+    this.buf = "";
+  }
+
   open() {
     const r = spawnSync("stty", [
       isMac ? "-f" : "-F",

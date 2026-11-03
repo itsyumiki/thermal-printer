@@ -245,6 +245,11 @@ int main(int argc, char **argv) {
                 }
                 continue;
             }
+            if (!strcmp(s, "@rx-overflow")) {
+                c.llen = 0;
+                c.discard = 1; /* mirror the app's ring-overflow resync state */
+                continue;
+            }
             if (sscanf(s, "@advance-no-step %u", &a) == 1) {
                 for (b = 0; b < a; b++) {
                     now_ms++;

@@ -23,6 +23,8 @@ const port = Number(process.env.PINBRIDGE_PORT ?? 8765);
 const autoPath = process.env.PINBRIDGE_UART ?? "";
 const mockMode = process.env.PINBRIDGE_MOCK === "1";
 // Raw UART frame logging to stdout: PINBRIDGE_DEBUG=1 or `bun run server.ts --debug`.
+const HELLO_TIMEOUT_MS = 400;
+const HELLO_RETRY_DELAY_MS = 100;
 const debugFrames =
   /^(1|true|yes|on)$/i.test(process.env.PINBRIDGE_DEBUG ?? "") ||
   process.argv.includes("--debug");
@@ -216,8 +218,31 @@ export class PrinterLink {
         return;
       }
       await new Promise((r) => setTimeout(r, 120));
-      const hello = await this.transact(OP.HELLO, Uint8Array.of(1), true, 1600);
-      this.info = decodeInfo(hello.data);
+      let helloInfo: ReturnType<typeof decodeInfo> | null = null;
+      while (gen === this.generation && this.serial?.isOpen) {
+        try {
+          this.serial.discardPartialLine();
+          const hello = await this.transact(
+            OP.HELLO,
+            Uint8Array.of(1),
+            true,
+            HELLO_TIMEOUT_MS,
+          );
+          helloInfo = decodeInfo(hello.data);
+          break;
+        } catch (e) {
+          if (gen !== this.generation || !this.serial?.isOpen) throw e;
+          const message = e instanceof Error ? e.message : String(e);
+          this.lastError = message;
+          this.emit("log", {
+            level: "warn",
+            message: `HELLO failed; retrying on open UART: ${message}`,
+          });
+          await new Promise((r) => setTimeout(r, HELLO_RETRY_DELAY_MS));
+        }
+      }
+      if (!helloInfo) throw new Error("UART closed before HELLO completed");
+      this.info = helloInfo;
       this.lastError = "";
       this.stopRequested = false;
       this.setState("connected");
@@ -556,6 +581,7 @@ export class PrinterLink {
           return;
         }
         const sendFrame = () => {
+          if (op === OP.HELLO) this.serial?.discardPartialLine?.();
           p.retries++;
           this.dbg(
             "TX",

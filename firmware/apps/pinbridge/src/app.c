@@ -335,9 +335,12 @@ static void command_task(void *priv) {
             local_irq_disable();
             rx_overflow = 0;
             usb_rx_rd = usb_rx_wr;
+            fast_line_len = 0;
+            fast_line_discard = 1;
+            hello_fast_clear_requested = 0;
             local_irq_enable();
             core.llen = 0;
-            core.discard = 0;
+            core.discard = 1; /* discard through the next newline before parsing another frame */
             force_estop_after_rx_overflow();
         }
         while ((n = rx_ring_pop(b, sizeof b)) != 0) {
