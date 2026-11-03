@@ -292,6 +292,9 @@ static void pb_heater_timer_init(void) {
     PB_HEATER_TIMER->CNT = 0;
     heater_timer_armed = 0;
     request_irq(PB_HEATER_TIMER_IRQ, 5, pb_heater_timer_isr, 0);
+    /* Explicitly unmask the IRQ source. If masked, PB11 remains high and the
+       row executor waits until its no-progress watchdog aborts the print. */
+    irq_unmask_set(PB_HEATER_TIMER_IRQ, 0);
     heater_timer_ready = 1;
 }
 static int hal_heater_pulse_start(void *ctx, unsigned usec) {

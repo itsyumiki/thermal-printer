@@ -33,6 +33,7 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertNotIn("IRQ_TIME1_IDX", code)
         self.assertIn("#define PB_HEATER_TIMER JL_TIMER3", source)
         self.assertIn("#define PB_HEATER_TIMER_IRQ IRQ_TIME3_IDX", source)
+        self.assertIn("irq_unmask_set(PB_HEATER_TIMER_IRQ, 0);", source)
 
     def test_motor_phase_callback_uses_irq_safe_port_writer(self):
         printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
