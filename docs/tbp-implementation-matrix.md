@@ -45,3 +45,7 @@ Legend: **Implemented (partial)** means a path exists but does not meet the full
 - `firmware/apps/pinbridge/tests/transcripts/`: shared C golden transcripts cover HELLO, sequence/future-ID recovery, wrap, duplicate ROW/MOVE/COILS side effects, history eviction, malformed hex, embedded CR, max-length and overlong-line resynchronization.
 - These tests establish Sprint 1 protocol reliability only; they are **not** evidence of full TBP v1 conformance or hardware behavior.
 - See [`sprint-00-report.md`](sprints/sprint-00-report.md) for exact baseline commands and results.
+
+## 2026-11-03 watchdog follow-up
+
+The legacy 5-second watchdog is now suppressed while a TBP session is active; configured TBP link timeout remains the session work-cancellation mechanism. C transcript `tbp-no-legacy-watchdog.txt` proves a long DWELL remains active and STAT responds after the old watchdog threshold; `tbp-link-timeout.txt` covers configured timeout cancellation with session retention. This is source-level simulation evidence, not firmware-build or hardware evidence.

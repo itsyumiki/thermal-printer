@@ -1,4 +1,4 @@
-# STAT reports the actual running command ID; FLUSH cancels it and prevents a later DONE.
+# STAT reports the running ID; FLUSH cancels it, and the TBP session survives the legacy watchdog threshold.
 @config real
 > 01010101E654
 < 01810100CD2F
@@ -15,4 +15,6 @@
 < 048203030301E91C
 < 0282020501E46B
 @advance 10000
-< !wdg
+> 050200410E
+< 0581010007DE
+< 05820E030100040002019C01F40FA0010052D9

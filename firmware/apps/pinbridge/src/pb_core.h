@@ -1704,7 +1704,9 @@ static void pb_poll(pb_core *c) {
             }
         }
     }
-    if (c->wdg && anyout && (uint32_t)(now - c->last_feed) >= c->wdg) {
+    /* TBP owns its own optional link timeout. The legacy watchdog must not
+       tear down a live TBP session or emit non-protocol !wdg text. */
+    if (!c->tbp_active && c->wdg && anyout && (uint32_t)(now - c->last_feed) >= c->wdg) {
         pb_tbp_cancel_work(c, 3u);
         pb_safe_state(c);
         c->tbp_active=0; pb_led_idle(c, now);
