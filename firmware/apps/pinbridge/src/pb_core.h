@@ -125,6 +125,7 @@ typedef struct {
     char reply[128];
     size_t rlen;
     volatile uint8_t step_active, step_reverse, step_stage, step_done_pending;
+    volatile uint8_t step_lock; /* set by the command task while it edits the step train: the timer ISR skips its tick */
     volatile uint8_t
         step_phase; /* persistent half-step phase 0..7; survives PSTEP commands, reset by pb_init */
     volatile uint32_t step_remaining, step_wait_ms;
@@ -140,6 +141,13 @@ typedef struct {
     char *scratch_v[17];
 } pb_core;
 static uint8_t pb_tbp_used(const pb_core *c);
+static void pb_tbp_cancel_work(pb_core *c, uint8_t reason);
+/* True when the feed train has ended but a command's target lies beyond the steps it actually ran
+ * (an unreachable target). Waiting for it would hang the command, so callers fail it instead. A
+ * pending abort is excluded: the abort path already cancels the work. */
+static int pb_feed_target_unreachable(const pb_core *c, uint32_t target) {
+    return !c->step_active && !c->emergency_abort_requested && (int32_t)(c->step_completed - target) < 0;
+}
 static void pb_heater_off(pb_core *c);
 static void pb_motor_outputs_init(pb_core *c);
 static void pb_motor_outputs_release(pb_core *c);
@@ -731,6 +739,15 @@ static void pb_tbp_completions_poll(pb_core *c) {
     uint8_t completed_any = 0;
     while (c->tbp_comp_count) {
         pb_tbp_completion *p = &c->tbp_completions[c->tbp_comp_head];
+        if (pb_feed_target_unreachable(c, p->target_steps)) {
+            uint8_t err[2] = {0x1Fu, 0u}, id = p->id; /* INTERNAL: report it instead of waiting forever */
+            c->tbp_comp_head = (uint8_t)((c->tbp_comp_head + 1u) % PB_TBP_QUEUE_DEPTH);
+            c->tbp_comp_count--;
+            pb_heater_off(c);
+            pb_tbp_terminal_id(c, id, 4u, err, sizeof err);
+            pb_tbp_cancel_work(c, 3u);
+            return;
+        }
         if ((int32_t)(c->step_completed - p->target_steps) < 0 ||
             (c->step_active && c->step_scheduled_total <= p->target_steps)) break;
         pb_tbp_terminal_id(c, p->id, p->state, p->body, p->len);
@@ -912,6 +929,7 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
             }
             c->tbp_feed_deferred = 0;
         }
+        if (pb_feed_target_unreachable(c, c->tbp_feed_target)) { pb_tbp_fail_stop(c, 0x1Fu, 0u); return; }
         if ((int32_t)(c->step_completed - c->tbp_feed_target) < 0 ||
             (c->step_active && c->step_scheduled_total <= c->tbp_feed_target)) {
             if (pb_tbp_next_feed_compatible(c) && c->tbp_comp_count < PB_TBP_QUEUE_DEPTH) {
@@ -1131,6 +1149,7 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
                 c->tbp_row_flags |= PB_TBP_ROWFLAG_LATE;
             c->tbp_exec_stage = 5u;
         }
+        if (c->tbp_exec_stage == 5u && pb_feed_target_unreachable(c, c->tbp_feed_target)) { pb_tbp_fail_stop(c, 0x1Fu, 0u); return; }
         if (c->tbp_exec_stage == 5u && ((int32_t)(c->step_completed - c->tbp_feed_target) < 0 ||
             (c->step_active && c->step_scheduled_total <= c->tbp_feed_target))) {
             if (pb_tbp_next_feed_compatible(c) && c->tbp_comp_count < PB_TBP_QUEUE_DEPTH) {

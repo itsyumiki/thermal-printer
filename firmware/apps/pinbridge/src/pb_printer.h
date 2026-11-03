@@ -142,6 +142,12 @@ static int pb_hex_row_ok(const char *hex) {
 #define PB_RACE_POINT(c, id) ((void)0)
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#define PB_COMPILER_BARRIER() __asm__ __volatile__("" ::: "memory")
+#else
+#define PB_COMPILER_BARRIER() ((void)0)
+#endif
+
 /* Start the nonblocking stepper: count includes the initial phase (N transitions = N+1). */
 static void pb_step_start(pb_core *c, int reverse, uint32_t count, uint32_t gap_us,
                           uint32_t dwell_us) {
@@ -165,8 +171,8 @@ static void pb_step_start(pb_core *c, int reverse, uint32_t count, uint32_t gap_
 }
 /* Append one TBP feed segment to the phase train. Segment boundaries may change direction
  * or effective millisecond period; the ISR switches at the phase boundary without releasing coils. */
-static int pb_step_feed_schedule(pb_core *c, int reverse, uint32_t steps, uint32_t period_us,
-                                uint32_t *target_steps) {
+static int pb_step_feed_schedule_locked(pb_core *c, int reverse, uint32_t steps, uint32_t period_us,
+                                        uint32_t *target_steps) {
     uint32_t period_ms = (period_us + 999u) / 1000u;
     uint16_t effective_ms = (uint16_t)(period_ms ? period_ms : 1u);
     unsigned tail;
@@ -215,6 +221,24 @@ static int pb_step_feed_schedule(pb_core *c, int reverse, uint32_t steps, uint32
     c->step_scheduled_total = c->step_completed + steps;
     *target_steps = c->step_scheduled_total;
     return 1;
+}
+
+/* The 1 ms timer ISR (pb_step_tick) mutates step_active/step_remaining/step_completed and the
+ * segment queue, and can preempt the command task anywhere. While step_lock is set the ISR skips
+ * its tick (the motor just waits one more millisecond), so the start/extend below sees one
+ * consistent train: the base step count, the train state and the target are all fixed before the
+ * ISR runs again. Without this, a tick between step_active=1 and the target computation made the
+ * target one higher than the train could ever reach, and a tick that ended the train in the middle
+ * of an extend left the extended target unreachable (bug 2026-11-03). */
+static int pb_step_feed_schedule(pb_core *c, int reverse, uint32_t steps, uint32_t period_us,
+                                uint32_t *target_steps) {
+    int ok;
+    c->step_lock = 1;
+    PB_COMPILER_BARRIER();
+    ok = pb_step_feed_schedule_locked(c, reverse, steps, period_us, target_steps);
+    PB_COMPILER_BARRIER();
+    c->step_lock = 0;
+    return ok;
 }
 
 /* One gated heater pulse for the legacy PHEAT/PEVENT commands. Same gates as a TBP ROW: real
@@ -410,7 +434,7 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
 
 static inline void pb_step_tick(pb_core *c) {
     unsigned phase;
-    if (!c->step_active)
+    if (!c->step_active || c->step_lock)
         return;
     c->last_feed = pb_now(c);
     if (c->tbp_feed_train_active) {
