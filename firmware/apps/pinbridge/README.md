@@ -2,7 +2,7 @@
 
 The printer pin map is only partly known. Raw pin control can burn the thermal head or overheat motor coils. **Test on USB power only, with the thermal head disconnected and motor/battery supply off.** Never experiment on the assembled printer with power circuitry attached. Stepper and printhead pins are intentionally host-accessible for driver development; PB11 heater-strobe control is especially hazardous. GPIO access does not provide deterministic pulse timing over USB CDC.
 
-Boot does not intentionally configure GPIO; only SDK startup behavior remains. No protocol pin is touched until `MOD`. Pins absent from the allow-list return `err pin`. The watchdog defaults to 5000 ms and returns active outputs to high impedance after a timeout. This code has **not been tested on hardware**.
+At boot the firmware latches/holds the power control (PA1), sets the button pull-up (PB1) and LED (PC7), forces the heater strobe (PB11) low, parks the head lines idle, and releases the stepper pins (high-Z, so the always-powered DRV8833 coasts). After the one-second power-button hold it wiggles the paper motor 200 half-steps forward and back (`PB_TUNE_BOOT_WIGGLE_*`, cancelled by any host session) and releases the coils. Other protocol pins are untouched until `MOD`. Pins absent from the allow-list return `err pin`. The watchdog defaults to 5000 ms and returns active outputs to high impedance after a timeout. This code has **not been tested on hardware**.
 
 # pinbridge
 
