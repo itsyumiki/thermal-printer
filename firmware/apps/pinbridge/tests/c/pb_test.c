@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include "../../src/pb_core.h"
 static unsigned now_ms, writes;
+static unsigned delay_remainder_us;
 static pb_core *active_core;
 static uint16_t outs[4], pads[4];
 static char output[32768];
@@ -46,11 +47,11 @@ static uint32_t ms(void *x) {
     return now_ms;
 }
 static void delay_us(void *x, unsigned us) {
-    unsigned elapsed;
     (void)x;
-    if (!active_core)
-        return;
-    for (elapsed = 0; elapsed < us; elapsed += 1000u) {
+    if (!active_core) return;
+    delay_remainder_us += us;
+    while (delay_remainder_us >= 1000u) {
+        delay_remainder_us -= 1000u;
         now_ms++;
         pb_step_tick(active_core);
     }
@@ -215,6 +216,21 @@ int main(int argc, char **argv) {
                 if (a < 1 || a > 255 || c.tbp_history[a] != b)
                     fail(ln, "history state mismatch");
                 continue;
+            }
+            if (sscanf(s, "@last-terminal-byte %u %u", &a, &b) == 2) {
+                if (a >= c.tbp_last_terminal_len || c.tbp_last_terminal_body[a] != b)
+                    fail(ln, "last terminal body byte mismatch");
+                continue;
+            }
+            {
+                unsigned phase, active, completed, remaining, pending;
+                if (sscanf(s, "@scheduler phase=%u active=%u completed=%u remaining=%u pending=%u",
+                           &phase, &active, &completed, &remaining, &pending) == 5) {
+                    if (c.step_phase != phase || c.step_active != active || c.step_completed != completed ||
+                        c.step_remaining != remaining || c.tbp_comp_count != pending)
+                        fail(ln, "scheduler state mismatch");
+                    continue;
+                }
             }
             if (sscanf(s, "@time %u", &a) == 1) {
                 now_ms = a;

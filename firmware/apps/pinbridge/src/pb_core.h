@@ -82,16 +82,31 @@ typedef struct {
     uint8_t data[PB_TBP_DATA_MAX];
 } pb_tbp_command;
 typedef struct {
+    uint8_t id, state, len;
+    uint32_t target_steps;
+    uint8_t body[12];
+} pb_tbp_completion;
+typedef struct {
+    uint32_t transitions;
+    uint16_t period_ms;
+    uint8_t reverse;
+} pb_step_segment;
+typedef struct {
     pb_hal h;
     pb_pin_state pins[PB_NPINS];
     char line[523]; /* TBP v1 maximum: 520 hex chars plus NUL */
     unsigned llen, discard, dbg, wdg;
     uint8_t tbp_active, tbp_next_id, tbp_last_id, tbp_last_state, tbp_last_valid;
     uint8_t tbp_last_terminal_id, tbp_last_terminal_valid;
+    uint8_t tbp_last_terminal_len, tbp_last_terminal_body[12];
     /* Zero means no accepted command is recorded for this id in this session. */
     uint8_t tbp_history[256];
     pb_tbp_command tbp_queue[PB_TBP_QUEUE_DEPTH];
     uint8_t tbp_qhead, tbp_qcount, tbp_running, tbp_stopped;
+    pb_tbp_completion tbp_completions[PB_TBP_QUEUE_DEPTH];
+    uint8_t tbp_comp_head, tbp_comp_count;
+    uint32_t tbp_feed_target;
+    uint8_t tbp_feed_deferred, tbp_feed_reverse;
     volatile uint8_t emergency_abort_requested;
     pb_tbp_command tbp_current;
     uint8_t tbp_exec_stage, tbp_exec_slice;
@@ -113,6 +128,10 @@ typedef struct {
     volatile uint8_t
         step_phase; /* persistent half-step phase 0..7; survives PSTEP commands, reset by pb_init */
     volatile uint32_t step_remaining, step_wait_ms;
+    volatile uint32_t step_completed;
+    uint32_t step_scheduled_total, step_segment_remaining;
+    pb_step_segment step_segments[PB_TBP_QUEUE_DEPTH];
+    uint8_t step_seg_head, step_seg_count, tbp_feed_train_active;
     uint32_t step_gap_ms, step_dwell_ms;
     uint32_t boot_ms, button_down_ms, led_change_ms;
     uint8_t power_ready, button_was_down, led_mode, led_phase, led_pulses;
@@ -224,6 +243,9 @@ static void pb_safe_state(pb_core *c) {
     unsigned i;
     c->step_active = 0;
     c->step_done_pending = 0;
+    c->tbp_feed_train_active = 0;
+    c->step_segment_remaining = 0;
+    c->step_seg_head = c->step_seg_count = 0;
     for (i = 0; i < PB_NPINS; i++) {
         /* The power latch, active-low button pull-up and status LED are local controls. */
         if (pb_eq(pb_defs[i].name, "PA1") || pb_eq(pb_defs[i].name, "PB1") || pb_eq(pb_defs[i].name, "PC7"))
@@ -561,7 +583,7 @@ static void pb_tbp_record_state(pb_core *c, uint8_t id, uint8_t state) {
         c->tbp_last_state = state;
 }
 static uint8_t pb_tbp_used(const pb_core *c) {
-    return (uint8_t)(c->tbp_qcount + (c->tbp_running ? 1u : 0u));
+    return (uint8_t)(c->tbp_qcount + c->tbp_comp_count + (c->tbp_running ? 1u : 0u));
 }
 static void pb_put16(uint8_t *d, unsigned v) {
     d[0] = (uint8_t)(v >> 8);
@@ -626,15 +648,46 @@ static int pb_tbp_enqueue(pb_core *c, uint8_t id, uint8_t op, const uint8_t *dat
     pb_tbp_send(c, id, 0x81u, &ack, 1);
     return 1;
 }
-static void pb_tbp_terminal(pb_core *c, uint8_t state, const uint8_t *body, uint8_t len) {
-    pb_tbp_status(c, c->tbp_current.id, state, body, len);
-    pb_tbp_record_state(c, c->tbp_current.id, state);
-    c->tbp_last_terminal_id = c->tbp_current.id;
+static void pb_tbp_terminal_id(pb_core *c, uint8_t id, uint8_t state, const uint8_t *body, uint8_t len) {
+    pb_tbp_status(c, id, state, body, len);
+    pb_tbp_record_state(c, id, state);
+    c->tbp_last_terminal_id = id;
     c->tbp_last_terminal_valid = 1;
+    c->tbp_last_terminal_len = len > sizeof c->tbp_last_terminal_body ? sizeof c->tbp_last_terminal_body : len;
+    if (c->tbp_last_terminal_len) memcpy(c->tbp_last_terminal_body, body, c->tbp_last_terminal_len);
+}
+static void pb_tbp_terminal(pb_core *c, uint8_t state, const uint8_t *body, uint8_t len) {
+    pb_tbp_terminal_id(c, c->tbp_current.id, state, body, len);
     c->tbp_running = 0;
     c->tbp_exec_stage = 0;
-    if (state == 3u && !c->tbp_qcount)
+    if (state == 3u && !pb_tbp_used(c) && !c->step_active)
         pb_coils_idle(c);
+}
+static int pb_tbp_defer_terminal(pb_core *c, uint8_t state, const uint8_t *body, uint8_t len, uint32_t target) {
+    unsigned tail;
+    pb_tbp_completion *p;
+    if (c->tbp_comp_count >= PB_TBP_QUEUE_DEPTH || len > sizeof c->tbp_completions[0].body) return 0;
+    tail = ((unsigned)c->tbp_comp_head + c->tbp_comp_count) % PB_TBP_QUEUE_DEPTH;
+    p = &c->tbp_completions[tail];
+    p->id = c->tbp_current.id; p->state = state; p->len = len; p->target_steps = target;
+    if (len) memcpy(p->body, body, len);
+    c->tbp_comp_count++;
+    c->tbp_running = 0;
+    c->tbp_exec_stage = 0;
+    return 1;
+}
+static void pb_tbp_completions_poll(pb_core *c) {
+    uint8_t completed_any = 0;
+    while (c->tbp_comp_count) {
+        pb_tbp_completion *p = &c->tbp_completions[c->tbp_comp_head];
+        if ((int32_t)(c->step_completed - p->target_steps) < 0 ||
+            (c->step_active && c->step_scheduled_total <= p->target_steps)) break;
+        pb_tbp_terminal_id(c, p->id, p->state, p->body, p->len);
+        c->tbp_comp_head = (uint8_t)((c->tbp_comp_head + 1u) % PB_TBP_QUEUE_DEPTH);
+        c->tbp_comp_count--;
+        completed_any = 1;
+    }
+    if (completed_any && !pb_tbp_used(c) && !c->step_active) pb_coils_idle(c);
 }
 static void pb_tbp_cancel_work(pb_core *c, uint8_t reason) {
     uint8_t i, body[1] = {reason};
@@ -649,12 +702,21 @@ static void pb_tbp_cancel_work(pb_core *c, uint8_t reason) {
         c->tbp_last_terminal_id = c->tbp_queue[at].id;
         c->tbp_last_terminal_valid = 1;
     }
+    for (i = 0; i < c->tbp_comp_count; i++) {
+        uint8_t at = (uint8_t)((c->tbp_comp_head + i) % PB_TBP_QUEUE_DEPTH);
+        pb_tbp_terminal_id(c, c->tbp_completions[at].id, 5u, body, sizeof body);
+    }
+    c->tbp_comp_head = 0;
+    c->tbp_comp_count = 0;
     c->tbp_qhead = 0;
     c->tbp_qcount = 0;
     c->tbp_running = 0;
     c->tbp_exec_stage = 0;
     c->step_active = 0;
     c->step_done_pending = 0;
+    c->tbp_feed_train_active = 0;
+    c->step_segment_remaining = 0;
+    c->step_seg_head = c->step_seg_count = 0;
     pb_heater_off(c);
     pb_coils_idle(c);
 }
@@ -668,6 +730,36 @@ static int pb_tbp_heat_window_expired(uint32_t now, uint32_t start) {
     uint32_t window = PB_TBP_DUTY_WINDOW_MS;
     return window != 0u && (uint32_t)(now - start) >= window;
 }
+/* True when the queued motion segment can be appended to the live train without a stop.
+ * Direction and period changes are queued as phase-boundary segments, not pre-shifted rows. */
+static int pb_tbp_next_feed_compatible(const pb_core *c) {
+    const pb_tbp_command *q;
+    int32_t steps;
+    int reverse;
+    uint16_t period;
+    uint16_t period_ms;
+    const pb_step_segment *last;
+    unsigned tail;
+    if (!c->step_active || !c->tbp_feed_train_active || !c->tbp_qcount) return 0;
+    q = &c->tbp_queue[c->tbp_qhead];
+    if (q->op == 0x10u) {
+        steps = (int8_t)q->data[50];
+        period = (uint16_t)(((uint16_t)q->data[51] << 8) | q->data[52]);
+    } else if (q->op == 0x11u) {
+        steps = (int32_t)(((uint32_t)q->data[0] << 24) | ((uint32_t)q->data[1] << 16) |
+                          ((uint32_t)q->data[2] << 8) | q->data[3]);
+        period = (uint16_t)(((uint16_t)q->data[4] << 8) | q->data[5]);
+    } else return 0;
+    if (!steps) return 0;
+    if (c->step_segment_remaining == 0u) return 1;
+    if (c->step_seg_count < PB_TBP_QUEUE_DEPTH) return 1;
+    reverse = steps < 0;
+    period_ms = (uint16_t)((((uint32_t)period + 999u) / 1000u) ? (((uint32_t)period + 999u) / 1000u) : 1u);
+    tail = ((unsigned)c->step_seg_head + c->step_seg_count - 1u) % PB_TBP_QUEUE_DEPTH;
+    last = &c->step_segments[tail];
+    return last->reverse == (uint8_t)reverse && last->period_ms == period_ms;
+}
+
 static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
     pb_tbp_command *cmd = &c->tbp_current;
     uint8_t result[12] = {3, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0};
@@ -676,8 +768,12 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         pb_heater_off(c);
         c->step_active = 0;
         c->step_done_pending = 0;
+        c->tbp_feed_train_active = 0;
+        c->step_segment_remaining = 0;
+        c->step_seg_head = c->step_seg_count = 0;
         return;
     }
+    pb_tbp_completions_poll(c);
     for (qi = 0; qi < c->tbp_qcount; qi++) {
         pb_tbp_command *waiting = &c->tbp_queue[(c->tbp_qhead + qi) % PB_TBP_QUEUE_DEPTH];
         if ((uint32_t)(now - waiting->enqueued_at) >= 1000u &&
@@ -701,6 +797,8 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         c->tbp_row_snap_valid = 0;
         c->tbp_exec_bit = 0;
         c->tbp_exec_slice = 0;
+        c->tbp_feed_target = c->step_completed;
+        c->tbp_feed_deferred = 0;
         c->tbp_exec_progress_at = now + 1000u;
     }
     cmd = &c->tbp_current;
@@ -729,25 +827,49 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
     if (cmd->op == 0x11u) {
         int32_t steps = (int32_t)(((uint32_t)cmd->data[0] << 24) | ((uint32_t)cmd->data[1] << 16) | ((uint32_t)cmd->data[2] << 8) | cmd->data[3]);
         uint16_t period = (uint16_t)(((uint16_t)cmd->data[4] << 8) | cmd->data[5]);
+        uint32_t count = (uint32_t)(steps < 0 ? -steps : steps);
         if (!c->tbp_exec_stage) {
-            uint32_t duration = (uint32_t)(steps < 0 ? -steps : steps) * period / 1000u;
+            uint32_t duration = count * period / 1000u;
             if (c->emergency_abort_requested) return;
-            c->tbp_exec_stage = 1;
             if (!pb_all_outputs(c, pb_motor_pins, 4)) pb_motor_outputs_init(c);
             if (!pb_all_outputs(c, pb_motor_pins, 4)) {
                 uint8_t err[2] = {9, 0};
                 pb_tbp_terminal(c, 4u, err, sizeof err);
                 return;
             }
-            if (c->emergency_abort_requested) return;
+            if (!pb_step_feed_schedule(c, steps < 0, count, period, &c->tbp_feed_target)) {
+                c->tbp_feed_deferred = 1;
+                c->tbp_feed_reverse = (uint8_t)(steps < 0);
+            }
+            c->tbp_exec_stage = 1u;
             if (duration >= 250u) { pb_tbp_status(c, cmd->id, 2u, 0, 0); pb_tbp_record_state(c, cmd->id, 2u); }
-            pb_step_start(c, steps < 0, (unsigned)(steps < 0 ? -steps : steps) + 1u, 0, period);
         }
-        if (c->step_active) {
+        if (c->tbp_feed_deferred) {
+            if (!pb_step_feed_schedule(c, c->tbp_feed_reverse, count, period, &c->tbp_feed_target)) {
+                if (!c->step_active) {
+                    uint8_t err[2] = {9, 0}; pb_tbp_terminal(c, 4u, err, sizeof err); return;
+                }
+                if ((int32_t)(now - c->tbp_exec_progress_at) >= 0) {
+                    uint32_t rem = c->step_remaining;
+                    uint8_t progress[4] = {(uint8_t)(rem >> 24), (uint8_t)(rem >> 16), (uint8_t)(rem >> 8), (uint8_t)rem};
+                    pb_tbp_status(c, cmd->id, 6u, progress, sizeof progress);
+                    c->tbp_exec_progress_at = now + 1000u;
+                }
+                return;
+            }
+            c->tbp_feed_deferred = 0;
+        }
+        if ((int32_t)(c->step_completed - c->tbp_feed_target) < 0 ||
+            (c->step_active && c->step_scheduled_total <= c->tbp_feed_target)) {
+            if (pb_tbp_next_feed_compatible(c) && c->tbp_comp_count < PB_TBP_QUEUE_DEPTH) {
+                uint32_t pe = (((uint32_t)period + 999u) / 1000u) * 1000u;
+                uint8_t done[3] = {3u, (uint8_t)(pe >> 8), (uint8_t)pe};
+                if (pb_tbp_defer_terminal(c, 3u, done, sizeof done, c->tbp_feed_target)) return;
+            }
             if ((int32_t)(now - c->tbp_exec_progress_at) >= 0) {
                 uint32_t rem = c->step_remaining;
-                uint8_t p[4] = {(uint8_t)(rem >> 24), (uint8_t)(rem >> 16), (uint8_t)(rem >> 8), (uint8_t)rem};
-                pb_tbp_status(c, cmd->id, 6u, p, sizeof p);
+                uint8_t progress[4] = {(uint8_t)(rem >> 24), (uint8_t)(rem >> 16), (uint8_t)(rem >> 8), (uint8_t)rem};
+                pb_tbp_status(c, cmd->id, 6u, progress, sizeof progress);
                 c->tbp_exec_progress_at = now + 1000u;
             }
             return;
@@ -852,9 +974,23 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
             uint32_t duration = steps ? (uint32_t)(steps < 0 ? -steps : steps) * period / 1000u : 0u;
             if (any && burn)
                 duration += (burn + PB_TBP_SHIFT_US + (uint32_t)slices * PB_TBP_GUARD_US + 999u) / 1000u + 40u;
-            /* Report a cold start truthfully when a moving row begins without an active step sequence. */
-            if (steps && !c->step_active)
-                c->tbp_row_flags |= PB_TBP_ROWFLAG_COLD_START;
+            /* Start/extend feed before shift and gated burn so row preparation overlaps motion.
+             * A different direction/period waits until the existing phase train ends. */
+            if (steps) {
+                uint32_t target = c->step_completed;
+                uint32_t count = (uint32_t)(steps < 0 ? -steps : steps);
+                if (!pb_all_outputs(c, mp, 4)) pb_motor_outputs_init(c);
+                if (!pb_all_outputs(c, mp, 4)) {
+                    uint8_t err[2] = {9, 0}; pb_tbp_terminal(c, 4u, err, sizeof err); return;
+                }
+                if (!c->step_active) c->tbp_row_flags |= PB_TBP_ROWFLAG_COLD_START;
+                if (pb_step_feed_schedule(c, steps < 0, count, period, &target)) {
+                    c->tbp_feed_target = target;
+                } else {
+                    c->tbp_feed_deferred = 1;
+                    c->tbp_feed_reverse = (uint8_t)(steps < 0);
+                }
+            } else c->tbp_feed_target = c->step_completed;
             c->tbp_exec_stage = 1;
             c->tbp_exec_bit = 0;
             if (duration >= 250u) { pb_tbp_status(c, cmd->id, 2u, 0, 0); pb_tbp_record_state(c, cmd->id, 2u); }
@@ -925,25 +1061,43 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
             c->tbp_exec_stage = 4u;
         }
         if (c->tbp_exec_stage == 4u) {
-            if (steps) {
+            if (c->tbp_feed_deferred) {
+                uint8_t was_active = c->step_active;
                 if (c->emergency_abort_requested) return;
-                if (!pb_all_outputs(c, mp, 4)) pb_motor_outputs_init(c);
-                if (!pb_all_outputs(c, mp, 4)) { uint8_t err[2] = {9, 0}; pb_tbp_terminal(c, 4u, err, sizeof err); return; }
-                if (c->emergency_abort_requested) return;
-                pb_step_start(c, steps < 0, (unsigned)(steps < 0 ? -steps : steps) + 1u, 0, period);
-                c->tbp_exec_stage = 5u;
-                return;
+                if (!pb_step_feed_schedule(c, c->tbp_feed_reverse,
+                        (uint32_t)(steps < 0 ? -steps : steps), period, &c->tbp_feed_target)) {
+                    if (c->step_active) return;
+                    uint8_t err[2] = {9, 0}; pb_tbp_terminal(c, 4u, err, sizeof err); return;
+                }
+                if (!was_active) c->tbp_row_flags |= PB_TBP_ROWFLAG_COLD_START;
+                c->tbp_feed_deferred = 0;
             }
-            c->tbp_exec_stage = 6u;
+            /* LATE is only set when this row's feed quota has actually finished before
+             * shift/latch/burn work reached the motion handoff. No inferred wall-clock guess. */
+            if (steps && (int32_t)(c->step_completed - c->tbp_feed_target) >= 0)
+                c->tbp_row_flags |= PB_TBP_ROWFLAG_LATE;
+            c->tbp_exec_stage = 5u;
         }
-        if (c->tbp_exec_stage == 5u && c->step_active) {
+        if (c->tbp_exec_stage == 5u && ((int32_t)(c->step_completed - c->tbp_feed_target) < 0 ||
+            (c->step_active && c->step_scheduled_total <= c->tbp_feed_target))) {
+            if (pb_tbp_next_feed_compatible(c) && c->tbp_comp_count < PB_TBP_QUEUE_DEPTH) {
+                if (c->tbp_row_snap_valid) {
+                    pb_put16(result + 1, c->tbp_row_snap.temp_raw);
+                    pb_put16(result + 3, c->tbp_row_snap.batt_raw);
+                    pb_put16(result + 5, c->tbp_row_snap.batt_mv);
+                }
+                pb_put16(result + 7, (any && burn) ? burn : 0u);
+                result[11] = (uint8_t)(c->tbp_row_flags | ((any && burn) ? 0u : PB_TBP_ROWFLAG_NO_HEAT));
+                { uint32_t pe = steps ? (((uint32_t)period + 999u) / 1000u) * 1000u : 0u; if (pe > 65535u) pe = 65535u; result[9] = (uint8_t)(pe >> 8); result[10] = (uint8_t)pe; }
+                if (pb_tbp_defer_terminal(c, 3u, result, sizeof result, c->tbp_feed_target)) return;
+            }
             if ((int32_t)(now - c->tbp_exec_progress_at) >= 0) {
-                uint32_t rem = c->step_remaining; uint8_t p[4] = {(uint8_t)(rem >> 24), (uint8_t)(rem >> 16), (uint8_t)(rem >> 8), (uint8_t)rem};
-                pb_tbp_status(c, cmd->id, 6u, p, sizeof p); c->tbp_exec_progress_at = now + 1000u;
+                uint32_t rem = c->step_remaining; uint8_t progress[4] = {(uint8_t)(rem >> 24), (uint8_t)(rem >> 16), (uint8_t)(rem >> 8), (uint8_t)rem};
+                pb_tbp_status(c, cmd->id, 6u, progress, sizeof progress); c->tbp_exec_progress_at = now + 1000u;
             }
             return;
         }
-        if (c->tbp_exec_stage == 5u && !c->step_active) c->tbp_exec_stage = 6u;
+        if (c->tbp_exec_stage == 5u) c->tbp_exec_stage = 6u;
         if (c->tbp_exec_stage == 6u) {
             if (c->tbp_row_snap_valid) {
                 pb_put16(result + 1, c->tbp_row_snap.temp_raw);
@@ -1045,6 +1199,9 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         c->tbp_last_terminal_valid = 0;
         memset(c->tbp_history, 0, sizeof c->tbp_history);
         c->step_active = 0;
+        c->tbp_feed_train_active = 0;
+        c->step_segment_remaining = 0;
+        c->step_seg_head = c->step_seg_count = 0;
         pb_printer_outputs_init(c);
         c->led_mode = 1;
         c->led_phase = 0;
@@ -1231,7 +1388,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             pb_tbp_err(c, id, 5, 51);
             return 1;
         }
-        if (steps && c->step_active && !c->tbp_running) {
+        if (steps && c->step_active && !c->tbp_running && !c->tbp_comp_count) {
             pb_tbp_err(c, id, 9, 0);
             return 1;
         }
@@ -1268,7 +1425,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             pb_tbp_err(c, id, 5, period < PB_TBP_MIN_PERIOD_US ? 4u : 0u);
             return 1;
         }
-        if (c->step_active && !c->tbp_running) {
+        if (c->step_active && !c->tbp_running && !c->tbp_comp_count) {
             pb_tbp_err(c, id, 9, 0);
             return 1;
         }

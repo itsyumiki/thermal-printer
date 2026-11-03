@@ -1,0 +1,39 @@
+# Deterministic same-direction ROW handoff: the second row extends the active phase train.
+@config real
+> 01010101E654
+< 01810100CD2F
+< 0182270301000000000180040403E803E800012710006400C8EA600BB8005AFFFF0F00000000000000008BF3
+> 02103600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000A1770013327
+< 0281010146D2
+> 03103600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000A177001ACC2
+< 038101020005
+@advance 10
+@scheduler phase=0 active=1 completed=0 remaining=11 pending=1
+> 041106FFFFFFFE1F40B9B6
+< 048101034109
+@advance 10
+@scheduler phase=1 active=1 completed=1 remaining=20 pending=2
+@dump
+@advance 10
+@dump
+@advance 70
+@history 2 3
+@last-terminal-byte 11 33
+@scheduler phase=7 active=1 completed=15 remaining=8 pending=1
+@dump
+@advance 30
+@history 3 3
+@last-terminal-byte 11 32
+@scheduler phase=4 active=1 completed=20 remaining=3 pending=0
+@hw PA9=out PA10=out PC3=out PC2=out
+@dump
+@advance 30
+@history 4 3
+@scheduler phase=2 active=0 completed=22 remaining=0 pending=0
+@dump
+> 0511060000000217703EEF
+< 0581010117FF
+@advance 30
+@history 5 3
+@scheduler phase=4 active=0 completed=24 remaining=0 pending=0
+@dump

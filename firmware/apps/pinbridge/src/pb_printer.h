@@ -138,6 +138,9 @@ static int pb_hex_row_ok(const char *hex) {
 /* Start the nonblocking stepper: count includes the initial phase (N transitions = N+1). */
 static void pb_step_start(pb_core *c, int reverse, uint32_t count, uint32_t gap_us,
                           uint32_t dwell_us) {
+    c->tbp_feed_train_active = 0;
+    c->step_segment_remaining = 0;
+    c->step_seg_head = c->step_seg_count = 0;
     c->step_reverse = (uint8_t)reverse;
     c->step_remaining = count;
     c->step_gap_ms = (uint32_t)(((uint64_t)gap_us + 999u) / 1000u);
@@ -150,6 +153,53 @@ static void pb_step_start(pb_core *c, int reverse, uint32_t count, uint32_t gap_
     c->last_feed = pb_now(c);
     if (count)
         pb_drive_motor_phase(c, c->step_phase & 7u); /* resume from the remembered phase */
+}
+/* Append one TBP feed segment to the phase train. Segment boundaries may change direction
+ * or effective millisecond period; the ISR switches at the phase boundary without releasing coils. */
+static int pb_step_feed_schedule(pb_core *c, int reverse, uint32_t steps, uint32_t period_us,
+                                uint32_t *target_steps) {
+    uint32_t period_ms = (period_us + 999u) / 1000u;
+    uint16_t effective_ms = (uint16_t)(period_ms ? period_ms : 1u);
+    unsigned tail;
+    if (!steps) {
+        *target_steps = c->step_completed;
+        return 1;
+    }
+    if (c->step_active) {
+        pb_step_segment *last;
+        if (!c->tbp_feed_train_active || c->step_gap_ms != 0u) return 0;
+        if (!c->step_segment_remaining && !c->step_seg_count) {
+            /* The previous segment reached its final dwell; extend before the stop tick. */
+            c->step_reverse = (uint8_t)reverse;
+            c->step_dwell_ms = effective_ms;
+            c->step_segment_remaining = steps;
+        } else if (!c->step_seg_count && c->step_reverse == (uint8_t)reverse &&
+                   c->step_dwell_ms == effective_ms) {
+            c->step_segment_remaining += steps;
+        } else {
+            tail = ((unsigned)c->step_seg_head + c->step_seg_count) % PB_TBP_QUEUE_DEPTH;
+            last = c->step_seg_count ? &c->step_segments[tail ? tail - 1u : PB_TBP_QUEUE_DEPTH - 1u] : 0;
+            if (last && last->reverse == (uint8_t)reverse && last->period_ms == effective_ms) {
+                last->transitions += steps;
+            } else {
+                if (c->step_seg_count >= PB_TBP_QUEUE_DEPTH) return 0;
+                c->step_segments[tail].transitions = steps;
+                c->step_segments[tail].reverse = (uint8_t)reverse;
+                c->step_segments[tail].period_ms = effective_ms;
+                c->step_seg_count++;
+            }
+        }
+        c->step_remaining += steps;
+        c->step_scheduled_total += steps;
+        *target_steps = c->step_scheduled_total;
+        return 1;
+    }
+    pb_step_start(c, reverse, steps + 1u, 0u, period_us);
+    c->tbp_feed_train_active = 1;
+    c->step_segment_remaining = steps;
+    c->step_scheduled_total = c->step_completed + steps;
+    *target_steps = c->step_scheduled_total;
+    return 1;
 }
 
 /* One gated heater pulse for the legacy PHEAT/PEVENT commands. Same gates as a TBP ROW: real
@@ -348,6 +398,44 @@ static inline void pb_step_tick(pb_core *c) {
     if (!c->step_active)
         return;
     c->last_feed = pb_now(c);
+    if (c->tbp_feed_train_active) {
+        if (c->step_wait_ms > 1u) {
+            c->step_wait_ms--;
+            return;
+        }
+        c->step_wait_ms = 0;
+        if (!c->step_stage) {
+            c->step_stage = 1u;
+            if (c->step_gap_ms) {
+                c->step_wait_ms = c->step_gap_ms;
+                return;
+            }
+        } else c->step_stage = 0;
+        if (--c->step_remaining == 0u) {
+            c->step_active = 0;
+            c->step_done_pending = 1;
+            c->tbp_feed_train_active = 0;
+            c->step_segment_remaining = 0;
+            c->step_seg_head = c->step_seg_count = 0;
+            return;
+        }
+        phase = c->step_reverse ? ((c->step_phase + 7u) & 7u) : ((c->step_phase + 1u) & 7u);
+        c->step_phase = (uint8_t)phase;
+        c->step_completed++;
+        pb_drive_motor_phase(c, phase);
+        if (c->step_segment_remaining) c->step_segment_remaining--;
+        if (!c->step_segment_remaining && c->step_seg_count) {
+            pb_step_segment *next = &c->step_segments[c->step_seg_head];
+            c->step_reverse = next->reverse;
+            c->step_dwell_ms = next->period_ms;
+            c->step_segment_remaining = next->transitions;
+            c->step_seg_head = (uint8_t)((c->step_seg_head + 1u) % PB_TBP_QUEUE_DEPTH);
+            c->step_seg_count--;
+        }
+        c->step_stage = 0;
+        c->step_wait_ms = c->step_dwell_ms ? c->step_dwell_ms : 1u;
+        return;
+    }
     if (c->step_wait_ms > 1) {
         c->step_wait_ms--;
         return;
@@ -370,6 +458,7 @@ static inline void pb_step_tick(pb_core *c) {
     }
     phase = c->step_reverse ? ((c->step_phase + 7u) & 7u) : ((c->step_phase + 1u) & 7u);
     c->step_phase = (uint8_t)phase;
+    c->step_completed++;
     pb_drive_motor_phase(c, phase);
     c->step_stage = 0;
     c->step_wait_ms = c->step_dwell_ms;
