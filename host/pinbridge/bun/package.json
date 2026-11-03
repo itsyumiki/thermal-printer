@@ -4,12 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "bun run server.ts",
-    "check": "prettier --check server.ts server.test.ts tbp.ts tbp.test.ts public/app.js public/index.html public/style.css package.json && bun test",
+    "check": "prettier --check server.ts uart.ts server.test.ts tbp.ts tbp.test.ts public/app.js public/index.html public/style.css package.json && bun test",
     "test": "bun test"
-  },
-  "dependencies": {
-    "serialport": "^13.0.0",
-    "@serialport/parser-readline": "^13.0.0"
   },
   "devDependencies": {
     "prettier": "^3.9.10"

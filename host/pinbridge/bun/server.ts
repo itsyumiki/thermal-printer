@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, extname } from "node:path";
-import { SerialPort } from "serialport";
-import { ReadlineParser } from "@serialport/parser-readline";
+import { Uart, listPorts } from "./uart.ts";
 import {
   OP,
   KIND,
@@ -34,8 +33,7 @@ type Pending = {
   retry?: (expectedId?: number) => void;
 };
 export class PrinterLink {
-  serial: SerialPort | null = null;
-  parser: ReadlineParser | null = null;
+  serial: Uart | null = null;
   path = "";
   state: "disconnected" | "connecting" | "connected" | "reconnecting" =
     "disconnected";
@@ -108,13 +106,7 @@ export class PrinterLink {
         },
       ];
     try {
-      return (await SerialPort.list()).map((p) => ({
-        path: p.path,
-        manufacturer: p.manufacturer ?? "",
-        serialNumber: p.serialNumber ?? "",
-        vendorId: p.vendorId ?? "",
-        productId: p.productId ?? "",
-      }));
+      return listPorts();
     } catch (e) {
       this.lastError = String(e);
       return [];
@@ -190,30 +182,18 @@ export class PrinterLink {
     try {
       const list = await this.ports();
       if (!this.path || !list.some((p) => p.path === this.path))
-        this.path =
-          (autoPath && list.some((p) => p.path === autoPath)
-            ? autoPath
-            : list[0]?.path) ?? "";
+        this.path = autoPath || (list[0]?.path ?? "");
       if (!this.path) throw new Error("No UART device found");
-      const serial = new SerialPort({
-        path: this.path,
-        baudRate: 115200,
-        autoOpen: false,
-        lock: true,
-      });
+      const serial = new Uart(this.path, 115200);
+      serial.onLine = (line) => this.onLine(line);
+      serial.onError = (e) => this.onPortError(e);
+      serial.onClose = () => this.onPortClose();
       this.serial = serial;
-      await new Promise<void>((resolve, reject) =>
-        serial.open((e) => (e ? reject(e) : resolve())),
-      );
+      serial.open();
       if (gen !== this.generation) {
         serial.close();
         return;
       }
-      const parser = serial.pipe(new ReadlineParser({ delimiter: "\n" }));
-      this.parser = parser;
-      parser.on("data", (line: string) => this.onLine(String(line)));
-      serial.on("error", (e) => this.onPortError(e));
-      serial.on("close", () => this.onPortClose());
       await new Promise((r) => setTimeout(r, 120));
       const hello = await this.transact(OP.HELLO, Uint8Array.of(1), true, 1600);
       this.info = decodeInfo(hello.data);
@@ -236,7 +216,6 @@ export class PrinterLink {
   closePort() {
     const s = this.serial;
     this.serial = null;
-    this.parser = null;
     if (s?.isOpen)
       try {
         s.close();
@@ -250,7 +229,6 @@ export class PrinterLink {
   onPortClose() {
     if (this.serial) {
       this.serial = null;
-      this.parser = null;
       this.drop("UART closed");
     }
   }
