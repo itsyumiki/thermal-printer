@@ -51,6 +51,9 @@ typedef struct {
 #define PB_TBP_DUTY_MAX_US PB_TUNE_HEATER_DUTY_BUDGET_US
 #define PB_TBP_SHIFT_US PB_TUNE_HEAD_SHIFT_TIME_US
 /* ROW STATUS DONE flag bits (spec 7.5). */
+#define PB_TBP_ROWFLAG_COLD_START 0x01u
+#define PB_TBP_ROWFLAG_STRETCHED 0x02u
+#define PB_TBP_ROWFLAG_LATE 0x04u
 #define PB_TBP_ROWFLAG_DUTY_WAIT 0x08u
 #define PB_TBP_ROWFLAG_HOT_WAIT 0x10u
 #define PB_TBP_ROWFLAG_NO_HEAT 0x20u
@@ -849,6 +852,9 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
             uint32_t duration = steps ? (uint32_t)(steps < 0 ? -steps : steps) * period / 1000u : 0u;
             if (any && burn)
                 duration += (burn + PB_TBP_SHIFT_US + (uint32_t)slices * PB_TBP_GUARD_US + 999u) / 1000u + 40u;
+            /* Report a cold start truthfully when a moving row begins without an active step sequence. */
+            if (steps && !c->step_active)
+                c->tbp_row_flags |= PB_TBP_ROWFLAG_COLD_START;
             c->tbp_exec_stage = 1;
             c->tbp_exec_bit = 0;
             if (duration >= 250u) { pb_tbp_status(c, cmd->id, 2u, 0, 0); pb_tbp_record_state(c, cmd->id, 2u); }
