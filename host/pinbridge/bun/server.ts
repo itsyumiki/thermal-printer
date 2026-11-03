@@ -638,6 +638,51 @@ export class PrinterLink {
         );
         return { done: true };
       }
+      case "print-job": {
+        const rows = Array.isArray(msg.rows) ? msg.rows : [];
+        if (!rows.length || rows.length > 2000)
+          throw new Error("print-job needs 1..2000 rows");
+        this.stopRequested = false;
+        let sent = 0;
+        const depth = Math.max(
+          1,
+          Math.min(4, Number(this.info?.queueDepth ?? 4)),
+        );
+        for (let base = 0; base < rows.length; base += depth) {
+          if (this.stopRequested) break;
+          const batch = rows.slice(base, base + depth);
+          await Promise.all(
+            batch.map(async (item: any) => {
+              if (this.stopRequested) return;
+              const mask = Uint8Array.from({ length: 48 }, (_, i) => {
+                const hex = String(item.maskHex ?? "");
+                if (!/^[0-9a-f]{96}$/i.test(hex))
+                  throw new Error(
+                    "Each print-job mask must be 96 hex characters",
+                  );
+                return Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+              });
+              const burn = Number(item.burnUs ?? 0);
+              const steps = Number(item.steps ?? 0);
+              const period = Number(item.periodUs ?? 0);
+              this.requireHeatReady(burn);
+              const timeout = Math.min(
+                30000,
+                Math.ceil((Math.abs(steps) * period) / 1000) + 5000,
+              );
+              await this.transact(
+                OP.ROW,
+                row(mask, burn, steps, period, Number(item.slices ?? 1)),
+                true,
+                timeout,
+              );
+              sent++;
+              this.emit("print-progress", { done: sent, total: rows.length });
+            }),
+          );
+        }
+        return { done: sent, total: rows.length, stopped: this.stopRequested };
+      }
       case "print-solid": {
         const rows = Math.max(1, Math.min(500, Number(msg.rows ?? 24)));
         const burn = Number(msg.burnUs ?? 1500);

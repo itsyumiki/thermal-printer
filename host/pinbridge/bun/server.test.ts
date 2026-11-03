@@ -150,6 +150,31 @@ describe("TBP fake-transport retry behavior", () => {
     expect(count()).toBe(0);
   });
 
+  test("print-job submits a multi-row payload and reports terminal progress", async () => {
+    const link = new PrinterLink();
+    links.push(link);
+    link.mock = true;
+    link.state = "connected";
+    link.info = { queueDepth: 4, maxWindow: 4 } as any;
+    const progress: number[] = [];
+    link.clients.add({
+      send: (wire) => {
+        const event = JSON.parse(wire);
+        if (event.type === "print-progress") progress.push(event.done);
+      },
+    });
+    const rows = [0, 1, 2, 3, 4].map((i) => ({
+      maskHex: (i % 2 ? "00" : "FF").repeat(48),
+      burnUs: 0,
+      steps: 1,
+      periodUs: 6000,
+      slices: 1,
+    }));
+    const result = await link.command("print-job", { rows });
+    expect(result).toEqual({ done: 5, total: 5, stopped: false });
+    expect(progress).toEqual([1, 2, 3, 4, 5]);
+  });
+
   test("coil hold is bounded: it configures idle_hold_ms before energising", async () => {
     const frames: any[] = [];
     const { link, count } = fakeLink((wire, _n, current) => {
