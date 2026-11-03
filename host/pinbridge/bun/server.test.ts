@@ -40,6 +40,42 @@ afterEach(() => {
   }
 });
 
+describe("debug frame logging", () => {
+  test("is silent unless the debug flag is on", async () => {
+    const out: string[] = [];
+    const { link } = fakeLink((_wire, _n, current) => {
+      ack(current, 1);
+      done(current, 1);
+    });
+    link.debug = false;
+    link.debugSink = (l) => out.push(l);
+    await link.transact(OP.STAT, new Uint8Array(), true, 50);
+    link.onLine("!wdg");
+    expect(out).toEqual([]);
+  });
+
+  test("logs TX, RX, retransmits and raw non-TBP lines", async () => {
+    const out: string[] = [];
+    const { link } = fakeLink((_wire, n, current) => {
+      if (n === 2) {
+        ack(current, 1);
+        done(current, 1);
+      }
+    });
+    link.debug = true;
+    link.debugSink = (l) => out.push(l);
+    const wire = encode(1, OP.STAT).trim();
+    await link.transact(OP.STAT, new Uint8Array(), true, 8);
+    link.onLine("!wdg");
+    const body = out.map((l) => l.replace(/^\d\d:\d\d:\d\d\.\d{3} /, ""));
+    expect(body[0]).toBe(`TX    id=1 op=02 ${wire}`);
+    expect(body[1]).toBe(`TX    id=1 op=02 ${wire} (attempt 2)`);
+    expect(body.some((l) => l.startsWith("RX    id=1 op=81 "))).toBe(true);
+    expect(body.some((l) => l.startsWith("RX    id=1 op=82 "))).toBe(true);
+    expect(body[body.length - 1]).toBe('RX?   "!wdg" (Invalid TBP hex frame)');
+  });
+});
+
 describe("TBP fake-transport retry behavior", () => {
   test("retries the identical frame when ACK is lost", async () => {
     const sent: string[] = [];

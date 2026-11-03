@@ -15,6 +15,7 @@ Open `http://127.0.0.1:8765`. The host automatically scans serial ports and retr
 - `PINBRIDGE_HOST` — bind address (default `127.0.0.1`; do not expose on a public interface without adding authentication).
 - `PINBRIDGE_PORT` — HTTP/WebSocket port (default `8765`).
 - `PINBRIDGE_UART` — preferred serial device path; otherwise the first detected port is selected.
+- `PINBRIDGE_DEBUG` — set to `1` (or pass `--debug` to `bun run server.ts`, or `pinbridge webui --debug`) to print every raw UART frame to stdout with millisecond timestamps. Lines look like `10:51:42.123 TX    id=3d op=11 3D1106...` (`attempt N` marks retransmits), `RX    id=3d op=82 ...`, and `RX?   "!wdg" (Invalid TBP hex frame)` for anything that is not a valid TBP frame (raw text is JSON-quoted). `DROP` and `ERR` lines show why the link was torn down. Off by default; mock mode has no UART traffic to show.
 
 The Python `pinbridge webui` launcher starts this Bun server; `pinbridge webui --mock` uses the same UI and a small in-process virtual printer, so protocol/UI development stays on one host implementation.
 

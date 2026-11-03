@@ -19,6 +19,15 @@ const host = process.env.PINBRIDGE_HOST ?? "127.0.0.1";
 const port = Number(process.env.PINBRIDGE_PORT ?? 8765);
 const autoPath = process.env.PINBRIDGE_UART ?? "";
 const mockMode = process.env.PINBRIDGE_MOCK === "1";
+// Raw UART frame logging to stdout: PINBRIDGE_DEBUG=1 or `bun run server.ts --debug`.
+const debugFrames =
+  /^(1|true|yes|on)$/i.test(process.env.PINBRIDGE_DEBUG ?? "") ||
+  process.argv.includes("--debug");
+function debugStamp() {
+  const d = new Date();
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
 type Client = { send: (s: string) => void };
 type Pending = {
   id: number;
@@ -54,6 +63,15 @@ export class PrinterLink {
   connectWanted = true;
   stopRequested = false;
   mock = mockMode;
+  debug = debugFrames;
+  debugSink: (line: string) => void = (line) => console.log(line);
+  /** Debug trace line (only when the debug flag is on); never throws. */
+  private dbg(tag: string, text: string) {
+    if (!this.debug) return;
+    try {
+      this.debugSink(`${debugStamp()} ${tag.padEnd(5)} ${text}`);
+    } catch {}
+  }
   emit(type: string, data: any = {}) {
     const packet = JSON.stringify({ type, ...data, at: Date.now() });
     for (const c of this.clients)
@@ -223,6 +241,7 @@ export class PrinterLink {
   }
   onPortError(e: Error) {
     this.lastError = e.message;
+    this.dbg("ERR", "UART: " + e.message);
     this.emit("log", { level: "error", message: "UART: " + e.message });
     this.drop("UART error");
   }
@@ -268,6 +287,7 @@ export class PrinterLink {
     if (dispatch) this.dispatchSend();
   }
   drop(reason: string) {
+    this.dbg("DROP", reason);
     this.stopKeepalive();
     this.generation++;
     for (const p of this.pending.values()) {
@@ -288,9 +308,18 @@ export class PrinterLink {
     try {
       f = decode(line);
     } catch (e) {
+      // Raw text is JSON-quoted so stray bytes/CR are visible (e.g. a firmware "!wdg" line).
+      this.dbg(
+        "RX?",
+        `${JSON.stringify(line)} (${e instanceof Error ? e.message : String(e)})`,
+      );
       this.emit("log", { level: "warn", message: "Ignored non-TBP UART line" });
       return;
     }
+    this.dbg(
+      "RX",
+      `id=${f.id} op=${f.op.toString(16).padStart(2, "0")} ${line.trim()}`,
+    );
     if (f.op === KIND.EVENT) {
       this.emit("event", { id: f.id, data: [...f.data] });
       if (f.data[0] === 1 && f.data.length >= 14)
@@ -497,8 +526,13 @@ export class PrinterLink {
         }
         const sendFrame = () => {
           p.retries++;
+          this.dbg(
+            "TX",
+            `id=${id} op=${op.toString(16).padStart(2, "0")} ${wire.trim()}${p.retries > 1 ? ` (attempt ${p.retries})` : ""}`,
+          );
           this.serial?.write(wire, (e) => {
             if (e) {
+              this.dbg("ERR", "UART write: " + e.message);
               this.drop(e.message);
               return;
             }
@@ -826,6 +860,7 @@ if (import.meta.main) {
   });
   await link.start();
   console.log(`Pinbridge host listening on http://${host}:${server.port}`);
+  if (debugFrames) console.log("Debug: logging raw UART frames to stdout");
   process.on("SIGINT", () => {
     void link.shutdown().finally(() => process.exit(0));
   });

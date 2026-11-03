@@ -34,6 +34,11 @@ def main(argv=None):
             help="HTTP/WebSocket port (default: 8765)",
         )
         g.add_argument(
+            "--debug",
+            action="store_true",
+            help="log every raw UART frame (TX/RX, unparsed lines, drops) to stdout",
+        )
+        g.add_argument(
             "--no-browser",
             action="store_true",
             help="do not open a browser automatically",
@@ -46,6 +51,8 @@ def main(argv=None):
         env = os.environ.copy()
         env["PINBRIDGE_HOST"] = a.host
         env["PINBRIDGE_PORT"] = str(a.http_port)
+        if a.debug:
+            env["PINBRIDGE_DEBUG"] = "1"
         if a.mock:
             env["PINBRIDGE_MOCK"] = "1"
         if a.port:
