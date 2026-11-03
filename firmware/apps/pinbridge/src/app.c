@@ -319,6 +319,7 @@ static void hal_heater_pulse_cancel(void *ctx) {
 }
 static void pb_step_timer(void *priv) {
     (void)priv;
+    core.step_timer_callbacks++;
     if (estop_fast_requested) {
         core.step_active = 0;
         core.step_done_pending = 0;
@@ -330,7 +331,9 @@ static void sync_step_timer(void) {
     if (core.step_active) {
         if (!step_timer_id) {
             step_timer_id = sys_hi_timer_add(NULL, pb_step_timer, 1);
+            core.step_timer_id = step_timer_id;
             if (!step_timer_id) {
+                core.step_timer_reg_failures++;
                 /* Fail safe rather than leave an accepted motion waiting on a missing timer. */
                 pb_tbp_cancel_work(&core, 3u);
                 pb_safe_state(&core);
@@ -339,6 +342,7 @@ static void sync_step_timer(void) {
     } else if (step_timer_id) {
         sys_hi_timer_del(step_timer_id);
         step_timer_id = 0;
+        core.step_timer_id = 0;
     }
 }
 static void command_task(void *priv) {
@@ -361,6 +365,7 @@ static void command_task(void *priv) {
     pb_heater_timer_init();
     pb_init(&core, &h);
     step_timer_id = 0;
+    core.step_timer_id = 0;
     if (estop_fast_requested) core.emergency_abort_requested = 1;
     for (;;) {
         os_sem_pend(&cmd_sem, 1);

@@ -140,6 +140,9 @@ typedef struct {
         step_phase; /* persistent half-step phase 0..7; survives PSTEP commands, reset by pb_init */
     volatile uint32_t step_remaining, step_wait_ms;
     volatile uint32_t step_completed;
+    volatile uint32_t step_timer_callbacks;
+    volatile uint16_t step_timer_id;
+    volatile uint8_t step_timer_reg_failures;
     uint32_t step_scheduled_total, step_segment_remaining;
     pb_step_segment step_segments[PB_TBP_QUEUE_DEPTH];
     uint8_t step_seg_head, step_seg_count, tbp_feed_train_active;
@@ -1733,7 +1736,8 @@ static void pb_command(pb_core *c, char *line) {
         pb_reply(c, message);
     }
     if (pb_eq(v[0], "PHEAD") || pb_eq(v[0], "PLATCH") || pb_eq(v[0], "PHEAT") ||
-        pb_eq(v[0], "PSTEP") || pb_eq(v[0], "PSTEPSTAT") || pb_eq(v[0], "PEVENT"))
+        pb_eq(v[0], "PSTEP") || pb_eq(v[0], "PSTEPSTAT") || pb_eq(v[0], "PDIAG") ||
+        pb_eq(v[0], "PEVENT"))
         pb_printer_command(c, v, n);
     else if (pb_eq(v[0], "HEL") || pb_eq(v[0], "DBG") || pb_eq(v[0], "WDG") || pb_eq(v[0], "RST"))
         pb_control_command(c, v, n, now);

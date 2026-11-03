@@ -24,6 +24,16 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("if (core.step_active)", source)
         self.assertNotIn("sys_s_hi_timer_add(NULL, pb_step_timer, 1)", source)
 
+    def test_stepper_runtime_diagnostics_expose_timer_progress_and_wiggle_gates(self):
+        app = APP.read_text(encoding="utf-8")
+        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
+        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
+        self.assertIn("core.step_timer_callbacks++", app)
+        self.assertIn("core.step_timer_reg_failures++", app)
+        self.assertIn('pb_eq(v[0], "PDIAG")', core)
+        for field in ("step=", "phase=", "done=", "rem=", "timer=", "ticks=", "regfail=", "wiggle=", "request=", "rowpaper=", "power=", "abort="):
+            self.assertIn(field, printer)
+
     def test_ci_embeds_source_sha_in_hello_build_id(self):
         core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
         script = BUILD_SCRIPT.read_text(encoding="utf-8")

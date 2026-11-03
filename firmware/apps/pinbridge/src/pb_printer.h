@@ -432,6 +432,41 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
         c->last_feed = pb_now(c);
         return;
     }
+    if (pb_eq(v[0], "PDIAG")) {
+        char b[160] = "ok diag step=";
+        size_t z = strlen(b);
+        if (n != 1) {
+            pb_error(c, "arg", "PDIAG");
+            return;
+        }
+        (void)pb_num(b, sizeof b, &z, c->step_active);
+        (void)pb_append(b, sizeof b, &z, " phase=");
+        (void)pb_num(b, sizeof b, &z, c->step_phase);
+        (void)pb_append(b, sizeof b, &z, " done=");
+        (void)pb_num(b, sizeof b, &z, c->step_completed);
+        (void)pb_append(b, sizeof b, &z, " rem=");
+        (void)pb_num(b, sizeof b, &z, c->step_remaining);
+        (void)pb_append(b, sizeof b, &z, " timer=");
+        (void)pb_num(b, sizeof b, &z, c->step_timer_id);
+        (void)pb_append(b, sizeof b, &z, " ticks=");
+        (void)pb_num(b, sizeof b, &z, c->step_timer_callbacks);
+        (void)pb_append(b, sizeof b, &z, " regfail=");
+        (void)pb_num(b, sizeof b, &z, c->step_timer_reg_failures);
+        (void)pb_append(b, sizeof b, &z, " wiggle=");
+        (void)pb_num(b, sizeof b, &z, c->wiggle_stage);
+        (void)pb_append(b, sizeof b, &z, " request=");
+        (void)pb_num(b, sizeof b, &z, c->wiggle_request);
+        (void)pb_append(b, sizeof b, &z, " rowpaper=");
+        (void)pb_num(b, sizeof b, &z, c->tbp_row_snap.paper_valid);
+        (void)pb_append(b, sizeof b, &z, "/");
+        (void)pb_num(b, sizeof b, &z, c->tbp_row_snap.paper_present);
+        (void)pb_append(b, sizeof b, &z, " power=");
+        (void)pb_num(b, sizeof b, &z, c->power_ready);
+        (void)pb_append(b, sizeof b, &z, " abort=");
+        (void)pb_num(b, sizeof b, &z, c->emergency_abort_requested);
+        pb_reply(c, b);
+        return;
+    }
 }
 
 static inline void pb_step_tick(pb_core *c) {
