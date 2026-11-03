@@ -293,7 +293,7 @@ static int hal_heater_pulse_start(void *ctx, unsigned usec) {
     uint32_t ticks;
     (void)ctx;
     if (!heater_timer_ready || !usec || usec > 2500u) return -1;
-    ticks = ((OSC_Hz / 4u) * usec + 500000u) / 1000000u;
+    ticks = ((24000000u / 4u) * usec + 500000u) / 1000000u;
     if (!ticks || ticks > 0xffffu) return -1;
     local_irq_disable();
     JL_TIMER1->CON = BIT(14);
