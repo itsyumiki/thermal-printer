@@ -245,6 +245,13 @@ int main(int argc, char **argv) {
                 }
                 continue;
             }
+            if (sscanf(s, "@poll-bound %u", &a) == 1) {
+                uint32_t before = now_ms;
+                pb_poll(&c);
+                if ((uint32_t)(now_ms - before) > a)
+                    fail(ln, "one executor poll exceeded the documented simulated blocking-delay budget");
+                continue;
+            }
             if (sscanf(s, "@heat-used %u", &a) == 1) { /* pretend the duty budget is partly spent right now */
                 c.tbp_heat_used_us = a;
                 c.tbp_heat_window_start = now_ms;

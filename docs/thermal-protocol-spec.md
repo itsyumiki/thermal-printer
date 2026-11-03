@@ -175,6 +175,10 @@ Order for an accepted command: `ACK`, then STATUS frames, ending in exactly one 
 
 Every command except `HELLO` and `FF` consumes an id in sequence, whatever its class.
 
+### 6.1.1 Control-plane response bound
+
+On a healthy link, a well-formed frame must receive its ACK or ERR within **50 ms** of being made available to the firmware RX path. Immediate commands (HELLO, STAT, FLUSH, CONFIG, COILS, and ESTOP) must not wait for queue capacity or for a queued command to finish. The executor must return to RX dispatch between bounded work slices; no individual executor poll may perform an unbounded wait. The portable C test bounds explicit simulated delays per poll and exercises STAT during ROW preparation and motion. This does not measure MCU instruction time, RTOS scheduling, or USB transport latency; those remain hardware/CI validation items.
+
 ### 6.2 Queue and credits
 
 - `queue_used` counts accepted queued commands that are not terminal, including the one running.

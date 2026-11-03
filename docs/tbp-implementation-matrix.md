@@ -46,6 +46,9 @@ Legend: **Implemented (partial)** means a path exists but does not meet the full
 - These tests establish Sprint 1 protocol reliability only; they are **not** evidence of full TBP v1 conformance or hardware behavior.
 - See [`sprint-00-report.md`](sprints/sprint-00-report.md) for exact baseline commands and results.
 
-## 2026-11-03 watchdog follow-up
+## 2026-11-03 control-plane and watchdog follow-up
+
+The protocol defines a 50 ms ACK/ERR response bound on a healthy link. `tbp-control-plane-bound.txt` checks explicit simulated blocking delay and STAT responses during ROW preparation/motion; this does not measure RTOS or USB latency.
+
 
 COILS during queued/running work is accepted as a no-op and leaves motor outputs untouched (`tbp-coils-busy-noop.txt`). The legacy 5-second watchdog is now suppressed while a TBP session is active; configured TBP link timeout remains the session work-cancellation mechanism. C transcript `tbp-no-legacy-watchdog.txt` proves a long DWELL remains active and STAT responds after the old watchdog threshold; `tbp-link-timeout.txt` covers configured timeout cancellation with session retention. This is source-level simulation evidence, not firmware-build or hardware evidence.

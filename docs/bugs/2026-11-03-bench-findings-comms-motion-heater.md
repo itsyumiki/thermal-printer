@@ -225,6 +225,10 @@ Findings from the source:
 ### Step 1 implementation note (host robustness)
 
 Host changes are in progress on `pinbridge`: STAT/ESTOP can use the reserved final window credit, keepalive no longer skips solely because jobs are pending, BUSY/QFULL are retried with the same command ID, protocol-level ERR/sequence/timeout conditions no longer call the port-drop path, and raw non-TBP UART lines are emitted to the WebUI event log. The retry/credit and raw-line behavior has fake-transport coverage. These are host-side tests only; no device, firmware, or hardware evidence is implied. The allowed Bun, Python, generated-file, C transcript, and diff checks pass. Recovery from an ambiguous concurrent sequence mismatch is not yet complete: the host keeps the UART open and reports the ambiguity, but does not yet perform an automatic in-place resynchronization.
+### Step 2 / F2 implementation note (control-plane bound)
+
+The protocol spec now states a 50 ms ACK/ERR response bound on a healthy link and prohibits immediate commands from waiting for queue capacity or queued work. `tbp-control-plane-bound.txt` exercises STAT while a heat-bearing ROW is in preparation and motion, and checks that each explicit executor poll consumes at most 50 ms of simulated delay. This is a portable C test of explicit waits and protocol handling, not a measurement of MCU instruction time, RTOS scheduling, USB latency, or hardware response.
+
 ### Step 2 / F4 implementation note (COILS while busy)
 
 COILS received while queued/running work exists is now accepted as a no-op with DONE; it does not change motor outputs or return BUSY. When idle, the existing bounded-hold safety gate for COILS-on remains in force. `tbp-coils-busy-noop.txt` checks the ACK/DONE lifecycle, confirms no motor writes, and confirms the active DWELL still completes. This C transcript failed before the change (ERR BUSY) and passes after it.
