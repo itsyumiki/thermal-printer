@@ -1421,7 +1421,16 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             pb_tbp_err(c, id, 4, 1);
             return 1;
         }
-        if (pb_tbp_used(c) || c->step_active || (raw[3] && !c->tbp_idle_hold_ms)) {
+        if (pb_tbp_used(c) || c->step_active) {
+            /* COILS is immediate, but must not interrupt queued/running motion.
+               Accept it as a documented no-op instead of a BUSY rejection. */
+            uint8_t done = 3u;
+            pb_tbp_accept(c, id);
+            pb_tbp_send(c, id, 0x81u, (uint8_t[]){pb_tbp_used(c)}, 1u);
+            pb_tbp_status(c, id, 3u, &done, 1u);
+            return 1;
+        }
+        if (raw[3] && !c->tbp_idle_hold_ms) {
             pb_tbp_err(c, id, 9, 0);
             return 1;
         }

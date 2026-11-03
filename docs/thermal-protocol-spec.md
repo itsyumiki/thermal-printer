@@ -321,7 +321,7 @@ Queued. `DATA = [ms u16]` (2 bytes), 1 to 65535. Coils stay energised and the he
 
 ### 7.8 `20` COILS
 
-Immediate, requires IDLE (queue empty, nothing running), else `ERR BUSY`. `DATA = [mode u8]`: `00` release coils, `01` energise coils at the current phase. Reply `STATUS DONE` body `[03]`.
+Immediate. `DATA = [mode u8]`: `00` release coils, `01` energise coils at the current phase. If queued/running work exists, accept the command as a no-op (do not change motor outputs) and reply `STATUS DONE` body `[03]`; never interrupt motion or return BUSY for this condition. When IDLE, mode `01` still requires a configured bounded coil hold (`CONFIG idle_hold_ms`), otherwise return the existing safety rejection. Mode `00` releases coils when IDLE.
 
 ### 7.9 `FF` EMERGENCY STOP
 

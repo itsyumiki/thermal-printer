@@ -225,6 +225,10 @@ Findings from the source:
 ### Step 1 implementation note (host robustness)
 
 Host changes are in progress on `pinbridge`: STAT/ESTOP can use the reserved final window credit, keepalive no longer skips solely because jobs are pending, BUSY/QFULL are retried with the same command ID, protocol-level ERR/sequence/timeout conditions no longer call the port-drop path, and raw non-TBP UART lines are emitted to the WebUI event log. The retry/credit and raw-line behavior has fake-transport coverage. These are host-side tests only; no device, firmware, or hardware evidence is implied. The allowed Bun, Python, generated-file, C transcript, and diff checks pass. Recovery from an ambiguous concurrent sequence mismatch is not yet complete: the host keeps the UART open and reports the ambiguity, but does not yet perform an automatic in-place resynchronization.
+### Step 2 / F4 implementation note (COILS while busy)
+
+COILS received while queued/running work exists is now accepted as a no-op with DONE; it does not change motor outputs or return BUSY. When idle, the existing bounded-hold safety gate for COILS-on remains in force. `tbp-coils-busy-noop.txt` checks the ACK/DONE lifecycle, confirms no motor writes, and confirms the active DWELL still completes. This C transcript failed before the change (ERR BUSY) and passes after it.
+
 ### Step 2 / F3 implementation note (legacy watchdog)
 
 The legacy 5-second output watchdog now runs only outside an active TBP session. An active TBP session is governed by the configured TBP link timeout (which remains opt-in); when configured, that timeout cancels work into a safe state while retaining the session and answering subsequent commands. The `tbp-no-legacy-watchdog.txt` C transcript advances a long-running DWELL beyond five seconds and then confirms STAT still reports the running command. Existing `tbp-link-timeout.txt` continues to cover configured timeout cancellation and session retention. This is portable C simulation/transcript evidence only; no firmware SDK build, CI, flash, or hardware test was performed.
