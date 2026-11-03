@@ -6,7 +6,7 @@ Status: **partial checkpoint; Sprint 4 acceptance is not complete.** This is sof
 
 - `2c0a86b25e18094480d6d5ae84196ceca75476d4` — design decisions and truthful `COLD_START` result flag; transcript expectations updated.
 - `20a6e9cfbcd46089d6c7a6cbe45bde91f7273029` — Bun `print-job` endpoint and demo submits one multi-row request, consumes row progress and terminal completion.
-- Handoff/documentation commit: pending.
+- `a67b1262a6ecf3e8aef3cd7413a320a30f337ad9` — initial handoff/journal update.
 
 ## Checks
 
@@ -17,7 +17,7 @@ Passed locally on the checkpoint:
 - `git diff --check` — passed.
 - `host/pinbridge/.venv/bin/python -m unittest discover -s host/pinbridge/tests -v` — 35 tests passed.
 - `python3 -m py_compile host/pinbridge/examples/print_matrix_square_ws_demo.py` — passed.
-- GitHub Actions run/artifact: pending push and remote workflow completion.
+- GitHub Actions [run 41587395888](https://github.com/itsyumiki/thermal-printer/actions/runs/41587395888) — both host checks and the remote C firmware build/package job passed. Artifact: `pinbridge-br23-41587395888` (663,477 bytes). This is a CI build result, not hardware validation.
 
 These checks establish software/mock behavior only. They do not establish physical feed direction, dot polarity, thermal safety, actual shift time, or continuous motion.
 
