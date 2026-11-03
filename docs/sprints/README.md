@@ -27,7 +27,7 @@ Work one sprint at a time, in order. Before editing, read the sprint handoff, `d
 
 ## Dependency rule
 
-Sprints 0–2 are complete against software gates. Sprint 3 has implemented fail-closed heater behavior and truthful unavailable sensor reporting; physical sensor mapping/calibration and measured thermal limits remain release blockers. Sprint 4 depends on the executor and safety interfaces from Sprints 2–3. Sprint 5 can be developed in parallel on mock fixtures, but its final acceptance depends on the actual queue/status semantics from Sprints 1–4. Sprint 6 follows all implementation sprints.
+Sprints 0–2 are complete against software gates. Sprint 3 is complete against software gates: real temperature/battery/paper acquisition, truthful INFO/STAT, a heater gate on every ROW/PHEAT/PEVENT and heater slice, HOT/DUTY waits and bounded coil hold; the heater is enabled with owner-decided, stock-derived limits that still need hardware validation. Sprint 4 depends on the executor and safety interfaces from Sprints 2–3. Sprint 5 can be developed in parallel on mock fixtures, but its final acceptance depends on the actual queue/status semantics from Sprints 1–4. Sprint 6 follows all implementation sprints.
 
 ## Project-wide constraints
 

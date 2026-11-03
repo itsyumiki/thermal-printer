@@ -99,8 +99,10 @@ export function row(
 ): Uint8Array {
   if (mask.length !== 48)
     throw new Error("A print row must be exactly 48 bytes (384 dots)");
-  if (!Number.isInteger(burnUs) || burnUs < 0 || burnUs > 6000)
-    throw new Error("Row burn time must be 0..6000 µs on this firmware");
+  if (!Number.isInteger(burnUs) || burnUs < 0 || burnUs > 65535)
+    throw new Error(
+      "Row burn time must be 0..65535 µs (the firmware enforces its own INFO limits)",
+    );
   if (!Number.isInteger(steps) || steps < -128 || steps > 127)
     throw new Error("Row steps must be -128..127");
   if (steps && periodUs < 1000)

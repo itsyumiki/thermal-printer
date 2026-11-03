@@ -27,7 +27,7 @@
 < err bsy PB11
 @hw PB11=lo
 > PHEAT 100
-< err bsy PHEAT
+< ok
 @hw PB11=lo
 > PSTEP FWD 1 5000 1000
 < ok started
@@ -72,8 +72,8 @@
 @advance 30
 < !step done
 @hw PA9=hiz PA10=hiz PC3=hiz PC2=hiz
-> PHEAT 6001
-< err bsy PHEAT
+> PHEAT 2501
+< err arg PHEAT
 > PLATCH 1001
 < err arg PLATCH
 > PHEAD 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 1001 1001

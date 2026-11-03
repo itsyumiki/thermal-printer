@@ -36,18 +36,30 @@ typedef struct {
 #define PB_TBP_QUEUE_DEPTH 4u
 #define PB_TBP_DATA_MAX 54u
 #define PB_TBP_MIN_PERIOD_US PB_TUNE_STEPPER_MIN_PERIOD_US
-/* Runtime-advertised safety limits remain independent of provisional tuning defaults. */
+/* Heater limits advertised in INFO and enforced here. Values come from pb_tuning.h; INFO caps are
+ * reported dynamically from the sensors' live validity (pb_sensors_caps). */
 #define PB_TBP_SENSOR_CAP_TEMP 0x01u
 #define PB_TBP_SENSOR_CAP_BATTERY 0x02u
+#define PB_TBP_SENSOR_CAP_BATT_MV 0x04u
 #define PB_TBP_SENSOR_CAP_PAPER 0x08u
-#define PB_TBP_SENSOR_CAPS 0u
-#define PB_TBP_HEATER_TIMER_READY 0u
-#define PB_TBP_BURN_TICK_US 0u
-#define PB_TBP_BURN_MAX_US 0u
-#define PB_TBP_GUARD_US 0u
-#define PB_TBP_DUTY_WINDOW_MS 0u
-#define PB_TBP_DUTY_MAX_US 0u
-#define PB_TBP_SHIFT_US 0u
+#define PB_TBP_HEATER_TIMER_READY 1u
+#define PB_TBP_BURN_TICK_US PB_TUNE_HEATER_TIMER_TICK_US
+#define PB_TBP_BURN_MAX_US PB_TUNE_HEATER_BURN_MAX_US
+#define PB_TBP_SLICE_MAX_US PB_TUNE_HEATER_SLICE_MAX_US
+#define PB_TBP_GUARD_US PB_TUNE_HEATER_GUARD_US
+#define PB_TBP_DUTY_WINDOW_MS PB_TUNE_HEATER_DUTY_WINDOW_MS
+#define PB_TBP_DUTY_MAX_US PB_TUNE_HEATER_DUTY_BUDGET_US
+#define PB_TBP_SHIFT_US PB_TUNE_HEAD_SHIFT_TIME_US
+/* ROW STATUS DONE flag bits (spec 7.5). */
+#define PB_TBP_ROWFLAG_DUTY_WAIT 0x08u
+#define PB_TBP_ROWFLAG_HOT_WAIT 0x10u
+#define PB_TBP_ROWFLAG_NO_HEAT 0x20u
+/* Live sensor snapshot. *_valid mean the reading is real and in range; nothing is invented. */
+typedef struct {
+    uint8_t temp_valid, batt_valid, paper_valid, paper_present;
+    uint16_t temp_raw, batt_raw, batt_mv;
+    int16_t temp_c;
+} pb_sensor_snapshot;
 typedef struct {
     void *ctx;
     int (*set_mode)(void *, unsigned, unsigned, unsigned, unsigned);
@@ -83,6 +95,11 @@ typedef struct {
     uint16_t tbp_exec_bit;
     uint32_t tbp_exec_deadline, tbp_exec_progress_at;
     uint32_t tbp_heat_window_start, tbp_heat_used_us;
+    uint32_t tbp_hot_since;
+    uint8_t tbp_hot_wait, tbp_row_flags, tbp_row_snap_valid;
+    pb_sensor_snapshot tbp_row_snap;
+    uint8_t paper_last, paper_known, paper_cand, paper_cand_n;
+    uint32_t sensor_poll_ms;
     uint32_t tbp_last_frame_ms, tbp_last_hb_ms, tbp_coils_release_at;
     uint16_t tbp_hb_interval_ms, tbp_idle_hold_ms, tbp_link_timeout_ms;
     uint32_t last_feed;
@@ -215,6 +232,75 @@ static void pb_safe_state(pb_core *c) {
         pb_safe_pin(c, i);
     }
 }
+/* ---- Sensors -------------------------------------------------------------------------
+ * Head thermistor: PC4 (ADC ch 10), stock-exact conversion. Battery: SDK quarter-VBAT channel
+ * (the HAL scales it to mV). Paper: PB3 digital, low = present. A reading that cannot be taken
+ * is reported invalid; callers must treat invalid as "do not heat". */
+static void pb_sensors_prepare(pb_core *c) {
+    int t = pb_pin("PC4"), p = pb_pin("PB3");
+    if (t >= 0 && c->h.set_mode && c->pins[t].mode != PB_ADC &&
+        c->h.set_mode(c->h.ctx, pb_defs[t].port, pb_defs[t].bit, PB_ADC, 0) >= 0)
+        c->pins[t].mode = PB_ADC;
+    if (p >= 0 && c->h.set_mode && c->pins[p].mode != PB_IN &&
+        c->h.set_mode(c->h.ctx, pb_defs[p].port, pb_defs[p].bit, PB_IN, 0) >= 0)
+        c->pins[p].mode = PB_IN;
+    if (t >= 0 && c->h.adc_read && pb_defs[t].adc >= 0)
+        (void)c->h.adc_read(c->h.ctx, pb_defs[t].adc, 0, 0); /* register with the SDK scanner */
+}
+static void pb_sensors_sample(pb_core *c, pb_sensor_snapshot *s) {
+    int t = pb_pin("PC4"), p = pb_pin("PB3");
+    unsigned raw = 0, mv = 0;
+    int temp = 0;
+    memset(s, 0, sizeof *s);
+    s->temp_raw = s->batt_raw = s->batt_mv = 0xFFFFu;
+    if (t >= 0 && c->h.adc_read && pb_defs[t].adc >= 0 && pb_sensor_temperature_calibrated()) {
+        if (c->pins[t].mode != PB_ADC) pb_sensors_prepare(c);
+        if (c->pins[t].mode == PB_ADC && c->h.adc_read(c->h.ctx, pb_defs[t].adc, &raw, &mv) == 0 &&
+            raw <= PB_TUNE_ADC_FULL_SCALE) {
+            s->temp_raw = (uint16_t)raw; /* the raw count is reported even when it is out of range */
+            if (pb_sensor_head_temp_c(raw, &temp)) {
+                s->temp_valid = 1;
+                s->temp_c = (int16_t)temp;
+            }
+        }
+    }
+    if (c->h.adc_read && pb_sensor_battery_calibrated() &&
+        c->h.adc_read(c->h.ctx, -2, &raw, &mv) == 0 && mv > 0u && mv <= 0xFFFEu) {
+        s->batt_valid = 1;
+        s->batt_raw = (uint16_t)raw;
+        s->batt_mv = (uint16_t)mv;
+    }
+    if (p >= 0 && c->h.read_port) {
+        if (c->pins[p].mode != PB_IN) pb_sensors_prepare(c);
+        if (c->pins[p].mode == PB_IN) {
+            s->paper_valid = 1;
+            s->paper_present =
+                (((c->h.read_port(c->h.ctx, pb_defs[p].port) >> pb_defs[p].bit) & 1u) ==
+                 PB_TUNE_PAPER_PRESENT_LEVEL);
+        }
+    }
+}
+static uint8_t pb_sensors_caps(const pb_sensor_snapshot *s) {
+    return (uint8_t)((s->temp_valid ? PB_TBP_SENSOR_CAP_TEMP : 0u) |
+                     (s->batt_valid ? PB_TBP_SENSOR_CAP_BATTERY | PB_TBP_SENSOR_CAP_BATT_MV : 0u) |
+                     (s->paper_valid ? PB_TBP_SENSOR_CAP_PAPER : 0u));
+}
+/* Heater gate verdicts. FAIL carries an error code/arg from spec section 10. */
+typedef enum { PB_GATE_OK, PB_GATE_HOT, PB_GATE_FAIL } pb_gate;
+/* limit_c is the highest temperature at which heating may continue (start: cutoff, mid-row:
+ * abort level). While already waiting hot, the head must also fall below the resume level. */
+static pb_gate pb_heat_gate(const pb_sensor_snapshot *s, int limit_c, int waiting_hot,
+                            uint8_t *code, uint8_t *arg) {
+    *arg = 0;
+    if (!s->temp_valid) { *code = 0x13u; *arg = 1u; return PB_GATE_FAIL; }
+    if (!s->batt_valid) { *code = 0x13u; *arg = 2u; return PB_GATE_FAIL; }
+    if (!s->paper_valid) { *code = 0x13u; *arg = 3u; return PB_GATE_FAIL; }
+    if (!s->paper_present) { *code = 0x10u; return PB_GATE_FAIL; }
+    if (s->batt_mv < PB_TUNE_BATTERY_MIN_MV) { *code = 0x11u; return PB_GATE_FAIL; }
+    if (s->temp_c >= limit_c || (waiting_hot && s->temp_c >= PB_TUNE_TEMP_RESUME_C)) return PB_GATE_HOT;
+    return PB_GATE_OK;
+}
+
 static void pb_init(pb_core *c, const pb_hal *h) {
     static const char *const names[] = {"PB10","PB9","PB8","PB11","PA9","PA10","PC3","PC2"};
     static const uint8_t levels[] = {0,0,1,0,0,1,1,0};
@@ -247,6 +333,7 @@ static void pb_init(pb_core *c, const pb_hal *h) {
             c->pins[k].mode=(uint8_t)mode; c->pins[k].level=levels[j];
         }
     }
+    pb_sensors_prepare(c);
 }
 /* Low-level printer primitives. All timing executes on the MCU, not over USB/WebSocket. */
 static int pb_u32(const char *s, uint32_t *out) {
@@ -306,6 +393,16 @@ static void pb_motor_outputs_release(pb_core *c) {
     for (i = 0; i < 4u; i++) {
         int k = pb_pin(pb_motor_pins[i]);
         if (k >= 0) pb_safe_pin(c, (unsigned)k);
+    }
+}
+/* Idle policy for the stepper coils: release now, or hold for at most idle_hold_ms (CONFIG key 2,
+ * bounded by PB_TUNE_COIL_HOLD_MAX_MS) and let pb_poll release them. */
+static void pb_coils_idle(pb_core *c) {
+    if (!c->tbp_idle_hold_ms) {
+        pb_motor_outputs_release(c);
+        c->tbp_coils_release_at = 0;
+    } else {
+        c->tbp_coils_release_at = (pb_now(c) + c->tbp_idle_hold_ms) | 1u;
     }
 }
 
@@ -463,20 +560,42 @@ static void pb_tbp_record_state(pb_core *c, uint8_t id, uint8_t state) {
 static uint8_t pb_tbp_used(const pb_core *c) {
     return (uint8_t)(c->tbp_qcount + (c->tbp_running ? 1u : 0u));
 }
+static void pb_put16(uint8_t *d, unsigned v) {
+    d[0] = (uint8_t)(v >> 8);
+    d[1] = (uint8_t)v;
+}
 static void pb_tbp_build_stat(pb_core *c, uint8_t stat[13]) {
     unsigned i;
+    pb_sensor_snapshot s;
     for (i = 0; i < 13u; i++) stat[i] = 0;
     for (i = 5; i <= 11u; i++) stat[i] = 0xFFu;
-    stat[0] = c->tbp_stopped ? 3u : (pb_tbp_used(c) ? 2u : 1u);
+    stat[0] = c->tbp_stopped ? 3u : (c->tbp_hot_wait ? 4u : (pb_tbp_used(c) ? 2u : 1u));
     stat[1] = pb_tbp_used(c);
     stat[2] = PB_TBP_QUEUE_DEPTH;
     stat[3] = c->tbp_running ? c->tbp_current.id : 0u;
     stat[4] = c->tbp_last_terminal_valid ? c->tbp_last_terminal_id : 0u;
+    /* Real sensor readings only; FFFF / FF where a reading is unavailable. */
+    pb_sensors_sample(c, &s);
+    pb_put16(stat + 5, s.temp_raw);
+    pb_put16(stat + 7, s.batt_raw);
+    pb_put16(stat + 9, s.batt_mv);
+    stat[11] = s.paper_valid ? (uint8_t)(s.paper_present ? 1u : 0u) : 0xFFu;
+    if (c->tbp_hot_wait) stat[12] |= 1u;
+    if (PB_TBP_DUTY_MAX_US && c->tbp_heat_used_us >= PB_TBP_DUTY_MAX_US &&
+        (uint32_t)(pb_now(c) - c->tbp_heat_window_start) < PB_TBP_DUTY_WINDOW_MS) stat[12] |= 2u;
     if (pb_all_outputs(c, pb_motor_pins, 4)) stat[12] |= 4u;
     {
         int heater = pb_pin("PB11");
         if (heater >= 0 && c->pins[heater].level) stat[12] |= 8u;
     }
+}
+/* Unsolicited EVENT frame (id 00); only sent inside an active session. */
+static void pb_tbp_event(pb_core *c, uint8_t ev, uint8_t arg) {
+    uint8_t body[2];
+    if (!c->tbp_active) return;
+    body[0] = ev;
+    body[1] = arg;
+    pb_tbp_send(c, 0u, 0x84u, body, 2u);
 }
 static int pb_tbp_enqueue(pb_core *c, uint8_t id, uint8_t op, const uint8_t *data, uint8_t len) {
     unsigned tail;
@@ -511,8 +630,8 @@ static void pb_tbp_terminal(pb_core *c, uint8_t state, const uint8_t *body, uint
     c->tbp_last_terminal_valid = 1;
     c->tbp_running = 0;
     c->tbp_exec_stage = 0;
-    if (state == 3u && !c->tbp_qcount && !c->tbp_idle_hold_ms)
-        pb_motor_outputs_release(c);
+    if (state == 3u && !c->tbp_qcount)
+        pb_coils_idle(c);
 }
 static void pb_tbp_cancel_work(pb_core *c, uint8_t reason) {
     uint8_t i, body[1] = {reason};
@@ -534,13 +653,7 @@ static void pb_tbp_cancel_work(pb_core *c, uint8_t reason) {
     c->step_active = 0;
     c->step_done_pending = 0;
     pb_heater_off(c);
-    if (!c->tbp_idle_hold_ms) pb_motor_outputs_release(c);
-}
-static uint8_t pb_tbp_missing_heat_sensor(void) {
-    if (!(PB_TBP_SENSOR_CAPS & PB_TBP_SENSOR_CAP_TEMP)) return 1u;
-    if (!(PB_TBP_SENSOR_CAPS & PB_TBP_SENSOR_CAP_BATTERY)) return 2u;
-    if (!(PB_TBP_SENSOR_CAPS & PB_TBP_SENSOR_CAP_PAPER)) return 3u;
-    return 0u;
+    pb_coils_idle(c);
 }
 static void pb_tbp_fail_stop(pb_core *c, uint8_t code, uint8_t arg) {
     uint8_t error[2] = {code, arg};
@@ -580,6 +693,9 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         c->tbp_qcount--;
         c->tbp_running = 1;
         c->tbp_exec_stage = 0;
+        c->tbp_hot_wait = 0;
+        c->tbp_row_flags = 0;
+        c->tbp_row_snap_valid = 0;
         c->tbp_exec_bit = 0;
         c->tbp_exec_slice = 0;
         c->tbp_exec_progress_at = now + 1000u;
@@ -646,38 +762,69 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         uint8_t slices = cmd->data[53];
         int any = 0;
         for (i = 0; i < 48; i++) if (cmd->data[i]) { any = 1; break; }
-        if (c->tbp_exec_stage == 7u) {
+        if (c->tbp_exec_stage == 8u) { /* HOT_WAIT: heat stays off until the head cools */
+            pb_sensor_snapshot snap;
+            uint8_t code, arg;
+            pb_gate g;
+            pb_sensors_sample(c, &snap);
+            g = pb_heat_gate(&snap, PB_TUNE_TEMP_CUTOFF_C, 1, &code, &arg);
+            if (g == PB_GATE_FAIL) {
+                c->tbp_hot_wait = 0;
+                pb_tbp_event(c, 3u, 0u);
+                pb_tbp_fail_stop(c, code, arg);
+                return;
+            }
+            if (g == PB_GATE_HOT) {
+                if ((uint32_t)(now - c->tbp_hot_since) >= PB_TUNE_HOT_WAIT_MAX_MS) {
+                    c->tbp_hot_wait = 0;
+                    pb_tbp_event(c, 3u, 0u);
+                    pb_tbp_fail_stop(c, 0x12u, 0u); /* OVERTEMP */
+                    return;
+                }
+                if ((int32_t)(now - c->tbp_exec_progress_at) >= 0) {
+                    uint8_t queued[2] = {0u, pb_tbp_used(c)};
+                    pb_tbp_status(c, cmd->id, 1u, queued, sizeof queued);
+                    pb_tbp_record_state(c, cmd->id, 1u);
+                    c->tbp_exec_progress_at = now + 1000u;
+                }
+                return;
+            }
+            c->tbp_hot_wait = 0;
+            pb_tbp_event(c, 3u, 0u);
+            c->tbp_row_flags |= PB_TBP_ROWFLAG_HOT_WAIT;
+            c->tbp_exec_stage = 0; /* run the full start gate again with a fresh sample */
+        }
+        if (c->tbp_exec_stage == 7u) { /* DUTY_WAIT: heat stays off until the duty budget allows this row */
             if (pb_tbp_heat_window_expired(now, c->tbp_heat_window_start)) {
                 c->tbp_heat_window_start = now;
                 c->tbp_heat_used_us = 0;
             }
-            if (burn <= PB_TBP_DUTY_MAX_US &&
-                c->tbp_heat_used_us <= PB_TBP_DUTY_MAX_US - burn) {
-                uint32_t duration = (uint32_t)(steps < 0 ? -steps : steps) * period / 1000u +
-                                    (burn + PB_TBP_SHIFT_US + (uint32_t)slices * PB_TBP_GUARD_US + 999u) / 1000u + 40u;
-                c->tbp_heat_used_us += burn;
-                c->tbp_exec_stage = 1u;
-                c->tbp_exec_bit = 0;
-                if (duration >= 250u) {
-                    pb_tbp_status(c, cmd->id, 2u, 0, 0);
-                    pb_tbp_record_state(c, cmd->id, 2u);
+            if (burn <= PB_TBP_DUTY_MAX_US && c->tbp_heat_used_us <= PB_TBP_DUTY_MAX_US - burn) {
+                c->tbp_exec_stage = 0; /* budget is back: re-run the gates before heating */
+            } else {
+                if ((int32_t)(now - c->tbp_exec_progress_at) >= 0) {
+                    uint8_t queued[2] = {0u, pb_tbp_used(c)};
+                    pb_tbp_status(c, cmd->id, 1u, queued, sizeof queued);
+                    pb_tbp_record_state(c, cmd->id, 1u);
+                    c->tbp_exec_progress_at = now + 1000u;
                 }
                 return;
             }
-            if ((int32_t)(now - c->tbp_exec_progress_at) >= 0) {
-                uint8_t queued[2] = {0u, pb_tbp_used(c)};
-                pb_tbp_status(c, cmd->id, 1u, queued, sizeof queued);
-                pb_tbp_record_state(c, cmd->id, 1u);
-                c->tbp_exec_progress_at = now + 1000u;
-            }
-            return;
         }
         if (!c->tbp_exec_stage && any && burn) {
-            uint8_t missing = pb_tbp_missing_heat_sensor();
-            if (missing) { pb_tbp_fail_stop(c, 0x13u, missing); return; }
-            if (!PB_TBP_HEATER_TIMER_READY || !PB_TBP_BURN_TICK_US || !PB_TBP_GUARD_US ||
-                !PB_TBP_SHIFT_US || !PB_TBP_DUTY_WINDOW_MS || !PB_TBP_DUTY_MAX_US) {
-                pb_tbp_fail_stop(c, 0x14u, 0u);
+            pb_sensor_snapshot snap;
+            uint8_t code, arg;
+            pb_gate g;
+            /* Fail closed: every heat row needs real temperature, battery and paper readings. */
+            pb_sensors_sample(c, &snap);
+            g = pb_heat_gate(&snap, PB_TUNE_TEMP_CUTOFF_C, 0, &code, &arg);
+            if (g == PB_GATE_FAIL) { pb_tbp_fail_stop(c, code, arg); return; }
+            if (g == PB_GATE_HOT) {
+                c->tbp_hot_wait = 1;
+                c->tbp_hot_since = now;
+                c->tbp_exec_stage = 8u;
+                c->tbp_exec_progress_at = now + 1000u;
+                pb_tbp_event(c, 3u, 1u);
                 return;
             }
             if (pb_tbp_heat_window_expired(now, c->tbp_heat_window_start)) {
@@ -689,11 +836,14 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
                 return;
             }
             if (c->tbp_heat_used_us > PB_TBP_DUTY_MAX_US - burn) {
+                c->tbp_row_flags |= PB_TBP_ROWFLAG_DUTY_WAIT;
                 c->tbp_exec_stage = 7u;
                 c->tbp_exec_progress_at = now + 1000u;
                 return;
             }
             c->tbp_heat_used_us += burn;
+            c->tbp_row_snap = snap; /* readings taken when this row's heater was armed */
+            c->tbp_row_snap_valid = 1;
         }
         if (!c->tbp_exec_stage) {
             uint32_t duration = steps ? (uint32_t)(steps < 0 ? -steps : steps) * period / 1000u : 0u;
@@ -745,7 +895,18 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
                 unsigned on = (unsigned)burn / slices + (c->tbp_exec_slice < ((unsigned)burn % slices));
                 c->tbp_exec_slice++;
                 if (on) {
+                    pb_sensor_snapshot snap;
+                    uint8_t code, arg;
+                    pb_gate g;
                     if (c->emergency_abort_requested) return;
+                    /* Re-check every slice: the head may have heated up, the paper may be gone. */
+                    pb_sensors_sample(c, &snap);
+                    g = pb_heat_gate(&snap, PB_TUNE_TEMP_ABORT_C, 0, &code, &arg);
+                    if (g != PB_GATE_OK) {
+                        pb_heater_off(c);
+                        pb_tbp_fail_stop(c, g == PB_GATE_HOT ? 0x12u : code, g == PB_GATE_HOT ? 0u : arg);
+                        return;
+                    }
                     (void)pb_printer_pin(c, "PB11", 1);
                     if (c->emergency_abort_requested) { pb_heater_off(c); return; }
                     pb_wait_us(c, on);
@@ -778,7 +939,13 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         }
         if (c->tbp_exec_stage == 5u && !c->step_active) c->tbp_exec_stage = 6u;
         if (c->tbp_exec_stage == 6u) {
-            result[7] = (uint8_t)(burn >> 8); result[8] = (uint8_t)burn;
+            if (c->tbp_row_snap_valid) {
+                pb_put16(result + 1, c->tbp_row_snap.temp_raw);
+                pb_put16(result + 3, c->tbp_row_snap.batt_raw);
+                pb_put16(result + 5, c->tbp_row_snap.batt_mv);
+            }
+            pb_put16(result + 7, (any && burn) ? burn : 0u);
+            result[11] = (uint8_t)(c->tbp_row_flags | ((any && burn) ? 0u : PB_TBP_ROWFLAG_NO_HEAT));
             { uint32_t pe = steps ? (((uint32_t)period + 999u) / 1000u) * 1000u : 0u; if (pe > 65535u) pe = 65535u; result[9] = (uint8_t)(pe >> 8); result[10] = (uint8_t)pe; }
             pb_tbp_terminal(c, 3u, result, sizeof result);
         }
@@ -840,7 +1007,13 @@ static int pb_tbp_line(pb_core *c, const char *line) {
                             (uint8_t)(PB_TBP_DUTY_WINDOW_MS >> 8), (uint8_t)PB_TBP_DUTY_WINDOW_MS,
                             (uint8_t)(PB_TBP_DUTY_MAX_US >> 8), (uint8_t)PB_TBP_DUTY_MAX_US,
                             (uint8_t)(PB_TBP_SHIFT_US >> 8), (uint8_t)PB_TBP_SHIFT_US,
-                            0xFF, 0xFF, 0xFF, 0xFF, PB_TBP_SENSOR_CAPS, 0, 0, 0, 0, 0, 0, 0, 0};
+                            0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        pb_sensor_snapshot caps_snap;
+        /* Capabilities reflect what the sensors can really deliver right now. */
+        pb_sensors_sample(c, &caps_snap);
+        info[29] = pb_sensors_caps(&caps_snap);
+        if (caps_snap.temp_valid) pb_put16(info + 25, pb_sensor_hot_raw_limit(PB_TUNE_TEMP_CUTOFF_C)); /* hot when raw <= this */
+        /* batt_min_raw stays FFFF: the battery gate is in millivolts (PB_TUNE_BATTERY_MIN_MV), see STAT batt_mv. */
         if (len != 1 || raw[3] != 1) {
             pb_tbp_err(c, id, 4, 1);
             return 1;
@@ -849,6 +1022,11 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         c->tbp_stopped = 0;
         c->emergency_abort_requested = 0;
         c->tbp_hb_interval_ms = 0;
+        c->paper_known = 0;
+        c->paper_cand_n = 0;
+        c->sensor_poll_ms = pb_now(c);
+        c->tbp_hot_wait = 0;
+        c->tbp_coils_release_at = 0;
         c->tbp_idle_hold_ms = 0;
         c->tbp_link_timeout_ms = 0;
         c->tbp_last_frame_ms = pb_now(c);
@@ -960,11 +1138,11 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             }
             effective = value;
         } else if (key == 2u) {
-            if (value != 0u) {
+            if (value && (value < 100u || value > PB_TUNE_COIL_HOLD_MAX_MS)) {
                 pb_tbp_err(c, id, 5, 1);
                 return 1;
             }
-            effective = 0u;
+            effective = value;
         } else if (key == 3u) {
             if (value && (value < 500u || value > 60000u)) {
                 pb_tbp_err(c, id, 5, 1);
@@ -1007,6 +1185,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         if (raw[3]) {
             pb_motor_outputs_init(c);
             pb_drive_motor_phase(c, c->step_phase & 7u);
+            pb_coils_idle(c); /* arm the bounded hold timer */
         } else {
             pb_motor_outputs_release(c);
         }
@@ -1036,6 +1215,10 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         if (slices < 1u ||
             slices > (steps ? (unsigned)(steps < 0 ? -steps : steps) : 1u)) {
             pb_tbp_err(c, id, 5, 53);
+            return 1;
+        }
+        if (burn && ((uint32_t)burn + slices - 1u) / slices > PB_TBP_SLICE_MAX_US) {
+            pb_tbp_err(c, id, 5, 48); /* a single heater pulse would exceed the per-slice limit */
             return 1;
         }
         if (steps && period < PB_TBP_MIN_PERIOD_US) {
@@ -1207,10 +1390,37 @@ static void pb_poll(pb_core *c) {
         c->step_done_pending = 0;
         if (!c->tbp_running) {
             pb_reply(c, "!step done");
-            if (!pb_tbp_used(c) && !c->tbp_idle_hold_ms) pb_motor_outputs_release(c);
+            if (!pb_tbp_used(c)) pb_coils_idle(c);
         }
     }
     pb_tbp_exec_poll(c, now);
+    if (c->tbp_coils_release_at && !pb_tbp_used(c) && !c->step_active &&
+        (int32_t)(now - c->tbp_coils_release_at) >= 0) {
+        pb_motor_outputs_release(c);
+        c->tbp_coils_release_at = 0;
+    }
+    /* Paper monitor: debounced PAPER events from the real PB3 reading (3 samples, 100 ms apart). */
+    if (c->tbp_active && (uint32_t)(now - c->sensor_poll_ms) >= 100u) {
+        pb_sensor_snapshot snap;
+        c->sensor_poll_ms = now;
+        pb_sensors_sample(c, &snap);
+        if (snap.paper_valid) {
+            if (!c->paper_known) {
+                c->paper_known = 1;
+                c->paper_last = snap.paper_present;
+                c->paper_cand_n = 0;
+            } else if (snap.paper_present == c->paper_last) {
+                c->paper_cand_n = 0;
+            } else {
+                c->paper_cand_n++;
+                if (c->paper_cand_n >= 3u) {
+                    c->paper_last = snap.paper_present;
+                    c->paper_cand_n = 0;
+                    pb_tbp_event(c, 2u, snap.paper_present);
+                }
+            }
+        }
+    }
     if (c->tbp_active && c->tbp_link_timeout_ms && pb_tbp_used(c) &&
         (uint32_t)(now - c->tbp_last_frame_ms) >= c->tbp_link_timeout_ms) {
         c->tbp_last_frame_ms = now;

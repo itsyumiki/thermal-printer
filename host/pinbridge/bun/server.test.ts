@@ -150,12 +150,20 @@ describe("TBP fake-transport retry behavior", () => {
     expect(count()).toBe(0);
   });
 
-  test("blocks indefinite coil hold when thermal limits are unavailable", async () => {
-    const { link, count } = fakeLink(() => {});
-    await expect(link.command("coils", { enabled: true })).rejects.toThrow(
-      "Coil hold disabled",
-    );
-    expect(count()).toBe(0);
+  test("coil hold is bounded: it configures idle_hold_ms before energising", async () => {
+    const frames: any[] = [];
+    const { link, count } = fakeLink((wire, _n, current) => {
+      const frame = decode(wire);
+      frames.push(frame);
+      ack(current, frame.id);
+      done(current, frame.id);
+    });
+    await link.command("coils", { enabled: true, holdMs: 3000 });
+    expect(count()).toBe(2);
+    expect(frames[0].op).toBe(0x04); // CONFIG
+    expect([...frames[0].data]).toEqual([2, 0x0b, 0xb8]); // key 2, 3000 ms
+    expect(frames[1].op).toBe(0x20); // COILS
+    expect([...frames[1].data]).toEqual([1]);
   });
 
   test("allows heatless row/feed tests without advertising heater capability", async () => {

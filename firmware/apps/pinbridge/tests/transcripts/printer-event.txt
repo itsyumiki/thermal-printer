@@ -1,4 +1,4 @@
-# PEVENT: heatless shift + latch + async half-steps; nonzero heat is fail-closed.
+# PEVENT: shift + latch + gated heat pulse + async half-steps.
 > MOD PB8 lo
 < ok
 > MOD PB9 lo
@@ -31,7 +31,7 @@
 > PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 0 0 0 0 0
 < ok event
 > PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 2000 0
-< err bsy PEVENT
+< ok event
 @hw PB11=lo
 > PSTEPSTAT
 < ok done

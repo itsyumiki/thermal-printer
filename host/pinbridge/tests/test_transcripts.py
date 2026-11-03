@@ -76,9 +76,11 @@ class TranscriptTests(unittest.TestCase):
         self.assertGreaterEqual(len(cases), 5)
         for case in cases:
             with self.subTest(transcript=case.name):
+                # Transcripts that say "@config real" (or are listed here) need the real pin table.
                 runner = (
                     self.real_binary
-                    if case.name in {"real-table.txt", "printer-low-level.txt", "printer-event.txt", "tbp-move-duplicate.txt", "tbp-row-duplicate.txt", "tbp-estop-busy.txt", "tbp-move-progress.txt", "tbp-move-flush.txt", "tbp-disconnect-cancel.txt", "tbp-queue-fifo.txt", "tbp-watchdog-cancel.txt", "tbp-link-timeout.txt", "tbp-config-heartbeat.txt", "tbp-stat-running-id.txt"}
+                    if "@config real" in case.read_text()
+                    or case.name in {"real-table.txt", "printer-low-level.txt", "printer-event.txt"}
                     else self.binary
                 )
                 subprocess.run(

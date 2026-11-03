@@ -29,13 +29,16 @@ static uint16_t rd(void *x, unsigned p) {
     (void)x;
     return (uint16_t)(pads[p] | outs[p]);
 }
+/* Fake sensors: head raw 412 (~19 degC), battery 4000 mV; @adc directives change them. */
+static unsigned fake_head_raw = 412, fake_vbat_mv = 4000, fake_adc_fail;
 static int adc(void *x, int ch, unsigned *r, unsigned *m) {
     (void)x;
-    (void)ch;
+    if ((ch == -2 && (fake_adc_fail & 2u)) || (ch == 10 && (fake_adc_fail & 1u)))
+        return -1;
     if (r)
-        *r = 412;
+        *r = ch == -2 ? fake_vbat_mv / 8u : ch == 10 ? fake_head_raw : 412;
     if (m)
-        *m = 1219;
+        *m = ch == -2 ? fake_vbat_mv : ch == 10 ? fake_head_raw * 3u : 1219;
     return 0;
 }
 static uint32_t ms(void *x) {
@@ -96,8 +99,8 @@ int main(int argc, char **argv) {
     /* Sensor math must reject unset calibration and invalid divider voltages. */
     {
         unsigned value = 777u;
-        if (pb_sensor_temperature_calibrated() || pb_sensor_battery_calibrated())
-            fail(0, "unset sensor calibration advertised as ready");
+        if (!pb_sensor_temperature_calibrated() || !pb_sensor_battery_calibrated())
+            fail(0, "sensor calibration constants are inconsistent");
         if (!pb_sensor_thermistor_ohms(1000u, 3300u, 56000u, &value) || value != 24347u)
             fail(0, "thermistor divider resistance conversion mismatch");
         value = 777u;
@@ -118,6 +121,26 @@ int main(int argc, char **argv) {
                 temperature != 123456)
                 fail(0, "unset NTC R0 was accepted or output modified");
         }
+    }
+    /* Stock thermistor conversion must match the original firmware's table and evidence points. */
+    {
+        int t = -1, prev = 1000;
+        unsigned raw;
+        if (pb_therm_table[20] != 100000u || pb_therm_table[45] != 30000u)
+            fail(0, "thermistor table anchor mismatch");
+        if (!pb_sensor_head_temp_c(357u, &t) || t != 25)
+            fail(0, "raw 357 should read 25 degC");
+        if (pb_sensor_head_temp_c(900u, &t) || pb_sensor_head_temp_c(20u, &t))
+            fail(0, "open/shorted sensor was accepted");
+        for (raw = 21u; raw <= 899u; raw++) {
+            if (!pb_sensor_head_temp_c(raw, &t) || t > prev)
+                fail(0, "temperature is not monotonic in raw");
+            prev = t;
+        }
+        raw = pb_sensor_hot_raw_limit(PB_TUNE_TEMP_CUTOFF_C);
+        if (!raw || !pb_sensor_head_temp_c(raw, &t) || t < PB_TUNE_TEMP_CUTOFF_C ||
+            (pb_sensor_head_temp_c(raw + 1u, &t) && t >= PB_TUNE_TEMP_CUTOFF_C))
+            fail(0, "hot raw limit is not the boundary");
     }
     pb_init(&c, &h);
     active_core = &c;
@@ -206,6 +229,20 @@ int main(int argc, char **argv) {
                 }
                 continue;
             }
+            if (sscanf(s, "@heat-used %u", &a) == 1) { /* pretend the duty budget is partly spent right now */
+                c.tbp_heat_used_us = a;
+                c.tbp_heat_window_start = now_ms;
+                continue;
+            }
+            if (!strcmp(s, "@dump")) { /* debug aid for authoring transcripts: print and discard pending output */
+                printf("@@\n%s", output);
+                used = 0;
+                output[0] = 0;
+                continue;
+            }
+            if (sscanf(s, "@adc head=%u", &a) == 1) { fake_head_raw = a; continue; }
+            if (sscanf(s, "@adc vbat=%u", &a) == 1) { fake_vbat_mv = a; continue; }
+            if (sscanf(s, "@adc fail=%u", &a) == 1) { fake_adc_fail = a; continue; }
             if (sscanf(s, "@pad %15[^=]=%15s", pin, val) == 2) {
                 int i = pb_pin(pin);
                 if (i < 0)
@@ -240,6 +277,8 @@ int main(int argc, char **argv) {
                         fail(ln, "@hw expected input");
                     if (!strcmp(state, "hiz") && m != PB_HIZ)
                         fail(ln, "@hw expected high impedance");
+                    if (!strcmp(state, "out") && m != PB_LO && m != PB_HI)
+                        fail(ln, "@hw expected driven output");
                     q += n;
                     while (*q == ' ')
                         q++;

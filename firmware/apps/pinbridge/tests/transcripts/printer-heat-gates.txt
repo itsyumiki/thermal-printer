@@ -1,0 +1,46 @@
+# Legacy PHEAT/PEVENT use the same gates as a TBP ROW; raw PB11-high stays blocked.
+@config real
+> MOD PB8 lo
+< ok
+> MOD PB9 lo
+< ok
+> MOD PB10 lo
+< ok
+> MOD PB11 lo
+< ok
+> PHEAT 100
+< ok
+@hw PB11=lo
+> SET PB11=1
+< err bsy PB11
+@pad PB3=1
+> PHEAT 100
+< err nopaper PHEAT
+@pad PB3=0
+@adc vbat=3000
+> PHEAT 100
+< err lowbat PHEAT
+@adc vbat=4000
+@adc fail=1
+> PHEAT 100
+< err sensor PHEAT
+@adc fail=0
+@adc head=60
+> PHEAT 100
+< err hot PHEAT
+@hw PB11=lo
+# A refused PEVENT does nothing: no shift, no latch, no heat.
+@writes-reset
+> PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 2000 0
+< err hot PEVENT
+@writes-zero
+@adc head=412
+> PEVENT 000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff000000ffffff 2 1 2 2000 0
+< ok event
+@hw PB11=lo
+> PHEAT 2501
+< err arg PHEAT
+@heat-used 59000
+> PHEAT 2000
+< err duty PHEAT
+@hw PB11=lo

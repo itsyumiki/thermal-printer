@@ -560,11 +560,11 @@ export class PrinterLink {
       i.dutyMaxUs <= 0 ||
       i.shiftUs <= 0 ||
       i.tempLimitRaw === 0xffff ||
-      i.battMinRaw === 0xffff ||
+      (i.battMinRaw === 0xffff && !(i.caps & 0x04)) ||
       (i.caps & requiredSensors) !== requiredSensors
     ) {
       throw new Error(
-        "Heating disabled: firmware has no validated temperature, battery, and paper sensors or calibrated heater/duty limits; use burnUs=0 for heatless feed tests.",
+        "Heating disabled: the firmware does not report valid temperature, battery and paper readings or heater/duty limits right now (check the printer has paper, battery and a connected head sensor); use burnUs=0 for heatless feed tests.",
       );
     }
   }
@@ -673,8 +673,15 @@ export class PrinterLink {
       }
       case "coils":
         if (msg.enabled && !this.mock) {
-          throw new Error(
-            "Coil hold disabled until motor-coil thermal limits are measured; motion commands release coils automatically.",
+          // The firmware only holds coils for a bounded time (CONFIG idle_hold_ms, max 10 s) and then releases them.
+          const holdMs = Math.max(
+            100,
+            Math.min(10000, Number(msg.holdMs ?? 5000)),
+          );
+          await this.transact(
+            OP.CONFIG,
+            join(Uint8Array.of(2), u16(holdMs)),
+            true,
           );
         }
         await this.transact(OP.COILS, Uint8Array.of(msg.enabled ? 1 : 0), true);

@@ -130,7 +130,7 @@ function setConnection(c) {
     info.dutyMaxUs > 0 &&
     info.shiftUs > 0 &&
     info.tempLimitRaw !== 0xffff &&
-    info.battMinRaw !== 0xffff &&
+    (info.battMinRaw !== 0xffff || !!(info.caps & 0x04)) &&
     (info.caps & requiredSensors) === requiredSensors
   );
   $("burnUs").max = String(heatReady ? info.burnMaxUs : 0);
@@ -233,7 +233,7 @@ function setTelemetry(t) {
     state.info.dutyMaxUs > 0 &&
     state.info.shiftUs > 0 &&
     state.info.tempLimitRaw !== 0xffff &&
-    state.info.battMinRaw !== 0xffff &&
+    (state.info.battMinRaw !== 0xffff || !!(state.info.caps & 0x04)) &&
     (state.info.caps & 0x0b) === 0x0b
   );
   $("jobState").textContent =

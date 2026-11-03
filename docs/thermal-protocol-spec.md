@@ -244,7 +244,7 @@ Starts or restarts a session.
 | 29 | caps | u8 | bit 0 temp sensor valid, bit 1 battery sensor valid, bit 2 battery mV calibrated, bit 3 paper sensor valid |
 | 30 | uid | 8 bytes | Chip unique id if available, else zeros. Hosts use it to select a calibration profile. |
 
-INFO body is 38 bytes, excluding the leading `state` byte in the enclosing STATUS DATA. Thus the full STATUS DATA is 39 bytes. All limits are fixed in firmware and not writable by the host. Until sensor mappings/calibration and thermal limits are validated, this build reports `caps=0`, unavailable raw sensor values, and zero heater/duty/shift fields. Zero heater capability is a fail-closed state, not a nominal operating limit.
+INFO body is 38 bytes, excluding the leading `state` byte in the enclosing STATUS DATA. Thus the full STATUS DATA is 39 bytes. All limits are fixed in firmware and not writable by the host. `caps` is computed from the sensors' live validity at HELLO time; a capability bit is never set unless a real reading was just obtained. `temp_limit_raw` is the raw count at or below which the head is too hot to start heating (the NTC is the low side of the divider, so hotter means *lower* raw). `batt_min_raw` is `FFFF` because this firmware gates the battery in millivolts (see STAT `batt_mv`); hosts must accept caps bit 2 (battery mV calibrated) instead.
 
 ### 7.2 `03` FLUSH
 
@@ -276,7 +276,7 @@ Heater off at once; the running command is aborted at the next step boundary; al
 | Key | Name | Range | Default |
 |---|---|---|---|
 | `01` | hb_interval_ms | `0` (off) or 100 to 60000 | 0 (off) |
-| `02` | idle_hold_ms | `0` only in current build | 0; nonzero hold rejected until coil thermal limits are measured |
+| `02` | idle_hold_ms | `0` (release immediately) or 100 to 10000 | 0; coils are released automatically when the hold expires |
 | `03` | link_timeout_ms | `0` (off) or 500 to 60000 | 0 (off) |
 
 CONFIG validates and stores effective values. Heartbeat interval and link timeout are applied; heartbeat is opt-in and disabled by default. Key 2 accepts only zero because coil thermal limits are unmeasured. Motor outputs remain high-impedance until motion is requested and release immediately after completion. With `link_timeout_ms` set, if no valid frame arrives for that long while work is queued or running, the printer behaves as FLUSH with `CANCELLED` reason `04`. Interface disconnect always has this effect immediately (section 12).
@@ -363,14 +363,14 @@ A stationary burn (`steps = 0`) is legal and is the building block for gray (sec
 
 | Limit | Behaviour |
 |---|---|
-| `burn_max_us` per ROW | Current value `0` disables heating; any nonzero ROW `burn_us` is rejected at parse with ERR RANGE, offset 48. The historical 6000 µs demo value is not treated as a validated safe limit. |
-| Duty: at most `duty_max_us` heater-on per sliding `duty_window_ms` | Both fields are currently `0` (unavailable). A future nonzero-burn build must configure both; cumulative budget exhaustion waits in DUTY_WAIT and a single row larger than the window budget fails DUTY_LIMIT. |
-| `guard_us` and `burn_tick_us` | Currently `0`; heater timer and pulse gap are unavailable. They must be calibrated before heating can be enabled. |
-| Head temperature: raw ADC above `temp_limit_raw` | No validated sensor capability is advertised. If a reviewed future build enables a burn maximum without temperature sensing, a heat row fails SENSOR and triggers fail-stop cancellation. |
-| Battery: raw ADC below `batt_min_raw` | Battery mapping/calibration is unavailable; a future heat-enabled build must gate on it. |
-| Paper: not present | PB3 mapping is unvalidated; a future heat-enabled build must gate on it. |
-| Sensor invalid | Future heat-enabled build: FAILED SENSOR, heater off, queued jobs CANCELLED reason `03`. Current build rejects all nonzero heat before acceptance. |
-| Heater on only inside a ROW's heater-timer window | Heater is off in every other state, including STOPPED, IDLE, session loss and boot. PHEAT, heat-bearing PEVENT and direct PB11-high are blocked. |
+| `burn_max_us` per ROW | 10000 us. Larger values are rejected at parse with ERR RANGE, offset 48. A single heater pulse (`ceil(burn_us / slices)`) may not exceed the per-slice maximum of 2500 us (also ERR RANGE offset 48). Values are owner decisions derived from stock evidence (best stock quality 2.22 ms per event, hard cutoff 6 ms), not bench measurements. |
+| Duty: at most `duty_max_us` heater-on per `duty_window_ms` | 60000 us per 200 ms. A row that does not fit waits with heat off (DUTY_WAIT flag, QUEUED progress); a single row larger than the budget fails INTERNAL. Window accounting is a fixed (not sliding) window. |
+| `guard_us` and `burn_tick_us` | 100 us gap between slices; 1 us tick (software-timed, calibrated delay loop). |
+| Head temperature | Stock conversion of PC4. Heating may not *start* at or above 70 degC; a row already heating aborts at 75 degC (OVERTEMP, fail-stop, queue cancelled). A hot row waits with heat off until the head is below 50 degC (state WAIT_HOT, EVENT HOT, HOT_WAIT flag) and fails OVERTEMP after 60 s. |
+| Battery | Quarter-VBAT SDK channel in mV; below 3400 mV a heat row fails LOWBAT. |
+| Paper | PB3 low = present. Absent at start or before any slice: FAILED NOPAPER. |
+| Sensor invalid | Open/shorted/unreadable temperature, unreadable battery or paper: FAILED SENSOR (arg 01/02/03), heater off, queued jobs CANCELLED reason `03`. Gates are re-run before every heater slice. |
+| Heater on only inside a ROW slice or a gated PHEAT/PEVENT pulse | Heater is off in every other state, including STOPPED, IDLE, session loss and boot. Direct PB11-high through MOD/SET is blocked because it bypasses every gate. |
 
 ### 9.2 What the host can and cannot do
 

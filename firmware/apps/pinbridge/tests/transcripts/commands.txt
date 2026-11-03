@@ -12,7 +12,7 @@
 > STA PC7
 < ok PC7=hi
 > LSN PB3
-< err mod PB3
+< ok
 > MOD PB1 up
 < ok
 > LSN PB1

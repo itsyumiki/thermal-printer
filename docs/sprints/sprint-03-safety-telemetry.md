@@ -41,7 +41,7 @@ List each confirmed pin/sensor mapping, safety constant and evidence, plus remai
 
 ## Implementation checkpoint — 2026-11-02
 
-Status: **owner-confirmed pin/peripheral mappings; fail-closed software protections implemented; Sprint 3 remains in progress for sensor acquisition/calibration and safety-limit validation**.
+Status (superseded by the 2026-11-02 completion section below): owner-confirmed pin/peripheral mappings; fail-closed software protections implemented.
 
 ### Owner hardware confirmation — 2026-11-02
 
@@ -80,3 +80,45 @@ These tuning inputs do **not** alter the active fail-closed gate: sensor capabil
 ### Sensor math foundation — 2026-11-02
 
 `src/pb_sensors.h` adds pure helper functions for calibration-readiness checks, NTC divider resistance, beta-equation temperature conversion in milli-degrees C, and battery-divider voltage, with C tests for valid arithmetic and invalid/unset inputs. These helpers do not sample hardware, calculate temperature, filter readings, or set capability bits. With current zero/unset calibration inputs, readiness remains false and the heater gate remains closed. Next work is to add measured ADC sampling/freshness and validated thermistor temperature conversion, then fault-state handling and tests before advertising any sensor capability.
+
+
+## Sprint 3 completion — 2026-11-02 (software complete; hardware validation outstanding)
+
+Status: **software acceptance criteria met; heater is enabled behind real sensor gates; nothing here has been built by CI or run on hardware yet.** The owner explicitly asked for heaters to be enabled; the numeric limits below are therefore *owner decisions derived from stock-firmware evidence*, not bench measurements.
+
+### What changed
+
+- **Real sensor acquisition** (`pb_core.h`, `pb_sensors.h`): head temperature from PC4 / SDK ADC ch 10 using the stock conversion bit-for-bit (10-bit raw, 56 kOhm pull-up, 101-entry stock resistance table in `pb_thermistor_table.h`, raw > 899 = open sensor; raw <= 20 is additionally rejected as a shorted sensor). Battery from the SDK's calibrated quarter-VBAT channel (mV, HAL scales by 4; PC5's divider is not used). Paper from PB3 digital level (low = present, the polarity of the previously working status poll; stock ADC6 < 901 agrees). ADC channels are registered at boot and the pins are forced back to ADC/input mode if something changes them.
+- **Truthful INFO/STAT**: INFO caps are computed from live sensor validity (temp, battery, battery-mV, paper), `temp_limit_raw` is the real hot boundary (head too hot when raw <= value), `batt_min_raw` stays `FFFF` because the battery gate is in millivolts. STAT carries real raw/mV/paper values (`FFFF`/`FF` when unavailable), state `04 WAIT_HOT`, and flag bits 0 (temperature gate active) and 1 (duty budget exhausted).
+- **Heater gate** (same code for TBP ROW and legacy PHEAT/PEVENT): needs valid temperature, battery and paper readings, paper present (`NOPAPER 10`), battery >= limit (`LOWBAT 11`), head below the start cutoff. Sensor faults give `SENSOR 13` with arg 1/2/3. The gate is re-run before **every heater slice** with the stock 75 degC abort level (`OVERTEMP 12`, fail-stop, queue cancelled).
+- **HOT wait**: a row that finds the head too hot waits with heat off, emits `EVENT HOT [1]`, reports `WAIT_HOT`/QUEUED progress each second, resumes below the resume level with `EVENT HOT [0]` and the `HOT_WAIT` result flag, or fails `OVERTEMP` after 60 s. **DUTY wait** works the same way (`DUTY_WAIT` flag) and the start gates are re-run when the budget returns.
+- **Per-slice limit**: any single heater pulse above `PB_TBP_SLICE_MAX_US` is rejected at parse (`ERR RANGE`, offset 48); `burn_max_us`, guard, duty window/budget, tick and shift are now advertised in INFO.
+- **ROW DONE telemetry**: temp/battery raw and mV sampled when the heater was armed, real `burn_eff_us`/`period_eff_us`, flags `DUTY_WAIT`, `HOT_WAIT`, `NO_HEAT`. COLD_START/STRETCHED/LATE stay 0 until Sprint 4 can detect them honestly.
+- **PAPER event**: debounced (3 samples, 100 ms apart) from the real PB3 reading, only inside an active session.
+- **Bounded coil hold**: CONFIG `idle_hold_ms` accepts 0 or 100..10000 ms; firmware releases the coils when the hold expires. The Bun host sends CONFIG before COILS.
+- **Still blocked on purpose**: `MOD PB11 hi` / `SET PB11=1`. Raw PB11-high has no on-time limit and bypasses every gate above. Use ROW/PHEAT/PEVENT.
+
+### Numeric limits (all in `pb_tuning.h`; edit there)
+
+| Limit | Value | Basis |
+|---|---|---|
+| per-pulse max (`slice`) | 2500 us | OWNER, stock best quality is ~2.22 ms/event (hard cutoff 6 ms) |
+| ROW `burn_max_us` | 10000 us | OWNER, 4 events x 2.22 ms |
+| duty | 60000 us / 200 ms (30 %) | OWNER, stock full-black is ~33-37 % |
+| guard / tick / shift | 100 us / 1 us / 3000 us | pre-sprint-3 values; shift is an estimate, not scope-measured |
+| head start cutoff / abort / resume | 70 / 75 / 50 degC | OWNER (5 degC under stock's 75 because stock tolerates 10 s) / STOCK / STOCK |
+| hot-wait timeout | 60 s | OWNER |
+| battery minimum | 3400 mV | OWNER, unverified: check `ADC vbat` against a meter first |
+| coil hold max | 10000 ms | OWNER |
+
+### Verification
+
+- Python/C suite (35 tests incl. the new `tbp-heat-gates.txt` and `printer-heat-gates.txt` transcripts), Bun suite (21 tests), `check-pinbridge.sh`: pass locally. Firmware has **not** been built with the SDK or flashed by the agent.
+
+### Remaining hardware-only validation (do before trusting prints)
+
+1. `ADC vbat` against a multimeter; adjust `PB_TUNE_BATTERY_MIN_MV` if the reading is off.
+2. Head temperature at room temperature (`STAT` raw ~ 350..450 at 20-25 degC), then warm the head and confirm it rises and the HOT wait triggers.
+3. Paper polarity on PB3 (STAT paper byte 01 with paper loaded).
+4. Scope PB11 on-time against the requested burn; confirm the guard gap and that ESTOP kills a pulse in progress.
+5. Start with short, low-burn test rows and watch head temperature before raising `PB_TUNE_HEATER_*`.

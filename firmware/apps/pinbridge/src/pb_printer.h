@@ -152,6 +152,32 @@ static void pb_step_start(pb_core *c, int reverse, uint32_t count, uint32_t gap_
         pb_drive_motor_phase(c, c->step_phase & 7u); /* resume from the remembered phase */
 }
 
+/* One gated heater pulse for the legacy PHEAT/PEVENT commands. Same gates as a TBP ROW: real
+ * temperature/battery/paper readings, the start temperature cutoff, the per-pulse maximum and the
+ * shared duty budget. Returns NULL after the pulse, or the legacy error code and no heat. */
+static const char *pb_legacy_heat(pb_core *c, unsigned us) {
+    pb_sensor_snapshot snap;
+    uint8_t code, arg;
+    pb_gate g;
+    uint32_t now = pb_now(c);
+    if (!us) return 0;
+    if (us > PB_TBP_SLICE_MAX_US) return "range";
+    pb_sensors_sample(c, &snap);
+    g = pb_heat_gate(&snap, PB_TUNE_TEMP_CUTOFF_C, 0, &code, &arg);
+    if (g == PB_GATE_HOT) return "hot";
+    if (g == PB_GATE_FAIL) return code == 0x10u ? "nopaper" : code == 0x11u ? "lowbat" : "sensor";
+    if (PB_TBP_DUTY_WINDOW_MS && (uint32_t)(now - c->tbp_heat_window_start) >= PB_TBP_DUTY_WINDOW_MS) {
+        c->tbp_heat_window_start = now;
+        c->tbp_heat_used_us = 0;
+    }
+    if (us > PB_TBP_DUTY_MAX_US || c->tbp_heat_used_us > PB_TBP_DUTY_MAX_US - us) return "duty";
+    c->tbp_heat_used_us += us;
+    if (pb_printer_pin(c, "PB11", 1) < 0) return "mod";
+    pb_wait_us(c, us);
+    pb_heater_off(c);
+    return 0;
+}
+
 static void pb_printer_command(pb_core *c, char **v, int n) {
     static const char *const headpins[] = {"PB10", "PB9", "PB8", "PB11"};
     uint32_t a, b, count;
@@ -203,13 +229,27 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
         return;
     }
     if (pb_eq(v[0], "PHEAT")) {
-        if (n != 2 || !pb_u32(v[1], &a)) {
+        const char *why;
+        if (n != 2 || !pb_u32(v[1], &a) || a > PB_TUNE_HEATER_REQUEST_MAX_US) {
             pb_error(c, "arg", "PHEAT");
             return;
         }
-        /* No validated temperature/battery/paper sensors or calibrated heater timer. */
-        pb_heater_off(c);
-        pb_error(c, "bsy", "PHEAT");
+        if (pb_tbp_used(c)) {
+            pb_error(c, "bsy", "PHEAT");
+            return;
+        }
+        if (!pb_all_outputs(c, headpins, 4)) {
+            pb_error(c, "mod", "PB11");
+            return;
+        }
+        why = pb_legacy_heat(c, (unsigned)a);
+        if (why) {
+            pb_heater_off(c);
+            pb_error(c, why, "PHEAT");
+            return;
+        }
+        pb_reply(c, "ok");
+        c->last_feed = pb_now(c);
         return;
     }
     if (pb_eq(v[0], "PSTEP")) {
@@ -234,7 +274,7 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
         return;
     }
     if (pb_eq(v[0], "PEVENT")) {
-        /* Legacy heat-bearing events are disabled until sensors and heater timing are validated. */
+        /* Legacy event: heat goes through the same gates as a TBP ROW (pb_legacy_heat). */
         uint32_t latch_us, heat_us;
         if (n != 7 || strlen(v[1]) != 96 || !pb_u32(v[2], &a) || !pb_u32(v[3], &b) ||
             !pb_u32(v[4], &latch_us) || !pb_u32(v[5], &heat_us) || !pb_u32(v[6], &count) ||
@@ -245,11 +285,6 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
         }
         if (!pb_hex_row_ok(v[1])) {
             pb_error(c, "hex", "PEVENT");
-            return;
-        }
-        if (heat_us) {
-            pb_heater_off(c);
-            pb_error(c, "bsy", "PEVENT");
             return;
         }
         if (pb_tbp_used(c) || c->step_active) {
@@ -266,10 +301,31 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
             pb_error(c, "mod", "PA9");
             return;
         }
+        if (heat_us) {
+            /* Check the gates before any head output changes; a refused event does nothing. */
+            pb_sensor_snapshot snap;
+            uint8_t code, arg;
+            pb_gate g;
+            pb_sensors_sample(c, &snap);
+            g = pb_heat_gate(&snap, PB_TUNE_TEMP_CUTOFF_C, 0, &code, &arg);
+            if (g != PB_GATE_OK) {
+                pb_heater_off(c);
+                pb_error(c, g == PB_GATE_HOT ? "hot" : code == 0x10u ? "nopaper" : code == 0x11u ? "lowbat" : "sensor", "PEVENT");
+                return;
+            }
+        }
         pb_shift_head_row(c, v[1], (unsigned)a, (unsigned)b);
         (void)pb_printer_pin(c, "PB8", 0);
         pb_wait_us(c, (unsigned)latch_us);
         (void)pb_printer_pin(c, "PB8", 1);
+        if (heat_us) {
+            const char *why = pb_legacy_heat(c, (unsigned)heat_us); /* re-checks the gates right before heat */
+            if (why) {
+                pb_heater_off(c);
+                pb_error(c, why, "PEVENT");
+                return;
+            }
+        }
         pb_heater_off(c);
         if (count) pb_step_start(c, 0, count + 1u, 0, PB_TBP_MIN_PERIOD_US);
         c->last_feed = pb_now(c);
