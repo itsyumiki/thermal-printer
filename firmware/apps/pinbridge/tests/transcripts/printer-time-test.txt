@@ -1,0 +1,45 @@
+# PTIME timer self-test command: parsing, defaults, limits and the busy gate (the real work is app.c, hardware only).
+@config real
+> PTIME T3D16
+< ptime begin T3D16 want=1000000
+< ok ptime T3D16 n=1 want=1000000
+> ptime jiffy 250
+< ptime begin JIFFY want=250000
+< ok ptime JIFFY n=1 want=250000
+> PTIME DELAY2 3000
+< ptime begin DELAY2 want=3000000
+< ok ptime DELAY2 n=1 want=3000000
+> PTIME STEP 100
+< ptime begin STEP want=100000
+< ok ptime STEP n=1 want=100000
+# Out of range, unknown source and missing/extra arguments are argument errors, nothing runs.
+> PTIME
+< err arg PTIME
+> PTIME T3D16 99
+< err arg PTIME
+> PTIME T3D16 3001
+< err arg PTIME
+> PTIME T3D16 abc
+< err arg PTIME
+> PTIME NOPE
+< err arg PTIME
+> PTIME T3D16 1000 5
+< err arg PTIME
+# The hook can refuse before it writes anything.
+> PTIME T3D16 2998
+< err bsy PTIME
+> PTIME T3D16 2999
+< err fail PTIME
+# Not while the stepper is running: the stalled command task would freeze the motion.
+> MOD PA9 lo
+< ok
+> MOD PA10 lo
+< ok
+> MOD PC3 lo
+< ok
+> MOD PC2 lo
+< ok
+> PSTEP FWD 100 5000 1000
+< ok started
+> PTIME T3D16
+< err bsy PTIME

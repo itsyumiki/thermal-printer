@@ -10,6 +10,18 @@ static const uint8_t pb_motor_phases[8][4] = {{0, 1, 1, 0}, {0, 1, 0, 0}, {0, 1,
                                               {0, 0, 0, 1}, {1, 0, 0, 1}, {1, 0, 0, 0},
                                               {1, 0, 1, 0}, {0, 0, 1, 0}};
 
+/* Timer self-test sources for PTIME. Order matters: app.c switches on these indices.
+ * T3Dn  = heater timer (TIMER3) at divider n, compare mode, counting a fixed number of compare periods
+ * STEP  = SDK 1 ms hi-res timer (the stepper tick), counting callbacks
+ * JIFFY = SDK jiffies counter, assumed 10 ms per jiffy
+ * DELAY / DELAY2 = hal_delay_us(1000) / hal_delay_us(2) called back to back */
+#define PB_TIME_NSRC 8u
+static const char *const pb_time_srcs[PB_TIME_NSRC] = {"T3D4", "T3D16", "T3D64", "T3D256",
+                                                         "STEP", "JIFFY", "DELAY", "DELAY2"};
+#define PB_TIME_MS_MIN 100u
+#define PB_TIME_MS_MAX 3000u
+#define PB_TIME_MS_DEFAULT 1000u
+
 static int pb_hexbyte(const char *s, unsigned *out) {
     unsigned v = 0, i;
     for (i = 0; i < 2; i++) {
@@ -446,6 +458,37 @@ static void pb_printer_command(pb_core *c, char **v, int n) {
             return;
         }
         pb_reply(c, c->step_active ? "ok busy" : "ok done");
+        c->last_feed = pb_now(c);
+        return;
+    }
+    if (pb_eq(v[0], "PTIME")) {
+        /* PTIME <src> [ms]: blocking timer check. The host timestamps the "ptime begin" and "ok ptime" lines
+         * and compares the wall time with what the timer claims it counted. Refused while anything else
+         * could be using a timer or the head, because the command task is stalled for the whole run. */
+        unsigned src = 0;
+        uint32_t ms = PB_TIME_MS_DEFAULT;
+        int rc;
+        while (src < PB_TIME_NSRC && (n < 2 || !pb_eq(v[1], pb_time_srcs[src])))
+            src++;
+        if (n < 2 || n > 3 || src >= PB_TIME_NSRC || (n == 3 && !pb_u32(v[2], &ms)) ||
+            ms < PB_TIME_MS_MIN || ms > PB_TIME_MS_MAX) {
+            pb_error(c, "arg", "PTIME");
+            return;
+        }
+        if (!c->h.time_test) {
+            pb_error(c, "nosup", "PTIME");
+            return;
+        }
+        if (pb_tbp_used(c) || c->step_active || c->step_timer_id ||
+            (c->h.heater_pulse_active && c->h.heater_pulse_active(c->h.ctx))) {
+            pb_error(c, "bsy", "PTIME");
+            return;
+        }
+        rc = c->h.time_test(c->h.ctx, src, (unsigned)ms);
+        if (rc == 1)
+            pb_error(c, "bsy", "PTIME");
+        else if (rc)
+            pb_error(c, "fail", "PTIME");
         c->last_feed = pb_now(c);
         return;
     }

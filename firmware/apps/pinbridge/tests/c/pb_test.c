@@ -65,6 +65,20 @@ static int tx(void *x, const char *s, size_t n) {
     output[used] = 0;
     return 1;
 }
+/* Fake PTIME hook: echoes what the core passed so transcripts can check parsing and the busy gate.
+ * ms 2998 / 2999 make it return the "busy" / "cannot start" codes before any output. */
+static int fake_time_test(void *x, unsigned src, unsigned ms) {
+    char b[96];
+    (void)x;
+    if (ms == 2998u)
+        return 1;
+    if (ms == 2999u)
+        return 2;
+    snprintf(b, sizeof b, "ptime begin %s want=%u\nok ptime %s n=1 want=%u\n", pb_time_srcs[src], ms * 1000u,
+             pb_time_srcs[src], ms * 1000u);
+    tx(0, b, strlen(b));
+    return 0;
+}
 static void fail(unsigned line, const char *msg) {
     fprintf(stderr, "line %u: %s (pending output: %s)\n", line, msg, output);
     exit(1);
@@ -84,7 +98,7 @@ static void consume(unsigned line, const char *expect) {
 }
 int main(int argc, char **argv) {
     pb_core c;
-    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, delay_us, wr, 0, 0, 0}; /* wr doubles as the fast writer */
+    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, delay_us, wr, 0, 0, 0, fake_time_test}; /* wr doubles as the fast writer */
     FILE *f;
     char line[2048];
     unsigned ln = 0;

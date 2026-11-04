@@ -82,6 +82,11 @@ typedef struct {
     int (*heater_pulse_start)(void *, unsigned);
     int (*heater_pulse_active)(void *);
     void (*heater_pulse_cancel)(void *);
+    /* Optional blocking timer self-test behind PTIME (see pb_printer.h). It writes its own
+     * "ptime begin ..." and final "ok ptime ..." / "err ..." lines straight to the host so the line
+     * timestamps bracket the counted interval. Returns 0 once the final line was written, or
+     * nonzero (1 busy, 2 cannot start) BEFORE any output so the core can answer with an error. */
+    int (*time_test)(void *, unsigned src, unsigned ms);
 } pb_hal;
 typedef struct {
     uint8_t id, op, len, queued_status_sent;
@@ -1739,7 +1744,7 @@ static void pb_command(pb_core *c, char *line) {
     }
     if (pb_eq(v[0], "PHEAD") || pb_eq(v[0], "PLATCH") || pb_eq(v[0], "PHEAT") ||
         pb_eq(v[0], "PSTEP") || pb_eq(v[0], "PSTEPSTAT") || pb_eq(v[0], "PDIAG") || pb_eq(v[0], "PHDIAG") ||
-        pb_eq(v[0], "PEVENT"))
+        pb_eq(v[0], "PTIME") || pb_eq(v[0], "PEVENT"))
         pb_printer_command(c, v, n);
     else if (pb_eq(v[0], "HEL") || pb_eq(v[0], "DBG") || pb_eq(v[0], "WDG") || pb_eq(v[0], "RST"))
         pb_control_command(c, v, n, now);

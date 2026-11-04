@@ -61,6 +61,20 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         for field in ("starts=", "isr=", "poll=", "over=", "cnt=", "con="):
             self.assertIn(field, printer)
 
+    def test_ptime_self_test_brackets_the_count_with_direct_usb_lines(self):
+        # PTIME busy-waits in the command task, which tx_task (lower priority) cannot preempt, so the
+        # begin/end lines must go straight to USB or the host timestamps would not bracket the count.
+        source = APP.read_text(encoding="utf-8")
+        start = source[source.index("static int hal_time_test"):source.index("static void pb_step_timer")]
+        self.assertIn("cdc_write_data(PB_USB", source[source.index("static int pt_out"):source.index("static void pt_kv")])
+        self.assertIn('"ptime begin "', start)
+        self.assertIn('"ok ptime "', start)
+        self.assertIn("wdt_clear();", start)  # 4 s watchdog, runs last up to 3 s
+        self.assertIn(".time_test = hal_time_test", source)
+        self.assertNotIn("tx_write", start)  # never via the ring
+        self.assertNotIn("PB11", start)  # never touches the heater pin
+        self.assertNotIn("irq_disable", start)  # the run should also show whether the compare IRQ fires
+
     def test_motor_phase_callback_uses_irq_safe_port_writer(self):
         printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
         phase = printer[printer.index("static void pb_drive_motor_phase"):printer.index("/* A head port") if "/* A head port" in printer else printer.index("/* Shift one fully validated")]

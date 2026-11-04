@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { PrinterLink } from "./server.ts";
+import { PrinterLink, summarizeTimeRuns, TIME_TEST_SOURCES } from "./server.ts";
 import { decode, encode, KIND, OP, STATE } from "./tbp.ts";
 
 const links: PrinterLink[] = [];
@@ -588,5 +588,122 @@ describe("text diagnostics", () => {
       /Unknown diagnostic/,
     );
     expect(count()).toBe(0);
+  });
+});
+
+describe("timer self-test (PTIME)", () => {
+  const T3_END =
+    "ok ptime T3D16 n=25 want=1000000 dj=100 ticks=1500000 div=16 isr=0";
+  test("averages the host wall time between the begin and end lines", async () => {
+    const walls = [1000, 1010, 990];
+    const sent: string[] = [];
+    let run = 0;
+    let t = 0;
+    const { link } = fakeLink((wire, _n, l) => {
+      sent.push(wire);
+      const wall = walls[run++];
+      queueMicrotask(() => {
+        t = 5000 * run; // each run starts at a different absolute time
+        l.onLine("ptime begin T3D16 want=1000000");
+        t += wall;
+        l.onLine(T3_END);
+      });
+    });
+    link.clock = () => t;
+    const r = await link.command("time-test", { src: "T3D16", reps: 3 });
+    expect(sent).toEqual(Array(3).fill("PTIME T3D16 1000\n"));
+    expect(r.runs).toBe(3);
+    expect(r.wantMs).toBe(1000);
+    expect(r.meanWallMs).toBeCloseTo(1000, 6);
+    expect(r.stdevMs).toBeCloseTo(10, 6);
+    expect(r.ratio).toBeCloseTo(1, 6);
+    // 1.5e6 ticks at /16 in 1 s is a 24 MHz oscillator; jiffy cross-check is wall / dj = 10 ms.
+    expect(r.impliedOscMHz).toBeCloseTo(24, 1);
+    expect(r.msPerJiffy).toBeCloseTo(10, 6);
+  });
+
+  test("a slow timer shows up in the ratio and the implied clock", () => {
+    const run = (wallMs: number) => ({
+      wallMs,
+      n: 25,
+      wantUs: 1_000_000,
+      dj: 100,
+      ticks: 1_500_000,
+      div: 16,
+      isr: 0,
+    });
+    const r = summarizeTimeRuns("T3D16", [run(4000), run(4000)]);
+    expect(r.ratio).toBeCloseTo(4, 6);
+    expect(r.impliedOscMHz).toBeCloseTo(6, 6); // really a 6 MHz oscillator
+    const j = summarizeTimeRuns("JIFFY", [
+      { wallMs: 2000, n: 100, wantUs: 1_000_000, dj: 100, ticks: null, div: null, isr: null },
+    ]);
+    expect(j.msPerUnit).toBeCloseTo(20, 6); // a jiffy is 20 ms, not 10
+    expect(j.msPerJiffy).toBeUndefined();
+  });
+
+  test("a firmware refusal rejects with its reply and sends nothing else", async () => {
+    const { link, count } = fakeLink((_w, _n, l) =>
+      queueMicrotask(() => l.onLine("err bsy PTIME")),
+    );
+    await expect(
+      link.command("time-test", { src: "STEP", reps: 2 }),
+    ).rejects.toThrow(/err bsy PTIME/);
+    expect(count()).toBe(1);
+  });
+
+  test("a firmware safety timeout is reported as a failure, not a measurement", async () => {
+    const { link } = fakeLink((_w, _n, l) =>
+      queueMicrotask(() => {
+        l.onLine("ptime begin T3D4 want=1000000");
+        l.onLine("err timeout PTIME T3D4 n=0 want=1000000 dj=1500 ticks=0 div=4 isr=0");
+      }),
+    );
+    await expect(
+      link.command("time-test", { src: "T3D4", reps: 1 }),
+    ).rejects.toThrow(/never finished/);
+  });
+
+  test("rejects unknown sources and clamps out-of-range arguments", async () => {
+    const sent: string[] = [];
+    const { link, count } = fakeLink((wire, _n, l) => {
+      sent.push(wire);
+      queueMicrotask(() => {
+        l.onLine("ptime begin DELAY want=3000000");
+        l.onLine("ok ptime DELAY n=3000 want=3000000 dj=300");
+      });
+    });
+    await expect(link.command("time-test", { src: "SET PB11=1" })).rejects.toThrow(/Unknown timer source/);
+    expect(count()).toBe(0);
+    await link.command("time-test", { src: "DELAY", ms: 99999, reps: 1 });
+    expect(sent).toEqual(["PTIME DELAY 3000\n"]);
+  });
+
+  test("other commands are refused while a run is counting, and the keepalive resumes after", async () => {
+    let l!: PrinterLink;
+    const { link } = fakeLink((_w, _n, link) => {
+      l = link;
+    });
+    const running = link.command("time-test", { src: "JIFFY", reps: 1 });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(link.keepaliveTimer).toBeNull();
+    await expect(link.command("status", {})).rejects.toThrow(/self-test is running/);
+    await expect(link.command("time-test", { src: "JIFFY" })).rejects.toThrow(/already running/);
+    l.onLine("ptime begin JIFFY want=1000000");
+    l.onLine("ok ptime JIFFY n=100 want=1000000");
+    const r = await running;
+    expect(r.src).toBe("JIFFY");
+    expect(link.keepaliveTimer).not.toBeNull();
+  });
+
+  test("the host source list matches the firmware's pb_time_srcs table", async () => {
+    const fs = await import("node:fs");
+    const printer = fs.readFileSync(
+      new URL("../../../firmware/apps/pinbridge/src/pb_printer.h", import.meta.url),
+      "utf8",
+    );
+    const body = /pb_time_srcs\[PB_TIME_NSRC\] = \{([^}]*)\}/.exec(printer)![1];
+    const names = [...body.matchAll(/"([A-Z0-9]+)"/g)].map((m) => m[1]);
+    expect(names).toEqual([...TIME_TEST_SOURCES]);
   });
 });

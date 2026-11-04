@@ -176,7 +176,7 @@ static unsigned variant; /* K_EXTEND_SWEEP: start offset (0..9 ms) and how close
 static int trial(int kind, unsigned per, int site, int verbose) {
     static pb_core c;
     pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, dly, wr,
-                mock_heater_start, mock_heater_active_poll, mock_heater_cancel};
+                mock_heater_start, mock_heater_active_poll, mock_heater_cancel, 0};
     result r;
     unsigned per_ms = (per + 999u) / 1000u, expect_ids = 0, total_steps = 0, i;
     int ok = 1, forced = 0, cancel_sent = 0;

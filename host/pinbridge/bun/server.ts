@@ -25,6 +25,67 @@ const mockMode = process.env.PINBRIDGE_MOCK === "1";
 // Raw UART frame logging to stdout: PINBRIDGE_DEBUG=1 or `bun run server.ts --debug`.
 const HELLO_TIMEOUT_MS = 400;
 const HELLO_RETRY_DELAY_MS = 100;
+/** Clock sources the firmware PTIME command can test, in firmware order (pb_time_srcs). */
+export const TIME_TEST_SOURCES = [
+  "T3D4",
+  "T3D16",
+  "T3D64",
+  "T3D256",
+  "STEP",
+  "JIFFY",
+  "DELAY",
+  "DELAY2",
+] as const;
+export interface TimeRun {
+  wallMs: number;
+  n: number;
+  wantUs: number;
+  dj: number | null;
+  ticks: number | null;
+  div: number | null;
+  isr: number | null;
+}
+const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
+const stdev = (a: number[]) =>
+  a.length < 2
+    ? 0
+    : Math.sqrt(a.reduce((x, y) => x + (y - mean(a)) ** 2, 0) / (a.length - 1));
+/**
+ * Average repeated PTIME runs. ratio = host wall time / what the firmware says it counted: 1.0 means the
+ * timer is right, 2.0 means the real interval was twice as long as the firmware assumed.
+ */
+export function summarizeTimeRuns(src: string, runs: TimeRun[]) {
+  const wall = runs.map((r) => r.wallMs);
+  const wantMs = runs[0].wantUs / 1000;
+  const meanWallMs = mean(wall);
+  const out: Record<string, any> = {
+    src,
+    runs: runs.length,
+    wantMs,
+    meanWallMs,
+    stdevMs: stdev(wall),
+    minWallMs: Math.min(...wall),
+    maxWallMs: Math.max(...wall),
+    ratio: meanWallMs / wantMs,
+    nPerRun: runs[0].n,
+  };
+  // What the unit is really worth, from the measured wall time.
+  const perRun = (f: (r: TimeRun) => number | null) => {
+    const v = runs.map(f).filter((x): x is number => x !== null && isFinite(x));
+    return v.length ? mean(v) : null;
+  };
+  out.msPerUnit = perRun((r) => (r.n > 0 ? r.wallMs / r.n : null));
+  if (src.startsWith("T3D"))
+    // ticks counted at the post-divider rate; the oscillator is ticks * div per elapsed time.
+    out.impliedOscMHz = perRun((r) =>
+      r.ticks && r.div ? (r.ticks * r.div) / (r.wallMs * 1000) : null,
+    );
+  if (src !== "JIFFY")
+    out.msPerJiffy = perRun((r) => (r.dj ? r.wallMs / r.dj : null));
+  const isr = perRun((r) => r.isr);
+  if (isr !== null) out.isrPerRun = isr;
+  return out;
+}
 const debugFrames =
   /^(1|true|yes|on)$/i.test(process.env.PINBRIDGE_DEBUG ?? "") ||
   process.argv.includes("--debug");
@@ -769,6 +830,144 @@ export class PrinterLink {
       });
     });
   }
+  /** Monotonic millisecond clock used to timestamp PTIME lines; replaceable in tests. */
+  clock: () => number = () => performance.now();
+  private timeTestBusy = false;
+  /**
+   * One firmware PTIME run: send the command, timestamp the "ptime begin" line and the final line, and
+   * return the wall time between them. The firmware writes both straight to USB around the counted interval.
+   */
+  private timeRun(src: string, ms: number): Promise<TimeRun> {
+    if (!this.serial?.isOpen || this.state !== "connected")
+      return Promise.reject(new Error("UART is not connected"));
+    if (this.textWaiter)
+      return Promise.reject(new Error("Another text command is in progress"));
+    return new Promise<TimeRun>((resolve, reject) => {
+      let begin: number | null = null;
+      let wantUs = 0;
+      let timer: any;
+      const finish = (fn: () => void) => {
+        clearTimeout(timer);
+        this.textWaiter = null;
+        fn();
+      };
+      const arm = (limitMs: number, why: string) => {
+        clearTimeout(timer);
+        timer = setTimeout(
+          () => finish(() => reject(new Error(`PTIME ${src}: ${why}`))),
+          limitMs,
+        );
+      };
+      arm(2000, "no reply from firmware");
+      this.textWaiter = {
+        match: (line) => {
+          const t = this.clock(); // stamp as early as possible
+          if (begin === null) {
+            if (/^ptime begin /.test(line)) {
+              wantUs = Number(/ want=(\d+)/.exec(line)?.[1] ?? 0);
+              begin = t;
+              // Generous: a 10x slow timer must still be able to finish and report.
+              arm(wantUs / 1000 * 12 + 5000, "no end line (firmware stuck?)");
+              return true;
+            }
+            if (/^err /.test(line)) {
+              finish(() => reject(new Error(`PTIME ${src}: firmware said "${line}"`)));
+              return true;
+            }
+            return false;
+          }
+          if (/^err /.test(line) && !/^err timeout PTIME /.test(line)) {
+            finish(() => reject(new Error(`PTIME ${src}: firmware said "${line}"`)));
+            return true;
+          }
+          if (/^(ok ptime|err timeout PTIME) /.test(line)) {
+            const f = (k: string) => {
+              const m = new RegExp(` ${k}=(\\d+)`).exec(line);
+              return m ? Number(m[1]) : null;
+            };
+            if (line.startsWith("err ")) {
+              finish(() =>
+                reject(
+                  new Error(
+                    `PTIME ${src}: the firmware's timer never finished (counted ${f("n")} of its target before its safety timeout)`,
+                  ),
+                ),
+              );
+              return true;
+            }
+            const run: TimeRun = {
+              wallMs: t - begin,
+              n: f("n") ?? 0,
+              wantUs: f("want") ?? wantUs,
+              dj: f("dj"),
+              ticks: f("ticks"),
+              div: f("div"),
+              isr: f("isr"),
+            };
+            finish(() => resolve(run));
+            return true;
+          }
+          return false;
+        },
+      };
+      this.dbg("TX", `text PTIME ${src} ${ms}`);
+      this.serial!.write(`PTIME ${src} ${ms}\n`, (e) => {
+        if (e) finish(() => reject(e));
+      });
+    });
+  }
+  /**
+   * Timer self-test: `reps` runs of one clock source, each counting about `ms` in the source's own units
+   * while the host times the firmware's begin/end lines. Blocks the printer for the duration, so the
+   * keepalive is paused (the firmware cannot answer STAT while counting).
+   */
+  async timeTest(src: string, ms = 1000, reps = 5) {
+    if (!(TIME_TEST_SOURCES as readonly string[]).includes(src))
+      throw new Error(`Unknown timer source: ${src}`);
+    ms = Math.max(100, Math.min(3000, Math.trunc(Number(ms) || 1000)));
+    reps = Math.max(1, Math.min(10, Math.trunc(Number(reps) || 5)));
+    if (this.mock) {
+      const runs: TimeRun[] = Array.from({ length: reps }, () => ({
+        wallMs: ms,
+        n: ms,
+        wantUs: ms * 1000,
+        dj: ms / 10,
+        ticks: src.startsWith("T3D") ? ms * 1500 : null,
+        div: src.startsWith("T3D") ? 16 : null,
+        isr: src.startsWith("T3D") ? 0 : null,
+      }));
+      return { ...summarizeTimeRuns(src, runs), mock: true };
+    }
+    if (this.timeTestBusy) throw new Error("A timer self-test is already running");
+    if (this.pending.size || this.outbound.length)
+      throw new Error("Printer is busy with a queued job");
+    this.timeTestBusy = true;
+    this.stopKeepalive();
+    try {
+      // A keepalive STAT may still be in flight; let it finish before the firmware goes deaf.
+      for (let i = 0; this.pending.size && i < 75; i++)
+        await new Promise((r) => setTimeout(r, 20));
+      if (this.pending.size) throw new Error("Printer is busy with a request");
+      const runs: TimeRun[] = [];
+      for (let i = 0; i < reps; i++) {
+        const run = await this.timeRun(src, ms);
+        runs.push(run);
+        this.emit("time-test-progress", {
+          src,
+          run: i + 1,
+          reps,
+          wallMs: run.wallMs,
+          wantMs: run.wantUs / 1000,
+        });
+        // Let the firmware's tx/rx tasks settle between runs.
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return summarizeTimeRuns(src, runs);
+    } finally {
+      this.timeTestBusy = false;
+      if (this.state === "connected") this.startKeepalive();
+    }
+  }
   /** Read-only firmware diagnostics (PDIAG/PHDIAG/PSTEPSTAT). */
   async diag(cmd: string): Promise<string> {
     const allowed: Record<string, RegExp> = {
@@ -836,6 +1035,12 @@ export class PrinterLink {
     return { rows: doneRows, events: doneRows * 4, refused };
   }
   async command(action: string, msg: any) {
+    // The firmware cannot answer anything while a PTIME run is counting.
+    if (
+      this.timeTestBusy &&
+      !["ports", "connect", "disconnect", "time-test"].includes(action)
+    )
+      throw new Error("A timer self-test is running; wait for it to finish");
     switch (action) {
       case "ports":
         return { ports: await this.ports() };
@@ -844,6 +1049,12 @@ export class PrinterLink {
           cmd: String(msg.cmd),
           reply: await this.diag(String(msg.cmd)),
         };
+      case "time-test":
+        return await this.timeTest(
+          String(msg.src ?? ""),
+          Number(msg.ms ?? 1000),
+          Number(msg.reps ?? 5),
+        );
       case "legacy-print": {
         const rows = Math.max(
           1,
