@@ -98,6 +98,7 @@ static int adc(void *x, int ch, unsigned *r, unsigned *m) {
     return 0;
 }
 static uint32_t ms(void *x) { (void)x; return now_ms; }
+static uint32_t usec(void *x) { (void)x; return now_ms * 1000u; }
 static void dly(void *x, unsigned us) { (void)x; if (us >= 1000u) mock_heater_long_waits++; }
 static int tx(void *x, const char *s, size_t n) {
     (void)x;
@@ -176,7 +177,7 @@ static unsigned variant; /* K_EXTEND_SWEEP: start offset (0..9 ms) and how close
 static int trial(int kind, unsigned per, int site, int verbose) {
     static pb_core c;
     pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, dly, wr,
-                mock_heater_start, mock_heater_active_poll, mock_heater_cancel, 0};
+                mock_heater_start, mock_heater_active_poll, mock_heater_cancel, 0, 0, usec};
     result r;
     unsigned per_ms = (per + 999u) / 1000u, expect_ids = 0, total_steps = 0, i;
     int ok = 1, forced = 0, cancel_sent = 0;

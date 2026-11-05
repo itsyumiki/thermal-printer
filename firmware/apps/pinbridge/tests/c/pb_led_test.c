@@ -51,6 +51,7 @@ static int adc(void *x, int ch, unsigned *r, unsigned *m) {
     return 0;
 }
 static uint32_t ms(void *x) { (void)x; return now_ms; }
+static uint32_t usec(void *x) { (void)x; return now_ms * 1000u; }
 static void dly(void *x, unsigned us) { (void)x; (void)us; }
 static int tx(void *x, const char *s, size_t n) { (void)x; (void)s; (void)n; return 1; }
 
@@ -69,7 +70,7 @@ static void step(unsigned n) {
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL t=%u: %s\n", now_ms, msg); failures++; } } while (0)
 
 static void begin(void) {
-    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, dly, wr, 0, 0, 0, 0};
+    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, dly, wr, 0, 0, 0, 0, 0, usec};
     int i;
     memset(&C, 0, sizeof C); memset(outs, 0, sizeof outs); memset(pads, 0, sizeof pads);
     i = pb_pin("PC7"); pc7_port = pb_defs[i].port; pc7_bit = pb_defs[i].bit;

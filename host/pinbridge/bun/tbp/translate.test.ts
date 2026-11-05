@@ -316,8 +316,18 @@ describe("TIMETEST (F0)", () => {
       encodeCommand({ type: "timetest", src: "T3D4", ms: 99 }, 2),
     ).toThrow(/ms must be/);
     expect(() =>
-      encodeCommand({ type: "timetest", src: 8, ms: 1000 }, 2),
+      encodeCommand({ type: "timetest", src: 9, ms: 1000 }, 2),
     ).toThrow(/source/);
+    // Sprint 2: source 8 is the timebase.
+    const tb = encodeCommand(
+      { type: "timetest", src: "TIMEBASE", ms: 1000 },
+      2,
+    );
+    expect(tb.trim()).toBe("02F0030803E8A10E");
+    expect(decodeCommand(tb)).toEqual({
+      id: 2,
+      command: { type: "timetest", src: 8, ms: 1000 },
+    });
   });
   test("DONE decodes and the verdict applies the 2 % gate", () => {
     const m: any = decodeMessage(
@@ -401,6 +411,30 @@ describe("TIMETEST (F0)", () => {
       withinGate: true,
     });
     expect(step.msPerUnit).toBeCloseTo(1.01, 6);
+    // Sprint 2: the timebase is held to 1 %, the other sources keep their 2 % figure.
+    const tb = {
+      src: 8,
+      n: 1000004,
+      wantUs: 1000000,
+      dj: 100,
+      ticks: 0,
+      div: 0,
+      isr: 0,
+    };
+    expect(summarizeTimeTest(tb, 1008)).toMatchObject({
+      src: "TIMEBASE",
+      gate: 0.01,
+      withinGate: true,
+    });
+    expect(summarizeTimeTest(tb, 1015).withinGate).toBe(false);
+    expect(summarizeTimeTest({ ...tb, src: 4 }, 1015).withinGate).toBe(true);
+    expect(summarizeTimeTestRuns([{ test: tb, wallMs: 1015 }]).withinGate).toBe(
+      false,
+    );
+    expect(summarizeTimeTestRuns([{ test: tb, wallMs: 1004 }])).toMatchObject({
+      gate: 0.01,
+      withinGate: true,
+    });
     expect(() => summarizeTimeTestRuns([])).toThrow(/no TIMETEST runs/);
   });
 });

@@ -334,7 +334,7 @@ Immediate. `DATA = [mode u8]`: `00` release coils, `01` energise coils at the cu
 
 ### 7.10 `F0` TIMETEST — timer calibration diagnostic
 
-Diagnostic only; this opcode is part of the binary TBP protocol and replaces the removed plaintext `PTIME` command. `DATA = [src u8][ms u16]` (3 bytes, big-endian duration). `ms` must be 100–3000. The printer must be idle with no queued/running work, no active step timer and no heater pulse; otherwise it returns `ERR BUSY`. The command blocks the command task for the measurement duration, so use it only for calibration, not during printing. The USB RX emergency-stop path remains active.
+Diagnostic only; this opcode is part of the binary TBP protocol and replaces the removed plaintext `PTIME` command. `DATA = [src u8][ms u16]` (3 bytes, big-endian duration). `ms` must be 100–3000. `src` must be 0–8. The printer must be idle with no queued/running work, no active step timer and no heater pulse; otherwise it returns `ERR BUSY`. The command blocks the command task for the measurement duration, so use it only for calibration, not during printing. The USB RX emergency-stop path remains active.
 
 | `src` | Name | Counted unit | Expected period at nominal clock |
 |---:|---|---|---:|
@@ -346,10 +346,13 @@ Diagnostic only; this opcode is part of the binary TBP protocol and replaces the
 | `05` | JIFFY | SDK jiffies | nominal 10 ms |
 | `06` | DELAY | calls to `hal_delay_us(1000)` | requested 1000 us |
 | `07` | DELAY2 | calls to `hal_delay_us(2)` | requested 2 us |
+| `08` | TIMEBASE | microseconds of the free-running timebase (`micros()`), polled until `ms * 1000` us have passed; `n` is the elapsed count, `want_us = ms * 1000` | 1 us |
 
 Reply sequence: `ACK`, then `STATUS RUNNING` immediately before counting, then `STATUS DONE` with a 23-byte result body, or `STATUS FAILED` with code `1F` (INTERNAL) and a failure argument. RUNNING and terminal frames bypass the normal transmit ring so the host can time their arrival while the command task is blocked. Failure arguments: `01` timeout (e.g. TIMER3 compare IRQ did not fire), `02` aborted by emergency stop, `03` setup unavailable.
 
 The 23-byte DONE body is `[src u8][n u32][want_us u32][jiffies_delta u32][ticks u32][divider u16][isr_count u32]`, with multi-byte integers big-endian. Non-TIMER3 sources report `ticks`, `divider`, and `isr_count` as zero. For TIMER3, `n` counts ISR deltas only; the pending compare flag must not be counted separately. The host computes `wall_ms` from RUNNING-to-DONE receive timestamps, `ratio = wall_ms / (want_us / 1000)`, the implied oscillator for TIMER3, and whether `isr_count == n`. Sprint 1 acceptance requires each of the four TIMER3 cases at 1000 ms to be within 2 % of ratio 1.0, near 24 MHz, and have `isr_count == n`. This gate still requires hardware measurements; tests and CI do not substitute for them.
+
+Since Sprint 2 TIMER3 is the free-running timebase. The four TIMER3 sources borrow it for the run and restart it afterwards, so `micros()` loses the length of such a run. For `TIMEBASE` (08) the host gate is 1 % (the other sources keep 2 %); `ticks`, `divider` and `isr_count` are zero.
 
 ## 8. Row execution and timing
 

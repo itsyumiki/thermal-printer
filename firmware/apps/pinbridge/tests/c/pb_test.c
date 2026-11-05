@@ -76,6 +76,11 @@ static void delay_us(void *x, unsigned us) {
         pb_step_tick(active_core);
     }
 }
+/* Simulated microsecond clock: the millisecond counter plus the sub-millisecond remainder that delay_us() keeps. */
+static uint32_t micros_mock(void *x) {
+    (void)x;
+    return now_ms * 1000u + delay_remainder_us;
+}
 static int tx(void *x, const char *s, size_t n) {
     (void)x;
     if (n > sizeof(output) - used - 1)
@@ -104,7 +109,7 @@ static void consume(unsigned line, const char *expect) {
 }
 int main(int argc, char **argv) {
     pb_core c;
-    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, delay_us, wr, 0, 0, 0, time_test_mock, 0}; /* wr doubles as the fast writer */
+    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, delay_us, wr, 0, 0, 0, time_test_mock, 0, micros_mock}; /* wr doubles as the fast writer */
     FILE *f;
     char line[2048];
     unsigned ln = 0;
@@ -166,6 +171,23 @@ int main(int argc, char **argv) {
     test_core = &c;
     pb_init(&c, &h);
     active_core = &c;
+    /* HAL micros(): follows delay_us() exactly and wraps like the firmware's u32 count. */
+    {
+        uint32_t u0 = pb_micros(&c);
+        unsigned saved_ms = now_ms, saved_rem = delay_remainder_us; /* transcripts depend on the clock: put it back */
+        h.delay_us(h.ctx, 2u);
+        if (pb_micros(&c) - u0 != 2u) fail(0, "micros() did not advance by delay(2)");
+        h.delay_us(h.ctx, 2500u);
+        if (pb_micros(&c) - u0 != 2502u) fail(0, "micros() did not advance by delay(2500)");
+        pb_hal nomicros = h;
+        nomicros.micros = 0;
+        pb_core c2;
+        memset(&c2, 0, sizeof c2);
+        c2.h = nomicros;
+        if (pb_micros(&c2) != now_ms * 1000u) fail(0, "pb_micros without a HAL clock must fall back to millis");
+        now_ms = saved_ms;
+        delay_remainder_us = saved_rem;
+    }
     while (fgets(line, sizeof line, f)) {
         char *s, *e;
         ln++;

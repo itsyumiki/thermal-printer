@@ -134,9 +134,9 @@ export function commandPayload(cmd: Command): { op: number; data: Uint8Array } {
       return { op: OP.COILS, data: Uint8Array.of(cmd.on ? 1 : 0) };
     case "timetest": {
       const src = typeof cmd.src === "string" ? TIME_SRC[cmd.src] : cmd.src;
-      if (!Number.isInteger(src) || src === undefined || src < 0 || src > 7)
+      if (!Number.isInteger(src) || src === undefined || src < 0 || src > 8)
         throw new Error(
-          `TIMETEST source must be one of ${Object.keys(TIME_SRC).join(", ")} (0..7)`,
+          `TIMETEST source must be one of ${Object.keys(TIME_SRC).join(", ")} (0..8)`,
         );
       if (
         !Number.isInteger(cmd.ms) ||

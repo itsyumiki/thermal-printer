@@ -100,6 +100,9 @@ typedef struct {
     /* Optional write that skips the output ring. Used only around TIMETEST: the ring's task cannot run while
      * the command task busy-waits, and the host times the RUNNING and DONE frames against real time. */
     int (*tx_direct)(void *, const char *, size_t);
+    /* Free-running microsecond clock (Sprint 2). Wraps every 2^32 us (71.6 min): always subtract, never compare.
+     * Optional; pb_micros() falls back to millis * 1000 when a HAL has none. */
+    uint32_t (*micros)(void *);
 } pb_hal;
 typedef struct {
     uint8_t id, op, len, queued_status_sent;
@@ -160,6 +163,7 @@ typedef struct {
     volatile uint8_t step_timer_reg_failures;
     volatile uint32_t heater_pulse_starts, heater_isr_count, heater_poll_ends, heater_overruns;
     volatile uint32_t heater_last_cnt, heater_last_con;
+    volatile uint32_t timebase_stalls; /* times the timebase failed to advance and a delay fell back to the software loop */
     uint32_t step_scheduled_total, step_segment_remaining;
     pb_step_segment step_segments[PB_TBP_QUEUE_DEPTH];
     uint8_t step_seg_head, step_seg_count, tbp_feed_train_active;
@@ -183,6 +187,10 @@ static void pb_motor_outputs_init(pb_core *c);
 static void pb_motor_outputs_release(pb_core *c);
 static uint32_t pb_now(pb_core *c) {
     return c->h.millis ? c->h.millis(c->h.ctx) : 0;
+}
+/* Microseconds from the HAL timebase; millisecond resolution if the HAL has none. Subtract, never compare. */
+static inline uint32_t pb_micros(pb_core *c) {
+    return c->h.micros ? c->h.micros(c->h.ctx) : pb_now(c) * 1000u;
 }
 static int pb_eq(const char *a, const char *b) {
     while (*a && *b) {
@@ -1552,7 +1560,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         }
         src = raw[3];
         ms = ((unsigned)raw[4] << 8) | raw[5];
-        if (src > 7u) {
+        if (src > 8u) {
             pb_tbp_err(c, id, 5, 0);
             return 1;
         }

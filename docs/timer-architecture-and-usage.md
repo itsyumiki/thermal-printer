@@ -38,29 +38,35 @@ The source comments and prior experiment establish a critical resource constrain
 - Treat the SDK timer and TIMER1 as one owned resource, not as independent resources.
 - If the stepper is moved to a direct hardware timer, first identify a different safe timer and remove or replace the SDK timer path deliberately.
 
-### 2.2 Hardware TIMER3: Pinbridge heater pulse deadline
+### 2.2 Hardware TIMER3: the timebase (Sprint 2, 2026-11-05)
 
-Pinbridge currently assigns:
+> Status: **code and simulation only.** Built in CI and tested against a simulated timer; not yet run on hardware. The sections below that describe the old one-shot pulse path are historical (it was removed in Sprint 2).
 
-- `PB_HEATER_TIMER = JL_TIMER3`
-- `PB_HEATER_TIMER_IRQ = IRQ_TIME3_IDX`
+TIMER3 is now a free-running microsecond clock (`pb_tb_us()`, exposed to the core as the `micros` HAL hook and `pb_micros()`).
 
-Initialization stops and resets TIMER3, registers `pb_heater_timer_isr`, and explicitly unmasks its interrupt source.
+| Item | Value | Why |
+|---|---|---|
+| Source / prescale | 24 MHz oscillator, /4 (SDK `irflt.c` index 1) | 6 ticks per us, resolution 1/6 us |
+| PRD | 60000 | one wrap per exactly 10000 us, fits the 16-bit register, whole microseconds per period |
+| Wrap interrupt | every 10 ms; `tb_wraps++`, then clear pending (`CON = BIT(14)\|...`) | also the period Sprint 3 wants for the heater deadman |
+| `micros()` | `(wraps + pending) * 10000 + CNT / 6`, u32, wraps every 71.6 min | always subtract (`now - start`), never compare raw values |
+| `CON` | `(0b10<<2) \| (1<<4) \| BIT(0) \| BIT(14)` | oscillator, /4, plain timer mode (not BIT(1): IR capture), clear pending |
 
-The heater pulse start path asserts PB11, programs the timer period and starts TIMER3. The ISR stops/acknowledges TIMER3, drives PB11 low directly through the port output register, clears `heater_timer_armed`, and increments the heater ISR diagnostic counter. Lowering PB11 in the ISR means the shutoff does not depend on the command task being scheduled at that instant.
+Trade-offs considered. /16 with the same PRD would wrap every 40 ms and read at 0.67 us; /64 and /256 only lose resolution; /1 is not in the SDK table. A 10 ms wrap costs one short ISR per 10 ms (cost not yet measured, see section 3 once the owner has run it). The wrap ISR also bumps `core.heater_isr_count`, which the TIMER3 TIMETEST rows still use.
 
-The implementation's original clock assumption is:
+Read algorithm (`src/pb_timebase.h`, shared by firmware and the C harness): read wraps, counter, pending flag, counter again, wraps again; retry if the wrap count changed or the counter went backwards. A wrap whose ISR has not run yet (pending set) is added, so a late ISR never makes time step back by 10 ms. Limit: interrupts masked for more than one period lose a wrap.
 
-- oscillator: 24 MHz
-- prescaler: /16
-- nominal timer tick: 24 MHz / 16 = 1.5 MHz
-- nominal tick duration: about 0.667 us, or 1.5 ticks/us
-- 16-bit period register: 65,535 counts, about 43.7 ms at that assumed rate
-- the current test-only slice maximum of 30,000 us corresponds to 45,000 ticks at 1.5 ticks/us.
+`hal_delay_us` waits on `pb_tb_us()`. Its spin count is bounded (16 passes per us plus 256); if the timebase does not advance, it finishes with the old software loop, sets `timebase_stalled` and counts `core.timebase_stalls`. The per-call floor is the cost of one `pb_tb_us()` call and is measured by the DELAY2 row.
 
-The code also contains a pending-flag polling path and a bounded software-delay fallback/safety margin. The margin constant is 2,000 us. These are defensive completion checks; they do not make the timer's clock calibration correct. The ISR, pending-flag observation and polling can also complicate diagnostic event counts if the same timer event is counted through more than one path. That is exactly what the old PTIME test did; the replacement binary TIMETEST loop counts ISR deltas only (section 3).
+**Interim heater pulse.** `hal_heater_pulse_start` asserts PB11, waits in-line on `pb_tb_us()`, and forces PB11 low on every exit. `hal_heater_pulse_cancel` (USB RX task, e-stop) clears the armed flag and PB11 and no longer touches the timer. The in-line wait is also bounded by the jiffy counter (`usec/10000 + 3` jiffies), so a dead TIMER3 cannot hold PB11 high. This is not a safety timer; Sprint 3 moves the pulse into the executor with a deadman in the wrap ISR. `heater_poll_ends` and `heater_last_cnt/con` are no longer written.
 
-The app comments note that TIMER3 is used by the SDK IR-remote key driver in the general SDK, but this app does not include that IR-remote feature and repurposes TIMER3. This is an app-specific ownership decision, not a claim that TIMER3 is universally unused in every SDK application.
+**TIMETEST and the timebase.** The four TIMER3 rows borrow the timer: the wrap ISR is told to stop the timer on each compare (as the old heater ISR did), the run proceeds exactly as in Sprint 1, and the timebase is restarted from its saved wrap count afterwards. `micros()` therefore loses the length of such a run. New source 8 (`TIMEBASE`) busy-waits until `micros()` has advanced `ms * 1000` us and reports the elapsed count as `n`; the host gates it at 1 %.
+
+Open assumption, to be confirmed by the TIMEBASE row on hardware: the counter reloads by itself at PRD in plain timer mode. If it does not, the wrap count would not advance and the TIMEBASE run would show it.
+
+### 2.2a Historical: the one-shot heater pulse path (removed)
+
+Before Sprint 2, `PB_HEATER_TIMER = JL_TIMER3` (/16, 1.5 ticks/us, 43.7 ms maximum) was programmed per pulse and its compare ISR drove PB11 low, with a pending-flag poll and a 2000 us software margin as fallbacks. Sprint 1 measured that clock correctly (ratios 1.0002-1.0014).
 
 ### 2.3 Jiffies: coarse elapsed time
 
@@ -76,6 +82,8 @@ Jiffies support coarse scheduling and elapsed-time logic, including:
 Jiffies are not a suitable replacement for a sub-millisecond or microsecond pulse timer. Their 10 ms granularity is much coarser than heater edge timing.
 
 ### 2.4 Software delay helper: `hal_delay_us`
+
+> Sprint 2: `hal_delay_us` now waits on the timebase (section 2.2); the NOP loop below is only the fallback (`soft_delay_us`). The 881 / 940 / 5.2 us figures are the **before** numbers.
 
 The Pinbridge HAL implements `hal_delay_us` as a calibrated NOP loop:
 
@@ -298,7 +306,7 @@ A timer-driven stepper and a hardware-timed heater pulse are not mutually exclus
 | TIMER0 | SDK short blocking delay support | Treat as occupied unless exact SDK build proves otherwise |
 | TIMER1 | Underlying SDK high-priority timer resource | Do not configure directly while SDK timer is active |
 | TIMER2 | SDK handshake use in this Pinbridge environment; stock firmware uses TIMER2 for heater strobe | Do not assume it is free in Pinbridge; stock allocation is a different firmware image |
-| TIMER3 | Pinbridge hardware heater pulse deadline; SDK IR-filter/key-driver use in general SDK, absent from this app | Currently app-reserved for heater; could be reassigned only as a deliberate architecture change |
+| TIMER3 | Pinbridge free-running microsecond timebase (/4, 10 ms wrap ISR); SDK IR-filter/key-driver use in general SDK, absent from this app | App-reserved since Sprint 2; the heater no longer has its own one-shot |
 | Jiffies | 10 ms coarse system timebase | Use for millisecond-scale bookkeeping, not precise pulse edges |
 | NOP busy loop | Short software waits and fallback delay | Use only where timing tolerance is understood; never treat as a certified hardware deadline |
 

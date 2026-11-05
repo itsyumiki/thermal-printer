@@ -1,4 +1,4 @@
-# TIMETEST (F0): bad frames are rejected without using an id; a good one answers ACK, RUNNING, then DONE with the
+# TIMETEST (F0): bad frames (sources 0..8 exist; 9 does not) are rejected without using an id; a good one answers ACK, RUNNING, then DONE with the
 # 23-byte result (src, n, want_us, dj, ticks, div, isr); failures end in STATUS FAILED 1F with arg 1 timeout,
 # 2 aborted, 3 setup (setup fails before RUNNING). A busy printer refuses it. The counts come from a fake hook.
 @config real
@@ -7,7 +7,7 @@
 < 0182270301000000000180040403E803E80001EA60006400C8EA600BB8005AFFFF0F00000000000000002236
 > 02F002000394C1
 < 028302040381AC
-> 02F0030803E8A10E
+> 02F0030903E8963E
 < 028302050082FE
 > 02F0030000637D1F
 < 028302050192DF
@@ -39,3 +39,13 @@
 < 0281010146D2
 > 03F0030003E84D0F
 < 03830209006DC2
+# Source 8 is the timebase: the same frame shape, only the source byte differs (n counts microseconds on the real hook).
+@timetest rc=0
+> 01010101E654
+< 0282020505A4EF
+< 01810100CD2F
+< 0182270301000000000180040403E803E80001EA60006400C8EA600BB8005AFFFF0F00000000000000002236
+> 02F0030803E8A10E
+< 0281010056F3
+< 028201022FE1
+< 028218030800000064000F424000000065005B8D8000040000006477F5

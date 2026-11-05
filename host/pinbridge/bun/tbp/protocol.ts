@@ -97,6 +97,8 @@ export const TIME_SRC = {
   JIFFY: 5,
   DELAY: 6,
   DELAY2: 7,
+  /** Sprint 2: the free-running microsecond timebase (TIMER3 /4) against the host clock. n counts microseconds. */
+  TIMEBASE: 8,
 } as const;
 
 /** TIMETEST `STATUS FAILED` args, all with code `1F` INTERNAL (spec section 7.10). */

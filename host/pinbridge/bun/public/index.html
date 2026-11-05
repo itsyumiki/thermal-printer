@@ -298,13 +298,19 @@
           </p>
           <div class="job-actions">
             <button class="btn btn-primary time-btn" id="timeAllBtn" disabled>
-              Run all (about 50 s)</button
+              Run all (about 60 s)</button
+            ><button
+              class="btn btn-secondary time-btn"
+              data-src="TIMEBASE"
+              disabled
+            >
+              Timebase (micros, gate 1 %)</button
             ><button
               class="btn btn-secondary time-btn"
               data-src="T3D16"
               disabled
             >
-              Heater timer, /16 (used for pulses)</button
+              Heater timer, /16 (borrows the timebase for the run)</button
             ><button
               class="btn btn-secondary time-btn"
               data-src="T3D4"

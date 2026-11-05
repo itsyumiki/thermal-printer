@@ -18,7 +18,8 @@ extern void wdt_clear(void);
 #define PB_RING 1024
 static pb_core core;
 static u16 step_timer_id;
-static volatile u8 heater_timer_armed, heater_timer_ready;
+static volatile u8 heater_timer_armed, timebase_ready, timebase_stalled;
+static volatile u32 tb_wraps, tb_isr_con; /* timebase wrap count and the CON value the wrap ISR writes back */
 static OS_SEM rx_sem, cmd_sem, tx_sem;
 static volatile u8 detached, rx_overflow, estop_fast_requested, hello_fast_clear_requested, fast_estop_id;
 static u8 ring[PB_RING], usb_rx_ring[PB_RING];
@@ -233,17 +234,77 @@ static uint32_t hal_ms(void *ctx) {
     (void)ctx;
     return jiffies * 10u;
 }
-/* Busy-wait calibrated on hardware (2026-11-02 --profile): the earlier 12 NOP-loop iterations
- * per us ran 10.9x too long, i.e. one iteration takes ~0.91 us, so ~1.1 iterations per us.
- * Still a software loop (not a timer): resolution is ~1 us and ISRs lengthen it slightly.
- * Do not use it as a certified heater safety timer. */
-static void hal_delay_us(void *ctx, unsigned us) {
+/* ---- Timebase (Sprint 2) ------------------------------------------------------------------------------
+ * TIMER3 is a free-running microsecond timebase: 24 MHz oscillator / 4 = 6 ticks per us, PRD 60000 = one wrap
+ * (and one ISR) every 10 ms exactly. Why /4 and 10 ms: the finest resolution (1/6 us) that still fits a whole
+ * number of microseconds into PRD, and a wrap rate low enough that the ISR costs about 0.1 % of the CPU, while
+ * 10 ms is also the period Sprint 3 wants for the heater deadman. /16 would need a 40 ms wrap for the same
+ * PRD and coarser reads; /64 and /256 only hurt resolution. The prescale index comes from the SDK irflt.c
+ * table (1 = /4); Sprint 1 measured the oscillator at 23.97-24.00 MHz for every prescaler.
+ * CON: [3:2]=0b10 oscillator, [7:4]=1 prescale /4, BIT(0) plain periodic timer mode, BIT(14) clear pending.
+ * Do NOT set BIT(1): that is the IR-capture mode (bench 2026-11-04).
+ * The read algorithm and the delay loop live in pb_timebase.h so the C harness tests the same code. Open
+ * assumption, checked by the TIMEBASE self-test on hardware: the counter reloads by itself at PRD.
+ * TIMER0/2 are SDK timers and TIMER1 belongs to sys_hi_timer, so TIMER3 is the only one this app can take. */
+#define PB_TB_TIMER JL_TIMER3
+#define PB_TB_IRQ IRQ_TIME3_IDX
+#define PB_TB_CON ((0b10u << 2) | (1u << 4) | BIT(0) | BIT(14))
+#define PB_TB_WRAPS() (tb_wraps)
+#define PB_TB_CNT() ((u32)(PB_TB_TIMER->CNT & 0xffffu))
+#define PB_TB_PEND() (PB_TB_TIMER->CON & BIT(15))
+#include "pb_timebase.h"
+___interrupt
+void pb_timebase_isr(void) {
+    tb_wraps++; /* before the pending flag is cleared: pb_tb_us() relies on this order */
+    core.heater_isr_count++; /* every TIMER3 ISR, kept for the TIMETEST TIMER3 rows */
+    PB_TB_TIMER->CON = tb_isr_con; /* PB_TB_CON: clear pending and keep counting (TIMETEST swaps in BIT(14): stop) */
+}
+/* (Re)start the timebase from zero with the given wrap count. Task context only (local_irq_* do not nest). */
+static void pb_timebase_start(u32 wraps) {
+    local_irq_disable();
+    PB_TB_TIMER->CON = BIT(14);
+    PB_TB_TIMER->CNT = 0;
+    PB_TB_TIMER->PRD = PB_TB_PRD;
+    tb_wraps = wraps;
+    tb_isr_con = PB_TB_CON;
+    PB_TB_TIMER->CON = PB_TB_CON;
+    local_irq_enable();
+}
+static void pb_timebase_init(void) {
+    PB_TB_TIMER->CON = BIT(14);
+    heater_timer_armed = 0;
+    request_irq(PB_TB_IRQ, 5, pb_timebase_isr, 0);
+    /* Explicitly unmask the IRQ source; without it the wrap count never advances. */
+    irq_unmask_set(PB_TB_IRQ, 0);
+    pb_timebase_start(0);
+    timebase_ready = 1;
+}
+static uint32_t hal_micros(void *ctx) {
+    (void)ctx;
+    if (!timebase_ready || timebase_stalled) return (uint32_t)jiffies * 10000u; /* 10 ms steps, only if the timer failed */
+    return pb_tb_us();
+}
+/* Old software loop, calibrated on hardware (2026-11-02): about 3.5 us fixed plus 0.85 us per iteration, and
+ * bimodal between runs. Only used when the timebase is not running or has stalled. */
+static void soft_delay_us(unsigned us) {
     volatile unsigned n;
     unsigned loops = (us * 11u + 5u) / 10u;
-    (void)ctx;
     for (n = 0; n < loops; n++) {
         __asm__ volatile("nop");
     }
+}
+/* Waits on the timebase, so the delay is real time to within one read (the per-call floor is the cost of
+ * pb_tb_us(), measured by the DELAY2 self-test row). If the timebase is not running, or stops advancing,
+ * the bounded software loop finishes the delay and the timebase is not trusted again until reboot. */
+static void hal_delay_us(void *ctx, unsigned us) {
+    (void)ctx;
+    if (!us) return;
+    if (timebase_ready && !timebase_stalled) {
+        if (pb_tb_delay_us(us) == 0) return;
+        timebase_stalled = 1;
+        core.timebase_stalls++;
+    }
+    soft_delay_us(us);
 }
 static int hal_tx(void *ctx, const char *s, size_t n) {
     size_t i;
@@ -274,85 +335,37 @@ static void tx_task(void *priv) {
             os_sem_pend(&tx_sem, 1);
     }
 }
-/* TIMER3 is reserved for the printhead pulse deadline in this app. Do NOT use TIMER1: the SDK's
- * usr_timer (sys_hi_timer_add, which drives the 1 ms stepper tick) runs on it, and claiming it
- * here stopped the stepper clock. TIMER0/2 are SDK delay and
- * handshake timers; TIMER3 is only used by the SDK IR-remote key driver, which this app lacks.
- * The BR23 timer block supports a crystal-clocked, divided-by-sixteen count (1.5 ticks/us at
- * the SDK's 24 MHz OSC_Hz setting; prescale table index 2 = /16). PRD is 16 bits, so the longest
- * pulse is 65535 / 1.5 = 43.7 ms; PB_TUNE_HEATER_SLICE_MAX_US (30 ms) is 45,000 ticks. */
-#define PB_HEATER_TIMER JL_TIMER3
-#define PB_HEATER_TIMER_IRQ IRQ_TIME3_IDX
-___interrupt
-void pb_heater_timer_isr(void) {
-    PB_HEATER_TIMER->CON = BIT(14); /* stop timer and acknowledge the pending interrupt */
-    ports[1]->OUT &= ~(1u << 11); /* PB11 low directly; no task wakeup required */
-    heater_timer_armed = 0;
-    core.heater_isr_count++;
-}
-static void pb_heater_timer_init(void) {
-    PB_HEATER_TIMER->CON = BIT(14);
-    PB_HEATER_TIMER->CNT = 0;
-    heater_timer_armed = 0;
-    request_irq(PB_HEATER_TIMER_IRQ, 5, pb_heater_timer_isr, 0);
-    /* Explicitly unmask the IRQ source. If masked, PB11 remains high and the
-       row executor waits until its no-progress watchdog aborts the print. */
-    irq_unmask_set(PB_HEATER_TIMER_IRQ, 0);
-    heater_timer_ready = 1;
-}
-/* Software margin beyond the programmed pulse before the in-line wait gives up. */
-#define PB_HEATER_PULSE_MARGIN_US 2000u
+/* Interim heater pulse (Sprint 2). TIMER3 is the timebase now, so the one-shot compare ISR is gone: the pulse is
+ * timed in-line against pb_tb_us(), and PB11 is forced low on every way out (done, cancelled by the USB
+ * RX task through hal_heater_pulse_cancel, or the bound below). The bound is independent of the timebase:
+ * the jiffy counter (SDK tick, 10 ms), so a dead TIMER3 cannot hold PB11 high past a few jiffies. Sprint 3 moves this
+ * into the executor with a deadman in the wrap ISR; nothing here is a safety timer. */
 static int hal_heater_pulse_start(void *ctx, unsigned usec) {
-    uint32_t ticks;
-    unsigned spent;
-    int pending_seen = 0;
+    u32 t0;
+    unsigned long j0, jmax;
+    int rc = 0;
     (void)ctx;
-    if (!heater_timer_ready || !usec || usec > PB_TUNE_HEATER_SLICE_MAX_US) return -1;
-    ticks = (usec * 3u + 1u) / 2u; /* 24 MHz / 16 = 1.5 ticks per us (rounded); fits u32 for any usec */
-    if (!ticks || ticks > 0xffffu) return -1;
+    if (!timebase_ready || timebase_stalled || !usec || usec > PB_TUNE_HEATER_SLICE_MAX_US) return -1;
     core.heater_pulse_starts++;
+    j0 = jiffies;
+    jmax = usec / 10000u + 3u;
     local_irq_disable();
-    PB_HEATER_TIMER->CON = BIT(14);
-    PB_HEATER_TIMER->CNT = 0;
-    PB_HEATER_TIMER->PRD = ticks;
-    ports[1]->OUT |= (1u << 11);
     heater_timer_armed = 1;
-    /* SDK handshake_timer.c recipe, which polls BIT(15) at the compare: BIT(3:2)=0b10 oscillator,
-     * BIT(7:4)=2 prescale /16 (1.5 ticks/us; table index 2, was 1 = /4 until the 2026-11-04 heat
-     * experiment needed pulses above 10.9 ms), BIT(0) run in plain timer mode, BIT(14) clear pending.
-     * Do NOT set BIT(1): bench 2026-11-04 showed CNT free-running past PRD with no pending flag
-     * and no IRQ, i.e. BIT(1) is the IR-capture mode, not an
-     * interrupt enable (irflt.c sets it because the IR filter needs capture). */
-    PB_HEATER_TIMER->CON = (0b10u << 2) | (0b0010u << 4) | BIT(0) | BIT(14);
+    ports[1]->OUT |= (1u << 11);
+    t0 = pb_tb_us();
     local_irq_enable();
-    /* Finish the pulse in-line, bounded. The timer ISR normally drops PB11 and clears
-     * heater_timer_armed first. If the interrupt is not delivered, the timer's own pending flag
-     * (BIT(15), usable without an IRQ) ends the pulse. If the timer is not counting at all, the
-     * software bound (pulse + margin) forces PB11 low and the start reports failure. PB11 can
-     * therefore never stay high for more than a few ms, whatever the timer does. */
-    for (spent = 0; heater_timer_armed && spent < usec + PB_HEATER_PULSE_MARGIN_US; spent += 2u) {
-        if (PB_HEATER_TIMER->CON & BIT(15)) {
-            pending_seen = 1;
+    while (heater_timer_armed && (u32)(pb_tb_us() - t0) < usec) {
+        if ((unsigned long)(jiffies - j0) > jmax) {
+            rc = -1;
             break;
         }
-        hal_delay_us(NULL, 2u);
     }
-    if (heater_timer_armed) {
-        local_irq_disable();
-        core.heater_last_cnt = PB_HEATER_TIMER->CNT;
-        core.heater_last_con = PB_HEATER_TIMER->CON;
-        PB_HEATER_TIMER->CON = BIT(14);
-        ports[1]->OUT &= ~(1u << 11);
-        heater_timer_armed = 0;
-        local_irq_enable();
-        if (pending_seen) {
-            core.heater_poll_ends++;
-        } else {
-            core.heater_overruns++;
-            return -1;
-        }
-    }
-    return 0;
+    local_irq_disable();
+    ports[1]->OUT &= ~(1u << 11);
+    heater_timer_armed = 0;
+    local_irq_enable();
+    if (rc) core.heater_overruns++;
+    return rc;
 }
 static int hal_heater_pulse_active(void *ctx) {
     (void)ctx;
@@ -361,8 +374,7 @@ static int hal_heater_pulse_active(void *ctx) {
 static void hal_heater_pulse_cancel(void *ctx) {
     (void)ctx;
     local_irq_disable();
-    PB_HEATER_TIMER->CON = BIT(14);
-    heater_timer_armed = 0;
+    heater_timer_armed = 0; /* ends the in-line pulse loop; the timebase keeps running */
     ports[1]->OUT &= ~(1u << 11);
     local_irq_enable();
 }
@@ -376,7 +388,7 @@ static void hal_heater_pulse_cancel(void *ctx) {
  * task and cannot run while this function busy-waits. cdc_write_data is mutex-protected, so it is safe next to
  * tx_task. The command task is stalled for the whole run; the core refuses TIMETEST unless the printer is idle.
  * A CRC-valid ESTOP still cuts the heater in the USB RX task; the loops below see estop_fast_requested and stop. */
-enum { PT_T3D4, PT_T3D16, PT_T3D64, PT_T3D256, PT_STEP, PT_JIFFY, PT_DELAY, PT_DELAY2 };
+enum { PT_T3D4, PT_T3D16, PT_T3D64, PT_T3D256, PT_STEP, PT_JIFFY, PT_DELAY, PT_DELAY2, PT_TB };
 /* TIMER3 CON[7:4] prescale index (SDK irflt.c table: 1=/4, 2=/16, 3=/64, 8=/256) and a PRD that keeps one compare
  * period at 10 / 40 / 100 / 500 ms when the oscillator really is 24 MHz. */
 static const struct {
@@ -397,12 +409,13 @@ static int hal_time_test(void *ctx, unsigned src, unsigned ms, pb_time_result *o
     unsigned long j0 = 0, last_j = 0, guard = 0, spin = 0;
     u16 id = 0;
     u8 t3 = src <= PT_T3D256;
-    u32 con_run = 0;
+    u32 con_run = 0, saved_wraps = 0;
     int rc = PB_TIME_OK;
     (void)ctx;
-    if (src > PT_DELAY2) return PB_TIME_SETUP;
+    if (src > PT_TB) return PB_TIME_SETUP;
     if (estop_fast_requested || detached) return PB_TIME_ABORTED;
-    if (t3 && (!heater_timer_ready || heater_timer_armed)) return PB_TIME_SETUP;
+    if (t3 && (!timebase_ready || heater_timer_armed)) return PB_TIME_SETUP;
+    if (src == PT_TB && (!timebase_ready || timebase_stalled)) return PB_TIME_SETUP;
     if (src == PT_STEP && step_timer_id) return PB_TIME_SETUP;
     /* Let queued output (the ACK) leave first so it cannot interleave with the direct frames below. */
     for (i = 0; rd != wr && i < 50; i++) os_time_dly(1);
@@ -432,9 +445,24 @@ static int hal_time_test(void *ctx, unsigned src, unsigned ms, pb_time_result *o
     } else if (src == PT_DELAY) {
         target = ms;
         want_us = ms * 1000u;
+    } else if (src == PT_TB) {
+        target = ms * 1000u; /* microseconds of timebase time; n reports what the timebase says passed */
+        want_us = target;
+        guard = ms / 10u * 2u + 100u; /* jiffies (an independent clock) before giving up */
     } else {
         target = ms * 500u;
         want_us = target * 2u;
+    }
+    if (t3) {
+        /* TIMER3 is the timebase; borrow it for this run. The ISR now stops the timer on every compare (BIT(14)),
+         * as the old heater ISR did, and the timebase is restarted from the saved wrap count afterwards, so
+         * micros() loses the length of the run. Nothing else uses micros() while TIMETEST blocks the command task. */
+        local_irq_disable();
+        saved_wraps = tb_wraps;
+        tb_isr_con = BIT(14);
+        PB_TB_TIMER->CON = BIT(14);
+        PB_TB_TIMER->CNT = 0;
+        local_irq_enable();
     }
     core.tx_direct_on = 1;
     pb_tbp_status(&core, core.tbp_last_id, 2u, 0, 0); /* RUNNING: the host's start timestamp */
@@ -443,8 +471,8 @@ static int hal_time_test(void *ctx, unsigned src, unsigned ms, pb_time_result *o
     j0 = jiffies;
     last_j = j0;
     if (t3) {
-        /* The heater ISR stays enabled, and it is the ONLY thing counted: one compare = one ISR = one period.
-         * The ISR stops the timer and clears the pending flag, bumping heater_isr_count; the loop sees the
+        /* The TIMER3 ISR stays enabled, and it is the ONLY thing counted: one compare = one ISR = one period.
+         * The ISR (tb_isr_con = BIT(14)) stops the timer and clears the pending flag, bumping heater_isr_count; the loop sees the
          * bump, counts it once and restarts the timer from zero. Do NOT also count the pending flag
          * (CON bit 15): a compare can be seen there before the ISR runs, and the ISR then still runs
          * and counts the same compare again (the 2026-11-05 /4 /16 /64 rows were wrong for this reason).
@@ -452,19 +480,19 @@ static int hal_time_test(void *ctx, unsigned src, unsigned ms, pb_time_result *o
          * little long (not measured; the 2 % gate allows 200 us per 10 ms period at /4). If the compare
          * IRQ never fires the run ends in PB_TIME_TIMEOUT instead of a wrong count. */
         u32 isr0 = core.heater_isr_count, k;
-        PB_HEATER_TIMER->CON = BIT(14);
-        PB_HEATER_TIMER->CNT = 0;
-        PB_HEATER_TIMER->PRD = pt_t3[src].prd;
-        PB_HEATER_TIMER->CON = con_run;
+        PB_TB_TIMER->CON = BIT(14);
+        PB_TB_TIMER->CNT = 0;
+        PB_TB_TIMER->PRD = pt_t3[src].prd;
+        PB_TB_TIMER->CON = con_run;
         while (n < target) {
             k = core.heater_isr_count - isr0;
             if (k) {
                 isr0 += k;
                 isr_n += k;
                 n += k;
-                PB_HEATER_TIMER->CON = BIT(14);
-                PB_HEATER_TIMER->CNT = 0;
-                PB_HEATER_TIMER->CON = con_run;
+                PB_TB_TIMER->CON = BIT(14);
+                PB_TB_TIMER->CNT = 0;
+                PB_TB_TIMER->CON = con_run;
                 last_j = jiffies;
                 wdt_clear();
             } else if (estop_fast_requested) {
@@ -478,8 +506,8 @@ static int hal_time_test(void *ctx, unsigned src, unsigned ms, pb_time_result *o
             }
         }
         dj = (u32)(jiffies - j0);
-        PB_HEATER_TIMER->CON = BIT(14);
-        PB_HEATER_TIMER->CNT = 0;
+        PB_TB_TIMER->CON = BIT(14);
+        PB_TB_TIMER->CNT = 0;
         ticks = n * pt_t3[src].prd;
     } else if (src == PT_STEP) {
         pt_step_calls = 0;
@@ -512,6 +540,20 @@ static int hal_time_test(void *ctx, unsigned src, unsigned ms, pb_time_result *o
         }
         n = (u32)(jiffies - j0);
         dj = n;
+    } else if (src == PT_TB) {
+        u32 t0 = pb_tb_us();
+        while ((n = (u32)(pb_tb_us() - t0)) < target) {
+            wdt_clear();
+            if (estop_fast_requested) {
+                rc = PB_TIME_ABORTED;
+                break;
+            }
+            if ((unsigned long)(jiffies - j0) > guard) {
+                rc = PB_TIME_TIMEOUT;
+                break;
+            }
+        }
+        dj = (u32)(jiffies - j0);
     } else {
         unsigned step_us = src == PT_DELAY ? 1000u : 2u;
         for (n = 0; n < target; n++) {
@@ -526,6 +568,7 @@ static int hal_time_test(void *ctx, unsigned src, unsigned ms, pb_time_result *o
         }
         dj = (u32)(jiffies - j0);
     }
+    if (t3) pb_timebase_start(saved_wraps);
     out->n = n;
     out->want_us = want_us;
     out->dj = src == PT_JIFFY ? 0 : dj;
@@ -579,9 +622,10 @@ static void command_task(void *priv) {
         .heater_pulse_cancel = hal_heater_pulse_cancel,
         .time_test = hal_time_test,
         .tx_direct = hal_tx_direct,
+        .micros = hal_micros,
     };
     (void)priv;
-    pb_heater_timer_init();
+    pb_timebase_init();
     pb_init(&core, &h);
     step_timer_id = 0;
     core.step_timer_id = 0;

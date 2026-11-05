@@ -566,6 +566,7 @@ $("printBtn").onclick = async () => {
 // Each clock counts ~1000 ms in its own units; the host times the printer's RUNNING and DONE frames.
 // ratio = wall / what the firmware thinks it counted (1.00 = the clock is right).
 const TIME_SOURCES = [
+  "TIMEBASE",
   "T3D16",
   "T3D4",
   "T3D64",
@@ -576,6 +577,7 @@ const TIME_SOURCES = [
   "DELAY2",
 ];
 const TIME_LABELS = {
+  TIMEBASE: "timebase (micros)",
   T3D16: "heater timer /16",
   T3D4: "heater timer /4",
   T3D64: "heater timer /64",
@@ -588,7 +590,7 @@ const TIME_LABELS = {
 const timeReport = [];
 function timeVerdict(r) {
   const off = (r.ratio - 1) * 100;
-  if (Math.abs(off) <= 2)
+  if (Math.abs(off) <= (r.gate ?? 0.02) * 100)
     return r.isrMatchesN === false ? "ISR COUNT MISMATCH" : "OK";
   return r.ratio > 1
     ? `SLOW ${r.ratio.toFixed(2)}x (real time is longer than the firmware assumes)`
@@ -598,6 +600,10 @@ function timeDetail(r) {
   const bits = [];
   if (r.impliedOscMHz != null)
     bits.push(`oscillator ${r.impliedOscMHz.toFixed(2)} MHz (assumed 24)`);
+  if (r.src === "TIMEBASE")
+    bits.push(
+      `timebase counted ${r.nPerRun} us while the host saw ${r.meanWallMs.toFixed(1)} ms (gate 1 %)`,
+    );
   if (r.src === "STEP" && r.msPerUnit != null)
     bits.push(`${r.msPerUnit.toFixed(3)} ms per step tick (assumed 1)`);
   if (r.src === "JIFFY" && r.msPerUnit != null)
