@@ -562,3 +562,104 @@ describe("TBP fake-transport retry behavior", () => {
     expect(link.info).toBeNull();
   });
 });
+
+describe("timer self-test (TIMETEST)", () => {
+  const u32 = (v: number) => [
+    v >>> 24,
+    (v >>> 16) & 255,
+    (v >>> 8) & 255,
+    v & 255,
+  ];
+  // DONE body for a T3D4 run: src, n, want_us, dj, ticks, div, isr.
+  const t3d4 = Uint8Array.of(
+    STATE.DONE,
+    0,
+    ...u32(100),
+    ...u32(1000000),
+    ...u32(100),
+    ...u32(6000000),
+    0,
+    4,
+    ...u32(100),
+  );
+  const status = (link: PrinterLink, id: number, body: Uint8Array) =>
+    link.onLine(encode(id, KIND.STATUS, body).trim());
+
+  test("times RUNNING to DONE per run, averages, and pauses the keepalive meanwhile", async () => {
+    let now = 5000;
+    const sent: number[] = [];
+    const { link } = fakeLink((wire, _n, current) => {
+      const id = decode(wire).id;
+      sent.push(decode(wire).op);
+      ack(current, id);
+      now += 3;
+      status(current, id, Uint8Array.of(STATE.RUNNING));
+      now += 1002; // the printer counted 1000 ms of its own time in 1002 ms of ours
+      status(current, id, t3d4);
+      now += 50;
+    });
+    link.clock = () => now;
+    link.startKeepalive();
+    const progress: any[] = [];
+    link.clients.add({
+      send: (wire) => {
+        const e = JSON.parse(wire);
+        if (e.type === "time-test-progress") progress.push(e);
+      },
+    });
+    const r: any = await link.command("time-test", {
+      src: "T3D4",
+      ms: 1000,
+      reps: 3,
+    });
+    expect(sent).toEqual([OP.TIMETEST, OP.TIMETEST, OP.TIMETEST]);
+    expect(r).toMatchObject({
+      src: "T3D4",
+      runs: 3,
+      wantMs: 1000,
+      nPerRun: 100,
+      isrPerRun: 100,
+      withinGate: true,
+    });
+    expect(r.meanWallMs).toBeCloseTo(1002, 6);
+    expect(r.ratio).toBeCloseTo(1.002, 6);
+    expect(r.impliedOscMHz).toBeCloseTo(23.95, 1);
+    expect(progress.map((p) => p.run)).toEqual([1, 2, 3]);
+    expect(progress[0]).toMatchObject({ src: "T3D4", reps: 3, wantMs: 1000 });
+    // Back to normal afterwards: the keepalive runs again and other commands are allowed.
+    expect(link.keepaliveTimer).not.toBeNull();
+    expect((link as any).timeTestBusy).toBe(false);
+  });
+
+  test("a FAILED reply is reported by reason", async () => {
+    const { link } = fakeLink((wire, _n, current) => {
+      const id = decode(wire).id;
+      ack(current, id);
+      status(current, id, Uint8Array.of(STATE.FAILED, 0x1f, 3));
+    });
+    await expect(
+      link.command("time-test", { src: "STEP", ms: 1000, reps: 2 }),
+    ).rejects.toThrow(/TIMETEST STEP: could not start/);
+    expect((link as any).timeTestBusy).toBe(false);
+  });
+
+  test("refuses other commands while a run is counting, and rejects unknown sources", async () => {
+    const { link } = fakeLink((wire, _n, current) =>
+      ack(current, decode(wire).id),
+    );
+    const run = link.command("time-test", { src: "T3D16", ms: 1000, reps: 1 });
+    await Promise.resolve();
+    await expect(link.command("status", {})).rejects.toThrow(
+      /timer self-test is running/,
+    );
+    await expect(link.command("time-test", { src: "NOPE" })).rejects.toThrow(
+      /self-test is running|Unknown timer source/,
+    );
+    void run.catch(() => {});
+    link.drop("test over");
+    await expect(run).rejects.toThrow();
+    await expect(link.command("time-test", { src: "NOPE" })).rejects.toThrow(
+      /Unknown timer source/,
+    );
+  });
+});

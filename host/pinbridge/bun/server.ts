@@ -18,8 +18,15 @@ import {
   type Message,
   decodeMessage,
   describeMessage,
+  decodeTimeTestResult,
   describeTimeTestSummary,
   summarizeTimeTest,
+  summarizeTimeTestRuns,
+  type TimeTestRun,
+  TIME_SRC,
+  TIME_FAIL,
+  TIME_MS_MIN,
+  TIME_MS_MAX,
   translate,
   row,
   move,
@@ -105,6 +112,8 @@ function summarizeResult(action: string, r: any): string {
       return ` -> ${r.done}/${r.total} rows${r.stopped ? " (stopped)" : ""}`;
     case "connect":
       return ` -> ${r.state}`;
+    case "time-test":
+      return ` -> ${r.src} x${r.runs}: ratio ${Number(r.ratio).toFixed(4)}${r.withinGate ? "" : " OUT OF GATE"}`;
     case "status": {
       const s = r.status;
       if (!s) return "";
@@ -115,7 +124,7 @@ function summarizeResult(action: string, r: any): string {
   }
 }
 /** Commands that run for a while: their start is logged too, not just their end. */
-const LONG_ACTIONS = new Set(["print-job", "print-solid"]);
+const LONG_ACTIONS = new Set(["print-job", "print-solid", "time-test"]);
 const QUIET_ACTIONS = new Set(["ports", "status"]);
 /** Per-command ack/terminal timeout for console and UI sends. */
 function commandTimeoutMs(cmd: Command): number {
@@ -154,6 +163,8 @@ type Pending = {
   retries: number;
   timeout: number;
   retry?: (expectedId?: number) => void;
+  /** Sees every ACK/STATUS/ERR frame for this id with the host clock at receipt (TIMETEST uses it to time RUNNING..DONE). */
+  onFrame?: (f: Frame, at: number) => void;
 };
 export class PrinterLink {
   serial: Uart | null = null;
@@ -524,7 +535,10 @@ export class PrinterLink {
     this.setState("reconnecting");
     this.scheduleReconnect(1400);
   }
+  /** Monotonic millisecond clock used to timestamp printer frames; replaceable in tests. */
+  clock: () => number = () => performance.now();
   onLine(line: string) {
+    const rxAt = this.clock(); // stamp before any parsing or logging
     let f;
     try {
       f = decode(line);
@@ -553,6 +567,7 @@ export class PrinterLink {
       return;
     }
     const p = this.pending.get(f.id);
+    if (p) p.onFrame?.(f, rxAt);
     if (!p) {
       this.emit("frame", {
         direction: "rx",
@@ -836,14 +851,16 @@ export class PrinterLink {
     data = new Uint8Array(),
     waitTerminal = true,
     timeout = 1200,
+    onFrame?: (f: Frame, at: number) => void,
   ): Promise<any> {
-    return this.transactNow(op, data, waitTerminal, timeout);
+    return this.transactNow(op, data, waitTerminal, timeout, onFrame);
   }
   private async transactNow(
     op: number,
     data = new Uint8Array(),
     waitTerminal = true,
     timeout = 1200,
+    onFrame?: (f: Frame, at: number) => void,
   ) {
     if (this.mock) {
       const id = op === OP.HELLO ? 1 : this.nextId;
@@ -888,6 +905,7 @@ export class PrinterLink {
         waitTerminal,
         retries: 0,
         timeout,
+        onFrame,
       };
       this.pending.set(id, p);
       const attempt = (expectedId?: number) => {
@@ -945,6 +963,109 @@ export class PrinterLink {
     });
     const frame = await promise;
     return frame;
+  }
+  private timeTestBusy = false;
+  /**
+   * One binary TIMETEST (F0) run: the host clock at the printer's RUNNING frame and at its DONE frame bracket the
+   * counted interval (the firmware writes both straight to USB), and the DONE body says what it counted.
+   */
+  private async timeRun(src: string, ms: number): Promise<TimeTestRun> {
+    const mark = {
+      begin: null as number | null,
+      end: null as number | null,
+      failArg: null as number | null,
+    };
+    const wire = Uint8Array.of(
+      TIME_SRC[src as keyof typeof TIME_SRC],
+      ms >> 8,
+      ms & 0xff,
+    );
+    let frame: any;
+    try {
+      // The printer blocks for the whole run, so the ACK/status timeout must outlast it or the frame is resent.
+      frame = await this.transact(
+        OP.TIMETEST,
+        wire,
+        true,
+        ms + 3000,
+        (f, at) => {
+          if (f.op !== KIND.STATUS) return;
+          const state = f.data[0];
+          if (state === STATE.RUNNING) mark.begin = at;
+          else if (state === STATE.DONE) mark.end = at;
+          else if (state === STATE.FAILED) mark.failArg = f.data[2] ?? null;
+        },
+      );
+    } catch (e) {
+      const why =
+        mark.failArg === TIME_FAIL.TIMEOUT
+          ? "the firmware's timer never finished (its compare interrupt did not fire)"
+          : mark.failArg === TIME_FAIL.ABORTED
+            ? "aborted by an emergency stop or a USB detach"
+            : mark.failArg === TIME_FAIL.SETUP
+              ? "could not start (printer busy, or that timer is in use)"
+              : null;
+      throw why ? new Error(`TIMETEST ${src}: ${why}`) : e;
+    }
+    if (mark.begin === null || mark.end === null)
+      throw new Error(`TIMETEST ${src}: no RUNNING/DONE pair to time`);
+    return {
+      test: decodeTimeTestResult([...frame.data.slice(1)]),
+      wallMs: mark.end - mark.begin,
+    };
+  }
+  /**
+   * Timer self-test: `reps` runs of one clock source, each counting about `ms` in the source's own units while
+   * the host times RUNNING..DONE. The printer cannot answer anything else while counting, so the keepalive is
+   * paused for the duration. Nothing heats or moves.
+   */
+  async timeTest(src: string, ms = 1000, reps = 5) {
+    if (!Object.hasOwn(TIME_SRC, src))
+      throw new Error(`Unknown timer source: ${src}`);
+    ms = Math.max(
+      TIME_MS_MIN,
+      Math.min(TIME_MS_MAX, Math.trunc(Number(ms) || 1000)),
+    );
+    reps = Math.max(1, Math.min(10, Math.trunc(Number(reps) || 5)));
+    if (this.mock) {
+      const runs: TimeTestRun[] = Array.from({ length: reps }, () => ({
+        test: {
+          src: TIME_SRC[src as keyof typeof TIME_SRC],
+          n: ms,
+          wantUs: ms * 1000,
+          dj: 0,
+          ticks: 0,
+          div: 0,
+          isr: 0,
+        },
+        wallMs: ms,
+      }));
+      return { ...summarizeTimeTestRuns(runs), mock: true };
+    }
+    if (this.timeTestBusy)
+      throw new Error("A timer self-test is already running");
+    if (!this.serial?.isOpen || this.state !== "connected")
+      throw new Error("UART is not connected");
+    this.timeTestBusy = true;
+    this.stopKeepalive();
+    try {
+      const runs: TimeTestRun[] = [];
+      for (let i = 0; i < reps; i++) {
+        const run = await this.timeRun(src, ms);
+        runs.push(run);
+        this.emit("time-test-progress", {
+          src,
+          run: i + 1,
+          reps,
+          wallMs: run.wallMs,
+          wantMs: run.test.wantUs / 1000,
+        });
+      }
+      return summarizeTimeTestRuns(runs);
+    } finally {
+      this.timeTestBusy = false;
+      if (this.state === "connected" && !this.rawSession) this.startKeepalive();
+    }
   }
   private requireHeatReady(burnUs: number) {
     if (burnUs <= 0 || this.mock) return;
@@ -1093,6 +1214,12 @@ export class PrinterLink {
     }
   }
   async command(action: string, msg: any) {
+    // The firmware cannot answer anything while a TIMETEST run is counting.
+    if (
+      this.timeTestBusy &&
+      !["ports", "connect", "disconnect", "time-test"].includes(action)
+    )
+      throw new Error("A timer self-test is running; wait for it to finish");
     switch (action) {
       case "ports":
         return { ports: await this.ports() };
@@ -1110,6 +1237,12 @@ export class PrinterLink {
         this.closePort();
         this.setState("disconnected");
         return {};
+      case "time-test":
+        return await this.timeTest(
+          String(msg.src ?? ""),
+          Number(msg.ms ?? 1000),
+          Number(msg.reps ?? 5),
+        );
       case "status": {
         const f = await this.transact(OP.STAT, new Uint8Array(), true);
         if (f.op === KIND.STATUS && f.data.length >= 14)

@@ -14,6 +14,7 @@ const state = {
   printTotal: 0,
   printDone: 0,
   toastTimer: null,
+  timeTestRunning: false,
 };
 const pending = new Map();
 const STEPS_PER_MM = 32;
@@ -48,7 +49,12 @@ function send(action, extra = {}) {
   const requestId = ++state.requestSeq;
   state.ws.send(JSON.stringify({ action, ...extra, requestId }));
   return new Promise((resolve, reject) => {
-    const timeoutMs = action === "print-solid" ? 3600000 : 15000;
+    const timeoutMs =
+      action === "print-solid"
+        ? 3600000
+        : action === "time-test"
+          ? 180000
+          : 15000;
     const timer = setTimeout(() => {
       const p = pending.get(requestId);
       if (p) {
@@ -122,6 +128,8 @@ function setConnection(c) {
     "estopBtn",
   ])
     $(id).disabled = !state.connected;
+  for (const b of document.querySelectorAll(".time-btn"))
+    b.disabled = !state.connected || state.timeTestRunning;
   const info = state.info;
   const wasHeatReady = state.heatReady;
   const requiredSensors = 0x01 | 0x02 | 0x08;
@@ -326,6 +334,10 @@ function handleMessage(m) {
           log(`${p.action}: accepted`, "success");
       }
     }
+    return;
+  }
+  if (m.type === "time-test-progress") {
+    timeShowProgress(m);
     return;
   }
   if (m.type === "toast") {
@@ -550,4 +562,111 @@ $("printBtn").onclick = async () => {
     $("printBtn").disabled = !state.connected;
   }
 };
+// ---- Timer self-test: binary TIMETEST (F0) + host wall clock ---------------------------------
+// Each clock counts ~1000 ms in its own units; the host times the printer's RUNNING and DONE frames.
+// ratio = wall / what the firmware thinks it counted (1.00 = the clock is right).
+const TIME_SOURCES = [
+  "T3D16",
+  "T3D4",
+  "T3D64",
+  "T3D256",
+  "STEP",
+  "JIFFY",
+  "DELAY",
+  "DELAY2",
+];
+const TIME_LABELS = {
+  T3D16: "heater timer /16",
+  T3D4: "heater timer /4",
+  T3D64: "heater timer /64",
+  T3D256: "heater timer /256",
+  STEP: "step tick",
+  JIFFY: "jiffies",
+  DELAY: "delay 1000us",
+  DELAY2: "delay 2us",
+};
+const timeReport = [];
+function timeVerdict(r) {
+  const off = (r.ratio - 1) * 100;
+  if (Math.abs(off) <= 2)
+    return r.isrMatchesN === false ? "ISR COUNT MISMATCH" : "OK";
+  return r.ratio > 1
+    ? `SLOW ${r.ratio.toFixed(2)}x (real time is longer than the firmware assumes)`
+    : `FAST ${(1 / r.ratio).toFixed(2)}x (real time is shorter than the firmware assumes)`;
+}
+function timeDetail(r) {
+  const bits = [];
+  if (r.impliedOscMHz != null)
+    bits.push(`oscillator ${r.impliedOscMHz.toFixed(2)} MHz (assumed 24)`);
+  if (r.src === "STEP" && r.msPerUnit != null)
+    bits.push(`${r.msPerUnit.toFixed(3)} ms per step tick (assumed 1)`);
+  if (r.src === "JIFFY" && r.msPerUnit != null)
+    bits.push(`${r.msPerUnit.toFixed(2)} ms per jiffy (assumed 10)`);
+  if (r.src === "DELAY" && r.msPerUnit != null)
+    bits.push(`${(r.msPerUnit * 1000).toFixed(1)} us per call (asked 1000)`);
+  if (r.src === "DELAY2" && r.msPerUnit != null)
+    bits.push(`${(r.msPerUnit * 1000).toFixed(3)} us per call (asked 2)`);
+  if (r.msPerJiffy != null)
+    bits.push(`jiffy cross-check ${r.msPerJiffy.toFixed(2)} ms`);
+  if (r.isrPerRun != null)
+    bits.push(
+      `compare IRQ fired ${r.isrPerRun.toFixed(0)}x per run (counted ${r.nPerRun})`,
+    );
+  return bits.join(", ");
+}
+function timeRender(extra = "") {
+  const head =
+    "clock               want ms   wall ms (mean +- sd, min..max)       ratio  verdict";
+  const lines = timeReport.map((r) => {
+    const label = (TIME_LABELS[r.src] ?? r.src).padEnd(19);
+    if (r.error) return `${label} ${r.error}`;
+    return (
+      `${label} ${r.wantMs.toFixed(0).padStart(7)}   ` +
+      `${r.meanWallMs.toFixed(1).padStart(7)} +- ${r.stdevMs.toFixed(1).padEnd(5)} ` +
+      `${r.minWallMs.toFixed(1)}..${r.maxWallMs.toFixed(1)}`.padEnd(22) +
+      ` ${r.ratio.toFixed(3)}  ${timeVerdict(r)}\n${" ".repeat(20)}${timeDetail(r)}`
+    );
+  });
+  $("timeOut").textContent = [head, ...lines, extra].filter(Boolean).join("\n");
+}
+function timeShowProgress(m) {
+  timeRender(
+    `${TIME_LABELS[m.src] ?? m.src}: run ${m.run}/${m.reps}, ${m.wallMs.toFixed(1)} ms wall for ${m.wantMs.toFixed(0)} ms counted...`,
+  );
+}
+function timeSetRunning(on) {
+  state.timeTestRunning = on;
+  for (const b of document.querySelectorAll(".time-btn"))
+    b.disabled = on || !state.connected;
+}
+async function runTimeTests(sources) {
+  if (state.timeTestRunning) return;
+  timeSetRunning(true);
+  timeReport.length = 0;
+  timeRender(`starting ${sources.length} test(s)...`);
+  try {
+    for (const src of sources) {
+      try {
+        const r = await send("time-test", { src, ms: 1000, reps: 5 });
+        timeReport.push(r);
+        log(
+          `Timer test ${src}: ${r.meanWallMs.toFixed(1)} ms wall for ${r.wantMs.toFixed(0)} ms counted (${r.ratio.toFixed(3)}x) ${timeVerdict(r)}`,
+          r.withinGate ? "success" : "warn",
+        );
+      } catch (e) {
+        timeReport.push({ src, error: e.message });
+        log(`Timer test ${src} failed: ${e.message}`, "error");
+        // A busy printer or a dead link will not get better by retrying the next source.
+        break;
+      }
+      timeRender();
+    }
+  } finally {
+    timeSetRunning(false);
+    timeRender();
+  }
+}
+$("timeAllBtn").onclick = () => runTimeTests(TIME_SOURCES);
+for (const b of document.querySelectorAll(".time-btn[data-src]"))
+  b.onclick = () => runTimeTests([b.dataset.src]);
 connectSocket();

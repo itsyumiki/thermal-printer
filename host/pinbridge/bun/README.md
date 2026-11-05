@@ -38,6 +38,10 @@ Hex only: a frame is one line of hex digits, `<ID><OP><LEN><DATA><CRC16>` (see [
 
 The older Python pinbridge CLI/WebUI uses the removed plaintext protocol and is incompatible with this firmware; use this Bun host only. `--mock` uses the same UI and a small in-process virtual printer, so protocol/UI development stays on one host implementation.
 
+## Timer self-test panel
+
+The web UI's "Timer self-test" panel runs the binary `TIMETEST` diagnostic (TBP opcode `F0`, [spec section 7.10](../../../docs/thermal-protocol-spec.md)). One button per clock source (heater timer /16, /4, /64, /256, step tick, jiffies, 1000 us and 2 us delay loops) plus "Run all" (about 50 s). Each source runs five times at 1,000 ms; the host times the printer's RUNNING and DONE frames and shows mean, spread, wall/want ratio (OK within 2 %), the oscillator the TIMER3 rows imply, `isr` against the counted periods, and the per-unit cost of the step tick, jiffy and delay sources. The printer cannot answer anything else while counting, so the host pauses its STAT keepalive for the run and rejects other UI commands until it ends; the printer refuses the test while it is moving or heating. Nothing heats or moves. The WebSocket action is `time-test` (`src`, optional `ms` 100..3000 and `reps` 1..10); progress arrives as `time-test-progress` events.
+
 ## Protocol and controls
 
 [`tbp/`](tbp/README.md) implements TBP v1 CRC-16/CCITT-FALSE, frame validation, signed motion, ROW payloads, INFO parsing and the hex frame <-> command/message translator, and has no dependencies outside its folder. The firmware recognizes the same newline-delimited hex frames and implements HELLO, STAT, FLUSH, CONFIG echo, ROW, MOVE, DWELL, COILS release and ESTOP. The current MCU executor performs each row/move/dwell synchronously in the command task and reports terminal status; it is a working protocol bridge, **not yet the fully asynchronous look-ahead queue described by the TBP draft**. Do not assume continuous motion between rows or queue depth as implemented until that executor is upgraded and hardware-validated.

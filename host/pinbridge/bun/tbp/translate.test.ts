@@ -10,6 +10,7 @@ import {
   encodeCommand,
   encodeRaw,
   summarizeTimeTest,
+  summarizeTimeTestRuns,
   translate,
   type Command,
 } from "./index.ts";
@@ -341,5 +342,65 @@ describe("TIMETEST (F0)", () => {
     expect(
       summarizeTimeTest({ ...m.result.test, isr: 99 }, 1000).withinGate,
     ).toBe(false);
+  });
+  test("several runs fold into one row and the gate needs every ISR count to match", () => {
+    const t3 = {
+      src: 1,
+      n: 25,
+      wantUs: 1000000,
+      dj: 100,
+      ticks: 1500000,
+      div: 16,
+      isr: 25,
+    };
+    const s = summarizeTimeTestRuns([
+      { test: t3, wallMs: 1001 },
+      { test: t3, wallMs: 1003 },
+      { test: t3, wallMs: 999 },
+    ]);
+    expect(s).toMatchObject({
+      src: "T3D16",
+      runs: 3,
+      wantMs: 1000,
+      minWallMs: 999,
+      maxWallMs: 1003,
+      nPerRun: 25,
+      isrPerRun: 25,
+      isrMatchesN: true,
+      withinGate: true,
+    });
+    expect(s.meanWallMs).toBeCloseTo(1001, 6);
+    expect(s.ratio).toBeCloseTo(1.001, 6);
+    expect(s.impliedOscMHz).toBeCloseTo(23.98, 1);
+    expect(s.msPerJiffy).toBeCloseTo(10.01, 2);
+    const bad = summarizeTimeTestRuns([
+      { test: t3, wallMs: 1000 },
+      { test: { ...t3, isr: 24 }, wallMs: 1000 },
+    ]);
+    expect(bad.isrMatchesN).toBe(false);
+    expect(bad.withinGate).toBe(false);
+    // A non-TIMER3 source has no ISR figures and no oscillator.
+    const step = summarizeTimeTestRuns([
+      {
+        test: {
+          src: 4,
+          n: 1000,
+          wantUs: 1000000,
+          dj: 100,
+          ticks: 0,
+          div: 0,
+          isr: 0,
+        },
+        wallMs: 1010,
+      },
+    ]);
+    expect(step).toMatchObject({
+      isrPerRun: null,
+      isrMatchesN: null,
+      impliedOscMHz: null,
+      withinGate: true,
+    });
+    expect(step.msPerUnit).toBeCloseTo(1.01, 6);
+    expect(() => summarizeTimeTestRuns([])).toThrow(/no TIMETEST runs/);
   });
 });

@@ -281,6 +281,76 @@
             </div>
           </div>
         </section>
+        <section class="panel diag-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">TIMER SELF-TEST</p>
+              <h2>Do the clocks tell the truth?</h2>
+            </div>
+            <span class="panel-icon">⏱</span>
+          </div>
+          <p class="microcopy">
+            Each clock counts about 1000 ms in its own units while this page
+            times the printer's RUNNING and DONE messages, five runs averaged.
+            The printer ignores everything else while counting (about 6 s per
+            source) and refuses to start while it is feeding or heating. Nothing
+            heats or moves.
+          </p>
+          <div class="job-actions">
+            <button class="btn btn-primary time-btn" id="timeAllBtn" disabled>
+              Run all (about 50 s)</button
+            ><button
+              class="btn btn-secondary time-btn"
+              data-src="T3D16"
+              disabled
+            >
+              Heater timer, /16 (used for pulses)</button
+            ><button
+              class="btn btn-secondary time-btn"
+              data-src="T3D4"
+              disabled
+            >
+              Heater timer, /4</button
+            ><button
+              class="btn btn-secondary time-btn"
+              data-src="T3D64"
+              disabled
+            >
+              Heater timer, /64</button
+            ><button
+              class="btn btn-secondary time-btn"
+              data-src="T3D256"
+              disabled
+            >
+              Heater timer, /256</button
+            ><button
+              class="btn btn-secondary time-btn"
+              data-src="STEP"
+              disabled
+            >
+              Step tick (1 ms)</button
+            ><button
+              class="btn btn-secondary time-btn"
+              data-src="JIFFY"
+              disabled
+            >
+              Jiffies (10 ms)</button
+            ><button
+              class="btn btn-secondary time-btn"
+              data-src="DELAY"
+              disabled
+            >
+              Delay loop, 1000 µs calls</button
+            ><button
+              class="btn btn-secondary time-btn"
+              data-src="DELAY2"
+              disabled
+            >
+              Delay loop, 2 µs calls
+            </button>
+          </div>
+          <pre class="mono microcopy" id="timeOut">No timer test run yet.</pre>
+        </section>
         <section class="panel console-panel">
           <div class="panel-head">
             <div>

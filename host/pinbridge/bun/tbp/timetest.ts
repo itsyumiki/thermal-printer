@@ -43,3 +43,57 @@ export function describeTimeTestSummary(
     ` -> ${s.withinGate ? "within 2 %" : "OUT OF GATE"}`
   );
 }
+
+/** One finished TIMETEST run: the firmware's decoded result plus the host's wall time between RUNNING and DONE. */
+export type TimeTestRun = {
+  test: ReturnType<typeof decodeTimeTestResult>;
+  wallMs: number;
+};
+
+const mean = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
+const stdev = (a: number[]) =>
+  a.length < 2
+    ? 0
+    : Math.sqrt(a.reduce((s, x) => s + (x - mean(a)) ** 2, 0) / (a.length - 1));
+
+/**
+ * Several runs of one source, folded into the figures the web UI shows. `ratio` is the mean wall time over what
+ * the firmware thinks it counted; `withinGate` also needs one ISR per counted TIMER3 period in every run.
+ */
+export function summarizeTimeTestRuns(runs: TimeTestRun[]) {
+  if (runs.length === 0) throw new Error("no TIMETEST runs to summarize");
+  const per = runs.map((r) => summarizeTimeTest(r.test, r.wallMs));
+  const wall = per.map((s) => s.wallMs);
+  const avg = (
+    f: (s: (typeof per)[number], r: TimeTestRun) => number | null,
+  ) => {
+    const v = per
+      .map((s, i) => f(s, runs[i]!))
+      .filter((x): x is number => x !== null && Number.isFinite(x));
+    return v.length ? mean(v) : null;
+  };
+  const first = per[0]!;
+  const meanWallMs = mean(wall);
+  return {
+    src: first.src,
+    runs: runs.length,
+    wantMs: first.wantMs,
+    meanWallMs,
+    stdevMs: stdev(wall),
+    minWallMs: Math.min(...wall),
+    maxWallMs: Math.max(...wall),
+    ratio: first.wantMs > 0 ? meanWallMs / first.wantMs : NaN,
+    nPerRun: runs[0]!.test.n,
+    /** What one counted unit is really worth (ms): a step tick, a jiffy, a delay call or a TIMER3 period. */
+    msPerUnit: avg((s, r) => (r.test.n > 0 ? s.wallMs / r.test.n : null)),
+    impliedOscMHz: avg((s) => s.impliedOscMHz),
+    msPerJiffy: avg((s) => s.msPerJiffy),
+    isrPerRun: first.isrMatchesN === null ? null : avg((_s, r) => r.test.isr),
+    isrMatchesN:
+      first.isrMatchesN === null ? null : per.every((s) => s.isrMatchesN),
+    withinGate:
+      Number.isFinite(meanWallMs / first.wantMs) &&
+      Math.abs(meanWallMs / first.wantMs - 1) <= TIME_GATE &&
+      per.every((s) => s.isrMatchesN !== false),
+  };
+}
