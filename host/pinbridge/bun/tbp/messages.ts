@@ -76,6 +76,24 @@ export function decodeRowResult(b: Uint8Array | number[]) {
   };
 }
 
+/** TIMETEST DONE result, without the leading state byte (23 bytes). `ticks`, `div` and `isr` are 0 for non-TIMER3 sources. */
+export function decodeTimeTestResult(b: Uint8Array | number[]) {
+  if (b.length < 23)
+    throw new Error(`TIMETEST result needs 23 bytes, got ${b.length}`);
+  const u32 = (i: number) =>
+    (b[i]! * 0x1000000 + (b[i + 1]! << 16) + (b[i + 2]! << 8) + b[i + 3]!) >>>
+    0;
+  return {
+    src: b[0]!,
+    n: u32(1),
+    wantUs: u32(5),
+    dj: u32(9),
+    ticks: u32(13),
+    div: b[17]! * 256 + b[18]!,
+    isr: u32(19),
+  };
+}
+
 export type DoneResult =
   | { kind: "info"; info: Info }
   | { kind: "stat"; stat: Stat }
@@ -83,6 +101,7 @@ export type DoneResult =
   | { kind: "flushed"; flushed: number }
   | { kind: "move"; periodEffUs: number }
   | { kind: "config"; key: number; value: number }
+  | { kind: "timetest"; test: ReturnType<typeof decodeTimeTestResult> }
   | { kind: "none" }
   | { kind: "unknown"; data: number[] };
 
@@ -147,6 +166,8 @@ function decodeDone(
         key: rest[0]!,
         value: rest[1]! * 256 + rest[2]!,
       };
+    if (op === OP.TIMETEST || (op === undefined && rest.length === 23))
+      return { kind: "timetest", test: decodeTimeTestResult(rest) };
     if (rest.length === 0) return { kind: "none" };
   } catch {}
   return { kind: "unknown", data: [...rest] };

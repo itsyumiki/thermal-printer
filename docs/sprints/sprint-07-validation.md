@@ -11,7 +11,7 @@
 
 ## Tasks
 
-1. Re-run the full `PTIME` suite and record the table as the new baseline.
+1. Re-run the full `TIMETEST` suite and record the table as the new baseline.
 2. With a scope on PB11 and a phase pin, run test prints at stock-equivalent pulse widths (from Sprint 0) and at larger widths. Record darkness against width.
 3. Resolve the blank-print bug: either the stock-equivalent width now prints, or the remaining difference is named with evidence.
 4. Restore `PB_TUNE_HEATER_SLICE_MAX_US` and `PB_TUNE_HEATER_BURN_MAX_US` to stock-derived or measured limits.

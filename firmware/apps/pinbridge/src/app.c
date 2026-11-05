@@ -366,6 +366,174 @@ static void hal_heater_pulse_cancel(void *ctx) {
     ports[1]->OUT &= ~(1u << 11);
     local_irq_enable();
 }
+/* ---- TIMETEST (opcode F0): timer self-test ------------------------------------------------------
+ * Each source counts roughly `ms` milliseconds in its OWN units (compare periods, callbacks, jiffies, delay
+ * calls). The RUNNING frame goes straight to USB just before counting starts and the DONE frame straight
+ * after it ends, so the host's receive timestamps bracket the interval. wall / want shows how far the timer is
+ * from real time; want is what the firmware assumes the count is worth. Nothing here touches the printer head,
+ * motor or PB11.
+ * Both frames bypass the tx ring on purpose (core.tx_direct_on): tx_task has a lower priority than the command
+ * task and cannot run while this function busy-waits. cdc_write_data is mutex-protected, so it is safe next to
+ * tx_task. The command task is stalled for the whole run; the core refuses TIMETEST unless the printer is idle.
+ * A CRC-valid ESTOP still cuts the heater in the USB RX task; the loops below see estop_fast_requested and stop. */
+enum { PT_T3D4, PT_T3D16, PT_T3D64, PT_T3D256, PT_STEP, PT_JIFFY, PT_DELAY, PT_DELAY2 };
+/* TIMER3 CON[7:4] prescale index (SDK irflt.c table: 1=/4, 2=/16, 3=/64, 8=/256) and a PRD that keeps one compare
+ * period at 10 / 40 / 100 / 500 ms when the oscillator really is 24 MHz. */
+static const struct {
+    u8 idx;
+    u16 div, prd;
+} pt_t3[4] = {{1, 4, 60000}, {2, 16, 60000}, {3, 64, 37500}, {8, 256, 46875}};
+static volatile u32 pt_step_calls;
+static void pt_step_cb(void *priv) {
+    (void)priv;
+    pt_step_calls++;
+}
+static int hal_tx_direct(void *ctx, const char *s, size_t n) {
+    (void)ctx;
+    return cdc_write_data(PB_USB, (u8 *)s, n) == n ? (int)n : -1;
+}
+static int hal_time_test(void *ctx, unsigned src, unsigned ms, pb_time_result *out) {
+    u32 want_us = 0, n = 0, target = 0, period_us = 0, ticks = 0, isr_n = 0, dj = 0, i;
+    unsigned long j0 = 0, last_j = 0, guard = 0, spin = 0;
+    u16 id = 0;
+    u8 t3 = src <= PT_T3D256;
+    u32 con_run = 0;
+    int rc = PB_TIME_OK;
+    (void)ctx;
+    if (src > PT_DELAY2) return PB_TIME_SETUP;
+    if (estop_fast_requested || detached) return PB_TIME_ABORTED;
+    if (t3 && (!heater_timer_ready || heater_timer_armed)) return PB_TIME_SETUP;
+    if (src == PT_STEP && step_timer_id) return PB_TIME_SETUP;
+    /* Let queued output (the ACK) leave first so it cannot interleave with the direct frames below. */
+    for (i = 0; rd != wr && i < 50; i++) os_time_dly(1);
+    if (rd != wr) return PB_TIME_SETUP;
+    /* Setup that can fail happens before RUNNING is sent. */
+    if (t3) {
+        period_us = (u32)pt_t3[src].prd * pt_t3[src].div / 24u; /* at 24 MHz */
+        target = ((u32)ms * 1000u + period_us / 2u) / period_us;
+        if (!target) target = 1;
+        want_us = target * period_us;
+        guard = period_us / 1000u * 3u + 100u; /* jiffies without a compare before giving up */
+        con_run = (0b10u << 2) | ((u32)pt_t3[src].idx << 4) | BIT(0) | BIT(14);
+    } else if (src == PT_STEP) {
+        target = ms;
+        want_us = ms * 1000u;
+        guard = ms + 500u; /* jiffies */
+        pt_step_calls = 0;
+        id = sys_hi_timer_add(NULL, pt_step_cb, 1);
+        if (!id) return PB_TIME_SETUP;
+    } else if (src == PT_JIFFY) {
+        target = ms / 10u; /* assumes 10 ms per jiffy (HZ 100); wall time shows the real value */
+        want_us = target * 10000u;
+        spin = (unsigned long)ms * 60000ul;
+        j0 = jiffies; /* start on a jiffy edge */
+        while (jiffies == j0 && spin) spin--;
+        if (!spin) return PB_TIME_SETUP;
+    } else if (src == PT_DELAY) {
+        target = ms;
+        want_us = ms * 1000u;
+    } else {
+        target = ms * 500u;
+        want_us = target * 2u;
+    }
+    core.tx_direct_on = 1;
+    pb_tbp_status(&core, core.tbp_last_id, 2u, 0, 0); /* RUNNING: the host's start timestamp */
+    core.tx_direct_on = 0;
+    /* ---- counting: nothing allocates or sends from here to the end of the run ---- */
+    j0 = jiffies;
+    last_j = j0;
+    if (t3) {
+        /* The heater ISR stays enabled, and it is the ONLY thing counted: one compare = one ISR = one period.
+         * The ISR stops the timer and clears the pending flag, bumping heater_isr_count; the loop sees the
+         * bump, counts it once and restarts the timer from zero. Do NOT also count the pending flag
+         * (CON bit 15): a compare can be seen there before the ISR runs, and the ISR then still runs
+         * and counts the same compare again (the 2026-11-05 /4 /16 /64 rows were wrong for this reason).
+         * Bias: every restart adds the ISR entry plus loop latency to its period, so n periods read a
+         * little long (not measured; the 2 % gate allows 200 us per 10 ms period at /4). If the compare
+         * IRQ never fires the run ends in PB_TIME_TIMEOUT instead of a wrong count. */
+        u32 isr0 = core.heater_isr_count, k;
+        PB_HEATER_TIMER->CON = BIT(14);
+        PB_HEATER_TIMER->CNT = 0;
+        PB_HEATER_TIMER->PRD = pt_t3[src].prd;
+        PB_HEATER_TIMER->CON = con_run;
+        while (n < target) {
+            k = core.heater_isr_count - isr0;
+            if (k) {
+                isr0 += k;
+                isr_n += k;
+                n += k;
+                PB_HEATER_TIMER->CON = BIT(14);
+                PB_HEATER_TIMER->CNT = 0;
+                PB_HEATER_TIMER->CON = con_run;
+                last_j = jiffies;
+                wdt_clear();
+            } else if (estop_fast_requested) {
+                rc = PB_TIME_ABORTED;
+                break;
+            } else if ((unsigned long)(jiffies - last_j) > guard) {
+                rc = PB_TIME_TIMEOUT;
+                break;
+            } else {
+                wdt_clear(); /* a dead compare IRQ must end in a timeout, not in a watchdog reset */
+            }
+        }
+        dj = (u32)(jiffies - j0);
+        PB_HEATER_TIMER->CON = BIT(14);
+        PB_HEATER_TIMER->CNT = 0;
+        ticks = n * pt_t3[src].prd;
+    } else if (src == PT_STEP) {
+        pt_step_calls = 0;
+        while (pt_step_calls < target) {
+            wdt_clear();
+            if (estop_fast_requested) {
+                rc = PB_TIME_ABORTED;
+                break;
+            }
+            if ((unsigned long)(jiffies - j0) > guard) {
+                rc = PB_TIME_TIMEOUT;
+                break;
+            }
+        }
+        n = pt_step_calls;
+        dj = (u32)(jiffies - j0);
+        sys_hi_timer_del(id);
+    } else if (src == PT_JIFFY) {
+        spin = (unsigned long)ms * 60000ul;
+        while ((u32)(jiffies - j0) < target) {
+            wdt_clear();
+            if (estop_fast_requested) {
+                rc = PB_TIME_ABORTED;
+                break;
+            }
+            if (!--spin) {
+                rc = PB_TIME_TIMEOUT;
+                break;
+            }
+        }
+        n = (u32)(jiffies - j0);
+        dj = n;
+    } else {
+        unsigned step_us = src == PT_DELAY ? 1000u : 2u;
+        for (n = 0; n < target; n++) {
+            hal_delay_us(NULL, step_us);
+            if (!(n & 0x3ffu)) { /* checked sparingly so the flag read does not skew the 2 us loop */
+                wdt_clear();
+                if (estop_fast_requested) {
+                    rc = PB_TIME_ABORTED;
+                    break;
+                }
+            }
+        }
+        dj = (u32)(jiffies - j0);
+    }
+    out->n = n;
+    out->want_us = want_us;
+    out->dj = src == PT_JIFFY ? 0 : dj;
+    out->ticks = ticks;
+    out->div = t3 ? pt_t3[src].div : 0;
+    out->isr = isr_n;
+    return rc;
+}
 static void pb_step_timer(void *priv) {
     (void)priv;
     core.step_timer_callbacks++;
@@ -409,6 +577,8 @@ static void command_task(void *priv) {
         .heater_pulse_start = hal_heater_pulse_start,
         .heater_pulse_active = hal_heater_pulse_active,
         .heater_pulse_cancel = hal_heater_pulse_cancel,
+        .time_test = hal_time_test,
+        .tx_direct = hal_tx_direct,
     };
     (void)priv;
     pb_heater_timer_init();

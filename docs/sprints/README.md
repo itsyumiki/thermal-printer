@@ -1,6 +1,6 @@
 # Pinbridge timing and executor rework — sprints
 
-Status: planned, 2026-11-05. Replaces the earlier TBP protocol sprints 0–6, which are finished and live in git history (`git show 9e22ffc:docs/sprints/README.md`; restore with `git checkout 9e22ffc -- docs/sprints`).
+Status: active, 2026-11-05. The timing rework supersedes the earlier TBP protocol sprint plan. Sprint 0 has a documented static/derived analysis and scope plan, but no scope capture. Sprint 1 has a binary TBP `TIMETEST` implementation with passing local host tests; CI for this change and the owner’s hardware run are still pending. The earlier protocol sprint plan remains in git history (`git show 9e22ffc:docs/sprints/README.md`).
 
 ## Why this exists
 
@@ -11,7 +11,7 @@ The 2026-11-05 `PTIME` self-test measured the firmware's clocks against the host
 | Jiffies (`hal_ms`) | 10 ms | 10.00 ms |
 | Heater TIMER3 oscillator (`/256`, 2 periods, no double count) | 24 MHz | 23.98 MHz |
 | TIMER3 compare IRQ | not known to fire | fires every period |
-| TIMER3 `/4 /16 /64` rows | 24 MHz | **invalid**: the test counted each compare twice (ISR and pending flag); per-period IRQ counts agree with 10 / 40 / 100 ms within a few percent |
+| TIMER3 `/4 /16 /64` rows | 24 MHz | **old table invalid**: the test counted each compare twice (ISR and pending flag). Corrected firmware counts ISR deltas only; corrected hardware measurements are pending |
 | SDK "1 ms" step callback | 1 ms | **2.000 ms** |
 | `hal_delay_us(1000)` | 1000 us | 881 us |
 | `hal_delay_us(2)` | 2 us | **4.97 us** (about 3.2 us fixed + 0.88 x requested) |
@@ -24,12 +24,19 @@ Heater pulse widths therefore look trustworthy, and the blank prints are probabl
 
 One cooperative loop owns all printer timing. TIMER3 becomes a free-running timebase, with at most one slow wrap interrupt that doubles as the heater deadman. Heater pulses, step phases, shifting and sensor reads are all deadline-driven from that timebase in `command_task`. The remaining interrupts are the SDK's own (USB, jiffies). The stepper no longer uses `sys_hi_timer`, which deletes the `step_lock` race workaround.
 
+## Current verification snapshot (2026-11-05)
+
+- Current branch: `pinbridge`. This change includes the timing implementation and host parser described here; the commit is awaiting CI validation and hardware acceptance.
+- Local tests on the current working tree: `bun test` — 86 passed; `uv run --offline python -m unittest discover -s tests` from `host/pinbridge` — 52 passed; `git diff --check` — passed. No local firmware build was attempted.
+- The last observed GitHub Actions success was for the preceding commit `6125d2c`, before these timing changes. Do not treat it as CI validation of `TIMETEST`.
+- No printer hardware was flashed or measured during this verification. The corrected TIMER3 ratios and `isr == n` gate remain unverified on hardware.
+
 ## Sprint sequence
 
 | Sprint | Goal | Exit gate | Handoff |
 |---|---|---|---|
-| 0 | Pin down the stock heater and step timing | Documented stock TIMER2 setup and pulse range, scope capture plan or results | [Sprint 0](sprint-00-stock-timing.md) |
-| 1 | Make the timer self-test trustworthy | All four TIMER3 rows within 2 % on hardware | [Sprint 1](sprint-01-ptime-fix.md) |
+| 0 | Pin down the stock heater and step timing | Static/derived timing table and scope plan documented; actual stock PB11 scope capture still pending | [Sprint 0](sprint-00-stock-timing.md) |
+| 1 | Make the timer self-test trustworthy | Current binary `TIMETEST` code passes CI, then all four TIMER3 rows within 2 % on hardware with `isr == n` | [Sprint 1](sprint-01-ptime-fix.md) |
 | 2 | Free-running timebase and accurate delays | `micros()` HAL call, `hal_delay_us` within 2 %, deadman design proven | [Sprint 2](sprint-02-timebase.md) |
 | 3 | Heater pulse in the executor, on the timebase | Scope-measured PB11 width within 5 % of request, deadman verified | [Sprint 3](sprint-03-heater-in-loop.md) |
 | 4 | Main loop that polls while busy | Row throughput and e-stop latency measured, no TX starvation, no watchdog resets | [Sprint 4](sprint-04-main-loop.md) |

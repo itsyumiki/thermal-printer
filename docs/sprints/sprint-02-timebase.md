@@ -15,7 +15,7 @@
 1. Choose and document the timebase configuration: prescaler (e.g. /4 for fine resolution or /64 for long wrap), PRD, and whether a slow wrap interrupt is used. Prefer one timer at about 10 ms period whose ISR increments a wrap count and doubles as the heater deadman (Sprint 3). Write the trade-offs down.
 2. Add `uint32_t (*micros)(void *)` to `pb_hal`, with a consistent read of wrap count and counter. Update the four test HALs and add a simulated clock to the C harness.
 3. Rewrite `hal_delay_us` to wait on the timebase, with a bounded fallback if the timer is not running.
-4. Extend `PTIME` with a TIMEBASE source and re-run the DELAY sources.
+4. Extend `TIMETEST` with a TIMEBASE source and re-run the DELAY sources.
 5. Record the interrupt and ISR cost of the chosen design.
 
 ## Acceptance criteria

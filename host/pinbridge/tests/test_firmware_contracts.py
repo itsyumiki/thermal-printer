@@ -64,6 +64,19 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("return -1;", start)
         self.assertIn("core.heater_isr_count++", source)
 
+    def test_timetest_timer3_loop_counts_each_compare_once(self):
+        source = APP.read_text(encoding="utf-8")
+        start = source.index("/* The heater ISR stays enabled, and it is the ONLY thing counted")
+        end = source.index("    } else if (src == PT_STEP) {", start)
+        loop = source[start:end]
+        self.assertIn("u32 isr0 = core.heater_isr_count, k;", loop)
+        self.assertIn("k = core.heater_isr_count - isr0;", loop)
+        self.assertIn("isr_n += k;", loop)
+        self.assertIn("n += k;", loop)
+        # The pending flag must not become a second count source; one compare is one ISR delta.
+        self.assertNotIn("BIT(15)", loop)
+        self.assertNotIn("heater_isr_count++", loop)
+
     def test_firmware_has_no_plaintext_command_parser_or_replies(self):
         core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
         printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")

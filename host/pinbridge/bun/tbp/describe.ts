@@ -7,6 +7,7 @@ import {
   PRINTER_STATE,
   ROW_FLAG,
   STAT_FLAG,
+  TIME_SRC,
   flagNames,
   nameOf,
 } from "./protocol.ts";
@@ -49,6 +50,8 @@ export function describeCommand(cmd: Command): string {
       return `dwell ${cmd.ms}ms`;
     case "coils":
       return `coils ${cmd.on ? "on" : "off"}`;
+    case "timetest":
+      return `timetest ${typeof cmd.src === "number" ? (nameOf(TIME_SRC, cmd.src) ?? cmd.src) : cmd.src} ${cmd.ms}ms`;
   }
 }
 
@@ -133,6 +136,13 @@ export function describeMessage(m: Message): string {
               return `DONE id=${m.id} move: period ${r.periodEffUs}us`;
             case "config":
               return `DONE id=${m.id} config: key ${r.key} = ${r.value}`;
+            case "timetest": {
+              const t = r.test;
+              return (
+                `DONE id=${m.id} timetest ${nameOf(TIME_SRC, t.src) ?? t.src}: n=${t.n} want=${t.wantUs}us dj=${t.dj}` +
+                (t.div ? ` ticks=${t.ticks} div=${t.div} isr=${t.isr}` : "")
+              );
+            }
             case "none":
               return `DONE id=${m.id}`;
             default:

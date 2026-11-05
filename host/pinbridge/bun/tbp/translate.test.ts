@@ -9,6 +9,7 @@ import {
   describeLine,
   encodeCommand,
   encodeRaw,
+  summarizeTimeTest,
   translate,
   type Command,
 } from "./index.ts";
@@ -286,5 +287,59 @@ describe("standalone", () => {
       "describeMessage",
     ])
       expect(typeof (api as Record<string, unknown>)[name]).toBe("function");
+  });
+});
+
+describe("TIMETEST (F0)", () => {
+  // Ids follow HELLO = 1, so the first test is id 2. These are the lines to paste into the console.
+  test("the four TIMER3 frames at 1000 ms", () => {
+    const e = new Encoder();
+    e.encode({ type: "hello" });
+    const lines = (["T3D4", "T3D16", "T3D64", "T3D256"] as const).map((src) =>
+      e.encode({ type: "timetest", src, ms: 1000 }).line.trim(),
+    );
+    expect(lines).toEqual([
+      "02F0030003E808AF",
+      "03F0030103E87A3F",
+      "04F0030203E8EB2E",
+      "05F0030303E899BE",
+    ]);
+  });
+  test("round trip and range checks", () => {
+    const line = encodeCommand({ type: "timetest", src: "STEP", ms: 500 }, 9);
+    expect(decodeCommand(line)).toEqual({
+      id: 9,
+      command: { type: "timetest", src: 4, ms: 500 },
+    });
+    expect(() =>
+      encodeCommand({ type: "timetest", src: "T3D4", ms: 99 }, 2),
+    ).toThrow(/ms must be/);
+    expect(() =>
+      encodeCommand({ type: "timetest", src: 8, ms: 1000 }, 2),
+    ).toThrow(/source/);
+  });
+  test("DONE decodes and the verdict applies the 2 % gate", () => {
+    const m: any = decodeMessage(
+      "028218030000000064000F424000000065005B8D800004000000646FCE",
+      { opOf: () => OP.TIMETEST },
+    );
+    expect(m.result).toMatchObject({
+      kind: "timetest",
+      test: {
+        src: 0,
+        n: 100,
+        wantUs: 1000000,
+        ticks: 6000000,
+        div: 4,
+        isr: 100,
+      },
+    });
+    const ok = summarizeTimeTest(m.result.test, 1003);
+    expect(ok.withinGate).toBe(true);
+    expect(ok.impliedOscMHz).toBeCloseTo(23.93, 1);
+    expect(summarizeTimeTest(m.result.test, 1030).withinGate).toBe(false);
+    expect(
+      summarizeTimeTest({ ...m.result.test, isr: 99 }, 1000).withinGate,
+    ).toBe(false);
   });
 });

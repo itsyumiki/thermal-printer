@@ -18,6 +18,8 @@ import {
   type Message,
   decodeMessage,
   describeMessage,
+  describeTimeTestSummary,
+  summarizeTimeTest,
   translate,
   row,
   move,
@@ -132,6 +134,8 @@ function commandTimeoutMs(cmd: Command): number {
       return cmd.ms + 2000;
     case "estop":
       return 5000;
+    case "timetest":
+      return cmd.ms + 3000; // the printer blocks for the whole run, plus output drain and the reply
     default:
       return 1200;
   }
@@ -1002,6 +1006,7 @@ export class PrinterLink {
       frameId === id ? sent.frame?.op : undefined;
     let accepted = false;
     let seqHint: number | null = null;
+    let runStart: number | null = null; // host clock at the printer's RUNNING frame (TIMETEST only)
     this.stopKeepalive();
     try {
       await new Promise<void>((resolve, reject) => {
@@ -1012,6 +1017,7 @@ export class PrinterLink {
         };
         this.rawSession = {
           onLine: (line) => {
+            const rxAt = performance.now();
             const t = translate(line, { opOf });
             out.push(`RX ${t.ok ? `${t.hex}  [${t.text}]` : line}`);
             if (!t.ok || t.direction !== "from-printer" || id === null) return;
@@ -1020,7 +1026,14 @@ export class PrinterLink {
             if (m.type === "ack") accepted = true;
             if (m.type === "status") {
               accepted = true;
+              if (m.state === "running") runStart = rxAt;
               if (m.state === "done") {
+                if (m.result.kind === "timetest" && runStart !== null)
+                  out.push(
+                    describeTimeTestSummary(
+                      summarizeTimeTest(m.result.test, rxAt - runStart),
+                    ),
+                  );
                 if (m.result.kind === "info") this.info = m.result.info;
                 if (m.result.kind === "stat")
                   this.status = {

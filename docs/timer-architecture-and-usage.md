@@ -17,7 +17,7 @@ There are several different mechanisms that have been called “timers” in thi
 
 A proposed alternative was discussed: move stepper pacing onto TIMER3 and replace the heater's hardware shutoff with a synchronous busy delay, on the assumption that the main loop can do heater and communications work between motor steps. This is plausible only after defining what “stepper spins” means and quantifying the longest heater pulse. If TIMER3 interrupts advance the motor phase, a blocking delay with interrupts enabled can stretch heater pulses through ISR interference; with interrupts disabled it can delay motor steps and all other interrupts. A 30 ms heater slice is not a negligible gap in a millisecond-scale step train.
 
-**Correction 2026-11-05: the TIMER3 /4, /16 and /64 inconsistency was a bug in the PTIME test, not in the timer.** The test counted one compare twice (see section 3, "Correction"). Counting the compare interrupts alone, all four prescalers agree with a 24 MHz oscillator to within a few percent (retroactively, from the reported per-run ISR counts); a corrected run on hardware is still pending. The TIMER3 /16 numbers are therefore plausible pulse widths, but they are still not measured on PB11: PB11 should be measured directly with a scope or logic analyzer before heater timing is trusted or changed.
+**Correction 2026-11-05: the TIMER3 /4, /16 and /64 inconsistency was a bug in the old PTIME test, not evidence that the timer itself is misclocked.** The old test could count one compare twice (see section 3). Its `/4`, `/16` and `/64` totals are not valid calibration results; the `/256` run was close to one second but is too short to resolve the PRD-versus-PRD+1 question. The replacement binary TBP `TIMETEST` counts ISR deltas only. A corrected hardware run is still pending, and none of these timing figures is a PB11 scope measurement.
 
 ## 2. Timer ownership and use in Pinbridge
 
@@ -58,7 +58,7 @@ The implementation's original clock assumption is:
 - 16-bit period register: 65,535 counts, about 43.7 ms at that assumed rate
 - the current test-only slice maximum of 30,000 us corresponds to 45,000 ticks at 1.5 ticks/us.
 
-The code also contains a pending-flag polling path and a bounded software-delay fallback/safety margin. The margin constant is 2,000 us. These are defensive completion checks; they do not make the timer's clock calibration correct. The ISR, pending-flag observation and polling can also complicate diagnostic event counts if the same timer event is counted through more than one path. That is exactly what the first PTIME test did; it now counts the ISR only (section 3).
+The code also contains a pending-flag polling path and a bounded software-delay fallback/safety margin. The margin constant is 2,000 us. These are defensive completion checks; they do not make the timer's clock calibration correct. The ISR, pending-flag observation and polling can also complicate diagnostic event counts if the same timer event is counted through more than one path. That is exactly what the old PTIME test did; the replacement binary TIMETEST loop counts ISR deltas only (section 3).
 
 The app comments note that TIMER3 is used by the SDK IR-remote key driver in the general SDK, but this app does not include that IR-remote feature and repurposes TIMER3. This is an app-specific ownership decision, not a claim that TIMER3 is universally unused in every SDK application.
 
@@ -156,12 +156,12 @@ These are derived from the old run and are approximate: some periods were trunca
 
 What changed in the test (`hal_time_test` in `app.c`):
 
-- Only the ISR is counted: `n` grows by the change in `heater_isr_count` and by nothing else, and the pending flag is not read. A static contract test (`test_ptime_timer3_loop_counts_each_compare_once`) keeps it that way.
-- The compare IRQ stays enabled, so the test also proves the interrupt that ends a heater pulse fires on every period. `isr` in the end line now equals `n`, and the host reports `isrMatchesN` (false for output from the old firmware, which also makes the host rescale the implied oscillator to the ISR count).
+- Only the ISR is counted: `n` grows by the change in `heater_isr_count` and by nothing else, and the pending flag is not read. A static contract test (`test_timetest_timer3_loop_counts_each_compare_once`) keeps it that way.
+- The compare IRQ stays enabled, so the test also proves the interrupt that ends a heater pulse fires on every period. `isr` in the end line should equal `n`, and the host reports `isrMatchesN`; the host also reports the implied oscillator from the reported tick count, divider and wall time.
 - Every restart (the ISR stops the timer, the loop starts it again from zero) adds the ISR entry and loop latency to that period, so n periods read slightly long. This bias is not measured; the 2 % gate allows 200 us per 10 ms period at /4. If it turns out to matter, the next step is a masked-IRQ, flag-only variant reported separately.
-- A dead compare IRQ now ends in `err timeout` (the watchdog is cleared while waiting) rather than a wrong count or a watchdog reset.
+- A dead compare IRQ ends in `STATUS FAILED` with the TIMETEST timeout argument (the watchdog is cleared while waiting), rather than returning a misleading count or causing a watchdog reset.
 
-Corrected hardware table: pending. The owner needs to flash a CI build of this change and run `PTIME` for all four TIMER3 sources; paste the table here. Acceptance: every row's ratio within 2 % of 1.0, an implied oscillator near 24 MHz, `isr` equal to the expected period count (100 / 25 / 10 / 2 for the default 1,000 ms).
+Corrected hardware table: pending. The owner needs a CI build of this change and must run binary `TIMETEST` for all four TIMER3 sources; paste the table here. Acceptance: every row's ratio within 2 % of 1.0, an implied oscillator near 24 MHz, `isr` equal to the expected period count (100 / 25 / 10 / 2 for the default 1,000 ms).
 
 ## 4. Stock thermal-printer firmware: different allocation and timing model
 
@@ -274,12 +274,12 @@ A timer-driven stepper and a hardware-timed heater pulse are not mutually exclus
 - The measured Pinbridge SDK step callback interval is about 2 ms, despite the 1 ms request.
 - Jiffies are about 10 ms each.
 - The software delay helper does not match requested durations exactly, especially at very short waits.
-- TIMER3 /256 gave a 1-second wall-clock result close to 1 second in that run. The other prescalers disagreed only because the test counted compares twice (section 3, Correction); their per-run ISR counts agree with 24 MHz within a few percent.
+- The old TIMER3 `/256` run was close to 1 second, but the old `/4`, `/16`, and `/64` results are invalid because the test could count a compare once from the ISR and again from the pending flag (section 3, Correction). Do not treat the old table as calibration evidence.
 
 ### Not yet established
 
 - Actual PB11 pulse widths for Pinbridge at each requested duration.
-- The corrected PTIME TIMER3 table on hardware (the old table is superseded, the new run is pending).
+- The corrected binary `TIMETEST` TIMER3 table on hardware (CI validation for this change and the owner’s new run are pending).
 - Whether the counter period is PRD or PRD + 1 (invisible at the large PRD values PTIME uses; it would be a 2.2 % effect on the stock heater tick).
 - Whether TIMER3 can be cleanly reassigned to stepper pacing in the exact SDK configuration without another hidden consumer.
 - The maximum heater pulse duration required in normal printing after experimental limits are restored or reselected.
@@ -298,7 +298,7 @@ A timer-driven stepper and a hardware-timed heater pulse are not mutually exclus
 
 ## 9. Practical conclusion
 
-The current design has a clear separation of concerns: the SDK timer paces stepper work, TIMER3 independently ends heater pulses, jiffies handle coarse time, and NOP loops handle short software waits. The TIMER3 /4, /16 and /64 inconsistency was explained as a PTIME test bug (compare counted twice; see the 2026-11-05 correction in section 3) and is fixed in code and mock/contract tests, but it is not closed: the corrected PTIME table has not been measured on hardware yet (Sprint 1 gate). The remaining open issue is the lack of direct PB11 pulse measurements (the Sprint 0 scope plan, not yet run by the owner), not the conceptual allocation.
+The current design has a clear separation of concerns: the SDK timer paces stepper work, TIMER3 independently ends heater pulses, jiffies handle coarse time, and NOP loops handle short software waits. The TIMER3 `/4`, `/16`, and `/64` inconsistency was a test bug: the old test could count one compare from both the ISR and pending flag. The corrected loop now counts ISR deltas only, and the replacement diagnostic is binary TBP opcode `F0` (`TIMETEST`) because the legacy plaintext `PTIME` command was removed. Local host tests pass, but CI validation of this timing change is pending; the corrected four-row table has not been measured on hardware, so Sprint 1 is still open. Sprint 0’s stock pulse estimates are derived from static analysis; the owner’s direct PB11/motor-phase scope capture is also still pending.
 
 Moving the stepper to TIMER3 and using a busy delay for the heater is a reasonable experiment to discuss, not yet a demonstrated improvement. It exchanges independent heater shutoff for blocking software timing and creates a direct conflict between pulse duration and stepper service unless the motion is intentionally paused or the interrupt behavior is carefully designed. The next decisive evidence is a simultaneous measurement of PB11 and a motor phase pin under representative print load.
 
@@ -306,7 +306,7 @@ Moving the stepper to TIMER3 and using a busy delay for the heater is a reasonab
 
 ### Pinbridge
 
-- `firmware/apps/pinbridge/src/app.c` — SDK step timer registration, jiffies conversion, software delay, TIMER3 heater setup/ISR, pulse start/cancel and PTIME diagnostics.
+- `firmware/apps/pinbridge/src/app.c` — SDK step timer registration, jiffies conversion, software delay, TIMER3 heater setup/ISR, pulse start/cancel and the binary TIMETEST diagnostic.
 - `firmware/apps/pinbridge/src/pb_core.h` — HAL timer/delay interfaces, stepper state/counters, heater pulse hooks and core scheduling state.
 - `firmware/apps/pinbridge/src/pb_printer.h` — printer row execution and heater/stepper sequencing logic.
 - `docs/bugs/2026-11-04-heater-blank-prints-timing.md` — heater timing investigation, known uncertainties and suggested measurements.

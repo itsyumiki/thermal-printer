@@ -10,6 +10,8 @@ export const OP = {
   MOVE: 0x11,
   DWELL: 0x12,
   COILS: 0x20,
+  /** Diagnostic (spec section 7.10): blocking timer self-test. Needs an idle printer. */
+  TIMETEST: 0xf0,
   ESTOP: 0xff,
 } as const;
 
@@ -84,6 +86,29 @@ export const CONFIG_KEY = {
   IDLE_HOLD_MS: 2,
   LINK_TIMEOUT_MS: 3,
 } as const;
+
+/** TIMETEST sources (spec section 7.10). T3Dn = heater timer (TIMER3) at divider n; the order is the wire value. */
+export const TIME_SRC = {
+  T3D4: 0,
+  T3D16: 1,
+  T3D64: 2,
+  T3D256: 3,
+  STEP: 4,
+  JIFFY: 5,
+  DELAY: 6,
+  DELAY2: 7,
+} as const;
+
+/** TIMETEST `STATUS FAILED` args, all with code `1F` INTERNAL (spec section 7.10). */
+export const TIME_FAIL = {
+  TIMEOUT: 1,
+  ABORTED: 2,
+  SETUP: 3,
+} as const;
+
+/** TIMETEST `ms` range accepted by the firmware (spec section 7.10). */
+export const TIME_MS_MIN = 100;
+export const TIME_MS_MAX = 3000;
 
 /** Bits of the ROW DONE flags byte (spec section 7.5). */
 export const ROW_FLAG = {

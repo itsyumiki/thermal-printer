@@ -6,3 +6,4 @@ export * from "./commands.ts";
 export * from "./messages.ts";
 export * from "./describe.ts";
 export * from "./translate.ts";
+export * from "./timetest.ts";

@@ -30,6 +30,26 @@ static uint16_t rd(void *x, unsigned p) {
     (void)x;
     return (uint16_t)(pads[p] | outs[p]);
 }
+/* Fake TIMETEST hook: @timetest rc=N picks the result (0 ok, 1 timeout, 2 aborted, 3 setup failure). */
+static unsigned fake_time_rc;
+static pb_core *test_core;
+static int time_test_mock(void *x, unsigned src, unsigned ms, pb_time_result *o) {
+    (void)x;
+    (void)src;
+    (void)ms;
+    if (fake_time_rc == PB_TIME_SETUP)
+        return PB_TIME_SETUP; /* fails before RUNNING, like the real hook */
+    pb_tbp_status(test_core, test_core->tbp_last_id, 2u, 0, 0);
+    if (fake_time_rc)
+        return (int)fake_time_rc;
+    o->n = 100u;
+    o->want_us = 1000000u;
+    o->dj = 101u;
+    o->ticks = 6000000u;
+    o->div = 4u;
+    o->isr = 100u;
+    return PB_TIME_OK;
+}
 /* Fake sensors: head raw 412 (~19 degC), battery 4000 mV; @adc directives change them. */
 static unsigned fake_head_raw = 412, fake_vbat_mv = 4000, fake_adc_fail;
 static int adc(void *x, int ch, unsigned *r, unsigned *m) {
@@ -84,7 +104,7 @@ static void consume(unsigned line, const char *expect) {
 }
 int main(int argc, char **argv) {
     pb_core c;
-    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, delay_us, wr, 0, 0, 0}; /* wr doubles as the fast writer */
+    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, delay_us, wr, 0, 0, 0, time_test_mock, 0}; /* wr doubles as the fast writer */
     FILE *f;
     char line[2048];
     unsigned ln = 0;
@@ -143,6 +163,7 @@ int main(int argc, char **argv) {
             (pb_sensor_head_temp_c(raw + 1u, &t) && t >= PB_TUNE_TEMP_CUTOFF_C))
             fail(0, "hot raw limit is not the boundary");
     }
+    test_core = &c;
     pb_init(&c, &h);
     active_core = &c;
     while (fgets(line, sizeof line, f)) {
@@ -299,6 +320,7 @@ int main(int argc, char **argv) {
                 output[0] = 0;
                 continue;
             }
+            if (sscanf(s, "@timetest rc=%u", &a) == 1) { fake_time_rc = a; continue; }
             if (sscanf(s, "@adc head=%u", &a) == 1) { fake_head_raw = a; continue; }
             if (sscanf(s, "@adc vbat=%u", &a) == 1) { fake_vbat_mv = a; continue; }
             if (sscanf(s, "@adc fail=%u", &a) == 1) { fake_adc_fail = a; continue; }

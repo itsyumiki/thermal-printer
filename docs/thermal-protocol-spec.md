@@ -216,7 +216,8 @@ Implementation requirement: the RX path that recognises `FF` must run independen
 | `12` | DWELL | queued | no |
 | `20` | COILS | immediate | **yes** |
 | `21`–`EF` | unassigned (`ERR BADOP`), kept free for future use | | |
-| `F0`–`FE` | unassigned, reserved for vendor/diagnostic use | | |
+| `F0` | TIMETEST (diagnostic; blocks the command task while measuring) | diagnostic | **yes** |
+| `F1`–`FE` | unassigned, reserved for vendor/diagnostic use | | |
 | `FF` | **EMERGENCY STOP** | emergency | no |
 
 ### 7.1 `01` HELLO
@@ -330,6 +331,25 @@ Immediate. `DATA = [mode u8]`: `00` release coils, `01` energise coils at the cu
 ### 7.9 `FF` EMERGENCY STOP
 
 `DATA` empty. Behaviour in section 6.3. The id may be any value except `00`; it is echoed in the responses and does not advance `next_id`.
+
+### 7.10 `F0` TIMETEST — timer calibration diagnostic
+
+Diagnostic only; this opcode is part of the binary TBP protocol and replaces the removed plaintext `PTIME` command. `DATA = [src u8][ms u16]` (3 bytes, big-endian duration). `ms` must be 100–3000. The printer must be idle with no queued/running work, no active step timer and no heater pulse; otherwise it returns `ERR BUSY`. The command blocks the command task for the measurement duration, so use it only for calibration, not during printing. The USB RX emergency-stop path remains active.
+
+| `src` | Name | Counted unit | Expected period at nominal clock |
+|---:|---|---|---:|
+| `00` | T3D4 | TIMER3 compare/ISR, divider 4 | 10 ms |
+| `01` | T3D16 | TIMER3 compare/ISR, divider 16 | 40 ms |
+| `02` | T3D64 | TIMER3 compare/ISR, divider 64 | 100 ms |
+| `03` | T3D256 | TIMER3 compare/ISR, divider 256 | 500 ms |
+| `04` | STEP | SDK step callback requested at 1 ms | nominal 1 ms |
+| `05` | JIFFY | SDK jiffies | nominal 10 ms |
+| `06` | DELAY | calls to `hal_delay_us(1000)` | requested 1000 us |
+| `07` | DELAY2 | calls to `hal_delay_us(2)` | requested 2 us |
+
+Reply sequence: `ACK`, then `STATUS RUNNING` immediately before counting, then `STATUS DONE` with a 23-byte result body, or `STATUS FAILED` with code `1F` (INTERNAL) and a failure argument. RUNNING and terminal frames bypass the normal transmit ring so the host can time their arrival while the command task is blocked. Failure arguments: `01` timeout (e.g. TIMER3 compare IRQ did not fire), `02` aborted by emergency stop, `03` setup unavailable.
+
+The 23-byte DONE body is `[src u8][n u32][want_us u32][jiffies_delta u32][ticks u32][divider u16][isr_count u32]`, with multi-byte integers big-endian. Non-TIMER3 sources report `ticks`, `divider`, and `isr_count` as zero. For TIMER3, `n` counts ISR deltas only; the pending compare flag must not be counted separately. The host computes `wall_ms` from RUNNING-to-DONE receive timestamps, `ratio = wall_ms / (want_us / 1000)`, the implied oscillator for TIMER3, and whether `isr_count == n`. Sprint 1 acceptance requires each of the four TIMER3 cases at 1000 ms to be within 2 % of ratio 1.0, near 24 MHz, and have `isr_count == n`. This gate still requires hardware measurements; tests and CI do not substitute for them.
 
 ## 8. Row execution and timing
 
@@ -534,6 +554,6 @@ Typical job: `HELLO`, `CONFIG`, several `ROW`s sent until credits or `T_target` 
 
 ## 15. Relationship to the rest of the project
 
-- The old Pinbridge diagnostic/text commands (`PHEAD`, `PLATCH`, `PHEAT`, `PSTEP`, `PDIAG`, `PHDIAG`, `PTIME`, and `PEVENT`) have been removed from firmware dispatch. The TBP executor retains shared hardware primitives internally; see `docs/legacy-text-protocol-removal.md` for the migration summary.
+- The old Pinbridge diagnostic/text commands (`PHEAD`, `PLATCH`, `PHEAT`, `PSTEP`, `PDIAG`, `PHDIAG`, plaintext `PTIME`, and `PEVENT`) have been removed from firmware dispatch. Timer calibration is being restored as binary TBP opcode `F0` `TIMETEST` (section 7.10); the current implementation is still awaiting CI and hardware acceptance. The TBP executor retains shared hardware primitives internally; see `docs/legacy-text-protocol-removal.md` for the migration summary.
 - Safety limits stay in firmware here, unlike Pinbridge's diagnostic path where the host is the policy layer.
 - This design implements the direction in `stock-print-scheduler-handoff.md`: a firmware-side scheduler with continuous motion across rows, status and cancel. Items from its "known unknowns" that remain open are listed in section 14.

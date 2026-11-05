@@ -1,5 +1,11 @@
 // Host -> printer: typed commands <-> frames. Pure functions, no I/O.
-import { CONFIG_KEY, OP } from "./protocol.ts";
+import {
+  CONFIG_KEY,
+  OP,
+  TIME_MS_MAX,
+  TIME_MS_MIN,
+  TIME_SRC,
+} from "./protocol.ts";
 import {
   decode,
   encode,
@@ -33,7 +39,11 @@ export type Command =
     }
   | { type: "move"; steps: number; periodUs: number }
   | { type: "dwell"; ms: number }
-  | { type: "coils"; on: boolean };
+  | { type: "coils"; on: boolean }
+  | { type: "timetest"; src: TimeSource | number; ms: number };
+
+/** A TIMETEST source by name (`"T3D4"`); the wire value is `TIME_SRC[name]`. */
+export type TimeSource = keyof typeof TIME_SRC;
 
 export function maskBytes(mask: Mask): Uint8Array {
   if (mask instanceof Uint8Array) return mask;
@@ -122,6 +132,23 @@ export function commandPayload(cmd: Command): { op: number; data: Uint8Array } {
       return { op: OP.DWELL, data: u16(cmd.ms) };
     case "coils":
       return { op: OP.COILS, data: Uint8Array.of(cmd.on ? 1 : 0) };
+    case "timetest": {
+      const src = typeof cmd.src === "string" ? TIME_SRC[cmd.src] : cmd.src;
+      if (!Number.isInteger(src) || src === undefined || src < 0 || src > 7)
+        throw new Error(
+          `TIMETEST source must be one of ${Object.keys(TIME_SRC).join(", ")} (0..7)`,
+        );
+      if (
+        !Number.isInteger(cmd.ms) ||
+        cmd.ms < TIME_MS_MIN ||
+        cmd.ms > TIME_MS_MAX
+      )
+        throw new Error(`TIMETEST ms must be ${TIME_MS_MIN}..${TIME_MS_MAX}`);
+      return {
+        op: OP.TIMETEST,
+        data: join(Uint8Array.of(src), u16(cmd.ms)),
+      };
+    }
   }
 }
 
@@ -196,6 +223,12 @@ export function decodeCommand(input: string | Frame): {
     case OP.COILS:
       need(1);
       return { id: f.id, command: { type: "coils", on: d[0] === 1 } };
+    case OP.TIMETEST:
+      need(3);
+      return {
+        id: f.id,
+        command: { type: "timetest", src: d[0]!, ms: u16at(1) },
+      };
     default:
       throw new Error(`Unknown opcode 0x${f.op.toString(16).padStart(2, "0")}`);
   }

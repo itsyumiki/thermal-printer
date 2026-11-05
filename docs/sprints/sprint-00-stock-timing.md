@@ -1,8 +1,10 @@
 # Sprint 0 — Stock heater and step timing
 
+**Status (2026-11-05):** Static analysis and the derived timing table are documented in section 8 of `docs/bugs/2026-11-04-heater-blank-prints-timing.md`. This is a paper/documentation milestone only: no stock PB11 or motor-phase scope capture has been taken, so the hardware portion is still open.
+
 **Size:** S  
 **Depends on:** nothing (read-only; can run alongside any other sprint)  
-**Goal:** Replace the derived 30 us / 0.72-2.22 ms / 6 ms stock heater numbers with evidence, so Sprint 3 and Sprint 7 have a real pulse-width target.
+**Goal:** Document the derivation for the 30 us / 0.72–2.22 ms / 6 ms stock heater estimates and obtain scope evidence, so Sprint 3 and Sprint 7 have a real pulse-width target.
 
 ## Read first
 
@@ -28,6 +30,6 @@
 
 Any firmware change.
 
-## Handoff on completion
+## Handoff / current result
 
-Update `pb_tuning.h` comments and the bug doc with the new evidence. Next: Sprint 3 pulse-width target.
+The static derivation and proposed capture procedure are in `docs/bugs/2026-11-04-heater-blank-prints-timing.md` section 8. The values remain **DERIVED**, not measured. The owner still needs to capture stock PB11 and a motor phase, then paste the measured widths, pulse count, spacing and phase offsets into that document. Do not mark Sprint 0 fully closed until the hardware evidence is recorded. Next dependency: Sprint 3 still needs a measured pulse-width target; Sprint 1–2 timing foundation work can proceed independently.

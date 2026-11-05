@@ -66,6 +66,18 @@ typedef struct {
     uint16_t temp_raw, batt_raw, batt_mv;
     int16_t temp_c;
 } pb_sensor_snapshot;
+/* TIMETEST (opcode F0): what one run counted. ticks/div/isr are zero for non-TIMER3 sources. */
+typedef struct {
+    uint32_t n, want_us, dj, ticks, isr;
+    uint16_t div;
+} pb_time_result;
+#define PB_TIME_MS_MIN 100u
+#define PB_TIME_MS_MAX 3000u
+/* time_test return values; non-zero ones are the arg of STATUS FAILED 1F. */
+#define PB_TIME_OK 0
+#define PB_TIME_TIMEOUT 1
+#define PB_TIME_ABORTED 2
+#define PB_TIME_SETUP 3
 typedef struct {
     void *ctx;
     int (*set_mode)(void *, unsigned, unsigned, unsigned, unsigned);
@@ -82,6 +94,12 @@ typedef struct {
     int (*heater_pulse_start)(void *, unsigned);
     int (*heater_pulse_active)(void *);
     void (*heater_pulse_cancel)(void *);
+    /* Optional blocking timer self-test behind TIMETEST (spec 7.10). It must send the RUNNING frame itself,
+     * just before it starts counting (see tx_direct_on), and return a PB_TIME_* value. */
+    int (*time_test)(void *, unsigned src, unsigned ms, pb_time_result *out);
+    /* Optional write that skips the output ring. Used only around TIMETEST: the ring's task cannot run while
+     * the command task busy-waits, and the host times the RUNNING and DONE frames against real time. */
+    int (*tx_direct)(void *, const char *, size_t);
 } pb_hal;
 typedef struct {
     uint8_t id, op, len, queued_status_sent;
@@ -103,6 +121,7 @@ typedef struct {
     pb_pin_state pins[PB_NPINS];
     char line[523]; /* TBP v1 maximum: 520 hex chars plus NUL */
     unsigned llen, discard;
+    uint8_t tx_direct_on; /* while set, pb_emit bypasses the output ring (TIMETEST timing frames only) */
     uint8_t tbp_active, tbp_next_id, tbp_last_id, tbp_last_state, tbp_last_valid;
     uint8_t tbp_last_terminal_id, tbp_last_terminal_valid;
     uint8_t tbp_last_terminal_len, tbp_last_terminal_body[12];
@@ -185,6 +204,10 @@ static int pb_pin(const char *s) {
     return -1;
 }
 static void pb_emit(pb_core *c, const char *s) {
+    if (c->tx_direct_on && c->h.tx_direct) {
+        c->h.tx_direct(c->h.ctx, s, strlen(s));
+        return;
+    }
     if (c->h.tx_write)
         c->h.tx_write(c->h.ctx, s, strlen(s));
 }
@@ -629,6 +652,12 @@ static void pb_tbp_record_state(pb_core *c, uint8_t id, uint8_t state) {
 }
 static uint8_t pb_tbp_used(const pb_core *c) {
     return (uint8_t)(c->tbp_qcount + c->tbp_comp_count + (c->tbp_running ? 1u : 0u));
+}
+static void pb_put32(uint8_t *d, uint32_t v) {
+    d[0] = (uint8_t)(v >> 24);
+    d[1] = (uint8_t)(v >> 16);
+    d[2] = (uint8_t)(v >> 8);
+    d[3] = (uint8_t)v;
 }
 static void pb_put16(uint8_t *d, unsigned v) {
     d[0] = (uint8_t)(v >> 8);
@@ -1378,7 +1407,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         return 1;
     }
     if (op != 0x00u && op != 0x01u && op != 0x02u && op != 0x03u && op != 0x04u &&
-        op != 0x10u && op != 0x11u && op != 0x12u && op != 0x20u) {
+        op != 0x10u && op != 0x11u && op != 0x12u && op != 0x20u && op != 0xF0u) {
         pb_tbp_err(c, id, 3, op);
         return 1;
     }
@@ -1509,6 +1538,59 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         }
         body[0] = 3;
         pb_tbp_status(c, id, 3, body, 1);
+        return 1;
+    }
+    if (op == 0xF0u) {
+        /* TIMETEST: DATA = [src u8][ms u16]. Diagnostic; blocks the command task for about `ms` (spec 7.10). */
+        pb_time_result r;
+        uint8_t ack, st[23];
+        unsigned src, ms;
+        int rc;
+        if (len != 3) {
+            pb_tbp_err(c, id, 4, 3);
+            return 1;
+        }
+        src = raw[3];
+        ms = ((unsigned)raw[4] << 8) | raw[5];
+        if (src > 7u) {
+            pb_tbp_err(c, id, 5, 0);
+            return 1;
+        }
+        if (ms < PB_TIME_MS_MIN || ms > PB_TIME_MS_MAX) {
+            pb_tbp_err(c, id, 5, 1);
+            return 1;
+        }
+        if (!c->h.time_test) {
+            pb_tbp_err(c, id, 3, op);
+            return 1;
+        }
+        if (pb_tbp_used(c) || c->step_active || c->step_timer_id ||
+            (c->h.heater_pulse_active && c->h.heater_pulse_active(c->h.ctx))) {
+            pb_tbp_err(c, id, 9, 0);
+            return 1;
+        }
+        pb_tbp_accept(c, id);
+        ack = pb_tbp_used(c);
+        pb_tbp_send(c, id, 0x81u, &ack, 1);
+        memset(&r, 0, sizeof r);
+        rc = c->h.time_test(c->h.ctx, src, ms, &r); /* sends RUNNING itself, right before it counts */
+        c->tx_direct_on = 1;
+        if (rc == PB_TIME_OK) {
+            st[0] = (uint8_t)src;
+            pb_put32(st + 1, r.n);
+            pb_put32(st + 5, r.want_us);
+            pb_put32(st + 9, r.dj);
+            pb_put32(st + 13, r.ticks);
+            pb_put16(st + 17, r.div);
+            pb_put32(st + 19, r.isr);
+            pb_tbp_status(c, id, 3u, st, sizeof st);
+        } else {
+            uint8_t fail[2] = {0x1Fu, (uint8_t)rc};
+            c->tbp_last_state = 4;
+            c->tbp_history[id] = 4;
+            pb_tbp_status(c, id, 4u, fail, sizeof fail);
+        }
+        c->tx_direct_on = 0;
         return 1;
     }
     if (op == 0x10u) {
