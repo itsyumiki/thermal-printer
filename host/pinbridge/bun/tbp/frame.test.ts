@@ -8,7 +8,7 @@ import {
   move,
   decodeInfo,
   DEFAULT_HEATER_SLICES,
-} from "./tbp.ts";
+} from "./index.ts";
 
 describe("TBP v1 framing", () => {
   test("CRC-16/CCITT-FALSE check vector", () =>

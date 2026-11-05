@@ -1,4 +1,4 @@
-# Mixed-hex TBP candidate must report FORMAT, not fall through to legacy text.
+# Any non-hex input is rejected as a TBP FORMAT error; no plaintext parser exists.
 @config real
 > 01010101E654
 < 01810100CD2F

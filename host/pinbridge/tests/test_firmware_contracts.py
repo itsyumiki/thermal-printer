@@ -12,7 +12,7 @@ BUILD_SCRIPT = ROOT / "scripts/build-app.sh"
 WORKFLOW = ROOT / ".github/workflows/pinbridge.yml"
 WEB_HTML = ROOT / "host/pinbridge/bun/public/index.html"
 TUNING = ROOT / "firmware/apps/pinbridge/src/pb_tuning.h"
-TBP = ROOT / "host/pinbridge/bun/tbp.ts"
+TBP = ROOT / "host/pinbridge/bun/tbp/protocol.ts"
 UNITS = ROOT / "host/pinbridge/bun/units.ts"
 
 
@@ -64,73 +64,15 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("return -1;", start)
         self.assertIn("core.heater_isr_count++", source)
 
-    def test_heater_diagnostics_command(self):
-        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(
-            encoding="utf-8"
-        )
-        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn('pb_eq(v[0], "PHDIAG")', core)
-        for field in ("starts=", "isr=", "poll=", "over=", "cnt=", "con="):
-            self.assertIn(field, printer)
-
-    def test_ptime_self_test_brackets_the_count_with_direct_usb_lines(self):
-        # PTIME busy-waits in the command task, which tx_task (lower priority) cannot preempt, so the
-        # begin/end lines must go straight to USB or the host timestamps would not bracket the count.
-        source = APP.read_text(encoding="utf-8")
-        start = source[
-            source.index("static int hal_time_test") : source.index(
-                "static void pb_step_timer"
-            )
-        ]
-        self.assertIn(
-            "cdc_write_data(PB_USB",
-            source[
-                source.index("static int pt_out") : source.index("static void pt_kv")
-            ],
-        )
-        self.assertIn('"ptime begin "', start)
-        self.assertIn('"ok ptime "', start)
-        self.assertIn("wdt_clear();", start)  # 4 s watchdog, runs last up to 3 s
-        self.assertIn(".time_test = hal_time_test", source)
-        self.assertNotIn("tx_write", start)  # never via the ring
-        self.assertNotIn("PB11", start)  # never touches the heater pin
-        self.assertNotIn(
-            "irq_disable", start
-        )  # the run should also show whether the compare IRQ fires
-
-    def test_ptime_timer3_loop_counts_each_compare_once(self):
-        # 2026-11-05: the loop counted a compare through heater_isr_count AND through the pending flag
-        # (CON bit 15). A compare seen in the flag before its ISR ran was then counted again by the ISR,
-        # so /4 /16 /64 reported impossible oscillator rates. Count the ISR only; never read bit 15 here.
-        source = APP.read_text(encoding="utf-8")
-        start = source[
-            source.index("static int hal_time_test") : source.index(
-                "static void pb_step_timer"
-            )
-        ]
-        loop_start = start.index("u32 isr0 = core.heater_isr_count")
-        loop = start[loop_start : start.index("} else if (src == PT_STEP)", loop_start)]
-        code = re.sub(r"/\*.*?\*/", "", loop, flags=re.DOTALL)
-        self.assertIn("k = core.heater_isr_count - isr0;", code)
-        self.assertIn("isr_n += k;", code)
-        self.assertEqual(re.findall(r"(?<!\w)n \+= k;", code), ["n += k;"])
-        self.assertNotIn(
-            "BIT(15)", code
-        )  # the pending flag is never a second count path
-        self.assertNotIn("n++", code)  # n only ever grows by the ISR delta
-        self.assertEqual(len(re.findall(r"(?<!\w)n \+= ", code)), 1)  # the only way n grows
-        self.assertIn(
-            "timed_out = 1;", code
-        )  # a dead compare IRQ ends in err timeout, not a wrong count
-        self.assertIn(
-            "wdt_clear();",
-            code[code.index("else if ((unsigned long)(jiffies - last_j) > guard)") :],
-        )
-        self.assertIn(
-            'pt_kv(b, sizeof b, &z, "isr", isr_n);', start
-        )  # the isr= field stays in the end line
+    def test_firmware_has_no_plaintext_command_parser_or_replies(self):
+        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
+        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
+        self.assertNotIn("pb_commands.h", core)
+        self.assertNotIn("pb_command(", core)
+        self.assertNotIn("pb_printer_command", printer)
+        self.assertNotIn("pb_reply(", core)
+        self.assertNotIn("pb_error(", core)
+        self.assertIn("pb_tbp_err(c, id, 2, 0)", core)
 
     def test_motor_phase_callback_uses_irq_safe_port_writer(self):
         printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(
@@ -147,32 +89,16 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("pb_printer_pin_i(c, k, level)", phase)
         self.assertIn("unconditionally disables then enables IRQs", phase)
 
-    def test_stepper_runtime_diagnostics_expose_timer_progress_and_wiggle_gates(self):
+    def test_stepper_runtime_diagnostics_are_not_exposed_as_legacy_commands(self):
         app = APP.read_text(encoding="utf-8")
-        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(
-            encoding="utf-8"
-        )
-        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(
-            encoding="utf-8"
-        )
+        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
+        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
         self.assertIn("core.step_timer_callbacks++", app)
         self.assertIn("core.step_timer_reg_failures++", app)
-        self.assertIn('pb_eq(v[0], "PDIAG")', core)
-        for field in (
-            "step=",
-            "phase=",
-            "done=",
-            "rem=",
-            "timer=",
-            "ticks=",
-            "regfail=",
-            "wiggle=",
-            "request=",
-            "rowpaper=",
-            "power=",
-            "abort=",
-        ):
-            self.assertIn(field, printer)
+        self.assertNotIn('pb_eq(v[0], "PDIAG")', core)
+        self.assertNotIn('pb_eq(v[0], "PHDIAG")', core)
+        self.assertNotIn("PSTEPSTAT", printer)
+        self.assertNotIn("PTIME", printer)
 
     def test_websocket_startup_does_not_wait_for_remote_font_import(self):
         css = (ROOT / "host/pinbridge/bun/public/style.css").read_text(encoding="utf-8")

@@ -4,12 +4,12 @@
 // uv_default_loop(), which Bun does not implement (oven-sh/bun#18546), so it
 // panics with SIGTRAP as soon as a port is opened. A tty is just a file, so we
 // open it with node:fs and let `stty` set the line discipline.
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   closeSync,
   constants,
   createReadStream,
-  openSync,
+  open as fsOpen,
   readdirSync,
   write as fsWrite,
 } from "node:fs";
@@ -22,6 +22,8 @@ export type PortInfo = {
   productId: string;
 };
 
+/** A hung stty or tty open must not wedge the connect loop; give up and let the caller retry. */
+export const OPEN_TIMEOUT_MS = 5000;
 const isMac = process.platform === "darwin";
 // macOS: use the callout (cu.*) nodes, never tty.* (those block on carrier detect).
 const DEVICE_RE = isMac
@@ -45,6 +47,7 @@ export function listPorts(): PortInfo[] {
 export class Uart {
   isOpen = false;
   private fd = -1;
+  private cancelled = false;
   private rs: ReturnType<typeof createReadStream> | null = null;
   private buf = "";
   onLine: (line: string) => void = () => {};
@@ -61,22 +64,86 @@ export class Uart {
     this.buf = "";
   }
 
-  open() {
-    const r = spawnSync("stty", [
-      isMac ? "-f" : "-F",
-      this.path,
-      String(this.baudRate),
-      "raw",
-      "-echo",
-      "-hupcl",
-      "clocal",
-      "cread",
-    ]);
-    if (r.status !== 0)
-      throw new Error(
-        `stty failed for ${this.path}: ${String(r.stderr).trim() || "exit " + r.status}`,
+  /** Run stty in a child process without blocking the event loop (a hang is killed after OPEN_TIMEOUT_MS). */
+  private configureLine(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(
+        "stty",
+        [
+          isMac ? "-f" : "-F",
+          this.path,
+          String(this.baudRate),
+          "raw",
+          "-echo",
+          "-hupcl",
+          "clocal",
+          "cread",
+        ],
+        { stdio: ["ignore", "ignore", "pipe"] },
       );
-    this.fd = openSync(this.path, constants.O_RDWR | constants.O_NOCTTY);
+      let stderr = "";
+      child.stderr!.on("data", (d) => (stderr += d));
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(
+          new Error(
+            `stty did not finish within ${OPEN_TIMEOUT_MS} ms for ${this.path}`,
+          ),
+        );
+      }, OPEN_TIMEOUT_MS);
+      child.on("error", (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else
+          reject(
+            new Error(
+              `stty failed for ${this.path}: ${stderr.trim() || "exit " + code}`,
+            ),
+          );
+      });
+    });
+  }
+
+  /** Open the tty on the thread pool; a late success after the timeout is closed again. */
+  private openFd(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        settled = true;
+        reject(
+          new Error(
+            `opening ${this.path} did not finish within ${OPEN_TIMEOUT_MS} ms`,
+          ),
+        );
+      }, OPEN_TIMEOUT_MS);
+      fsOpen(this.path, constants.O_RDWR | constants.O_NOCTTY, (e, fd) => {
+        clearTimeout(timer);
+        if (settled) {
+          if (!e) closeSync(fd);
+          return;
+        }
+        settled = true;
+        if (e) reject(e);
+        else resolve(fd);
+      });
+    });
+  }
+
+  /** Configure and open the port. Never blocks the event loop, so HTTP/WebSocket stay responsive meanwhile. */
+  async open(): Promise<void> {
+    this.cancelled = false;
+    await this.configureLine();
+    if (this.cancelled) throw new Error("UART open cancelled");
+    const fd = await this.openFd();
+    if (this.cancelled) {
+      closeSync(fd);
+      throw new Error("UART open cancelled");
+    }
+    this.fd = fd;
     this.isOpen = true;
     const rs = createReadStream("", {
       fd: this.fd,
@@ -108,6 +175,7 @@ export class Uart {
   }
 
   close() {
+    this.cancelled = true; // an open still in flight gives up when it next checks
     if (!this.isOpen) return;
     this.isOpen = false;
     this.rs?.destroy();

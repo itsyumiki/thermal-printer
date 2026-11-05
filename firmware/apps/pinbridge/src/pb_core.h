@@ -30,7 +30,7 @@ static const pb_pin_def pb_defs[] = {PB_PIN_LIST(PB_DEF)};
 #undef PB_DEF
 typedef enum { PB_OFF, PB_HIZ, PB_IN, PB_UP, PB_DN, PB_LO, PB_HI, PB_ADC, PB_PWM } pb_mode;
 typedef struct {
-    uint8_t mode, level, listen, last;
+    uint8_t mode, level;
 } pb_pin_state;
 #define PB_MAX_PINS 16u
 #define PB_TBP_QUEUE_DEPTH 4u
@@ -82,11 +82,6 @@ typedef struct {
     int (*heater_pulse_start)(void *, unsigned);
     int (*heater_pulse_active)(void *);
     void (*heater_pulse_cancel)(void *);
-    /* Optional blocking timer self-test behind PTIME (see pb_printer.h). It writes its own
-     * "ptime begin ..." and final "ok ptime ..." / "err ..." lines straight to the host so the line
-     * timestamps bracket the counted interval. Returns 0 once the final line was written, or
-     * nonzero (1 busy, 2 cannot start) BEFORE any output so the core can answer with an error. */
-    int (*time_test)(void *, unsigned src, unsigned ms);
 } pb_hal;
 typedef struct {
     uint8_t id, op, len, queued_status_sent;
@@ -107,7 +102,7 @@ typedef struct {
     pb_hal h;
     pb_pin_state pins[PB_NPINS];
     char line[523]; /* TBP v1 maximum: 520 hex chars plus NUL */
-    unsigned llen, discard, dbg, wdg;
+    unsigned llen, discard;
     uint8_t tbp_active, tbp_next_id, tbp_last_id, tbp_last_state, tbp_last_valid;
     uint8_t tbp_last_terminal_id, tbp_last_terminal_valid;
     uint8_t tbp_last_terminal_len, tbp_last_terminal_body[12];
@@ -135,14 +130,10 @@ typedef struct {
     uint32_t sensor_poll_ms;
     uint32_t tbp_last_frame_ms, tbp_last_hb_ms, tbp_coils_release_at;
     uint16_t tbp_hb_interval_ms, tbp_idle_hold_ms, tbp_link_timeout_ms;
-    uint32_t last_feed;
-    unsigned pollport;
-    char reply[128];
-    size_t rlen;
     volatile uint8_t step_active, step_reverse, step_stage, step_done_pending;
     volatile uint8_t step_lock; /* set by the command task while it edits the step train: the timer ISR skips its tick */
     volatile uint8_t
-        step_phase; /* persistent half-step phase 0..7; survives PSTEP commands, reset by pb_init */
+        step_phase; /* persistent half-step phase 0..7; reset by pb_init */
     volatile uint32_t step_remaining, step_wait_ms;
     volatile uint32_t step_completed;
     volatile uint32_t step_timer_callbacks;
@@ -159,8 +150,6 @@ typedef struct {
     uint8_t wiggle_request, wiggle_stage, wiggle_paper_samples;
     /* 0 idle, 1 out, 2 pause, 3 back, 4 release pause, 5 paper debounce */
     uint32_t wiggle_pause_until_ms, wiggle_paper_sample_ms;
-    int scratch_p[PB_MAX_PINS];
-    char *scratch_v[17];
 } pb_core;
 static uint8_t pb_tbp_used(const pb_core *c);
 static void pb_tbp_cancel_work(pb_core *c, uint8_t reason);
@@ -173,7 +162,6 @@ static int pb_feed_target_unreachable(const pb_core *c, uint32_t target) {
 static void pb_heater_off(pb_core *c);
 static void pb_motor_outputs_init(pb_core *c);
 static void pb_motor_outputs_release(pb_core *c);
-static const char *pb_modes[] = {"off", "hiz", "in", "up", "dn", "lo", "hi", "adc", "pwm"};
 static uint32_t pb_now(pb_core *c) {
     return c->h.millis ? c->h.millis(c->h.ctx) : 0;
 }
@@ -189,23 +177,6 @@ static int pb_eq(const char *a, const char *b) {
     }
     return !*a && !*b;
 }
-static int pb_token(char *s, char **v, int max) {
-    int n = 0;
-    while (*s) {
-        while (*s == ' ' || *s == '\t')
-            s++;
-        if (!*s)
-            break;
-        if (n == max)
-            return max + 1;
-        v[n++] = s;
-        while (*s && *s != ' ' && *s != '\t')
-            s++;
-        if (*s)
-            *s++ = 0;
-    }
-    return n;
-}
 static int pb_pin(const char *s) {
     unsigned i;
     for (i = 0; i < PB_NPINS; i++)
@@ -217,50 +188,6 @@ static void pb_emit(pb_core *c, const char *s) {
     if (c->h.tx_write)
         c->h.tx_write(c->h.ctx, s, strlen(s));
 }
-static void pb_reply(pb_core *c, const char *s) {
-    pb_emit(c, s);
-    pb_emit(c, "\n");
-}
-static void pb_error(pb_core *c, const char *code, const char *arg) {
-    char b[128];
-    size_t n = 0;
-    const char *p = "err ";
-    while (*p)
-        b[n++] = *p++;
-    p = code;
-    while (*p && n < 120)
-        b[n++] = *p++;
-    if (arg && *arg && n < 120) {
-        b[n++] = ' ';
-        while (*arg && n < 126)
-            b[n++] = *arg++;
-    }
-    b[n] = 0;
-    pb_reply(c, b);
-}
-static int pb_append(char *b, size_t cap, size_t *n, const char *s) {
-    while (*s) {
-        if (*n + 1 >= cap)
-            return 0;
-        b[(*n)++] = *s++;
-    }
-    b[*n] = 0;
-    return 1;
-}
-static int pb_num(char *b, size_t cap, size_t *n, uint32_t v) {
-    char t[11];
-    unsigned k = 0;
-    do {
-        t[k++] = (char)('0' + v % 10);
-        v /= 10;
-    } while (v && k < 10);
-    while (k) {
-        char x[2] = {t[--k], 0};
-        if (!pb_append(b, cap, n, x))
-            return 0;
-    }
-    return 1;
-}
 static void pb_safe_pin(pb_core *c, unsigned i) {
     if (c->pins[i].mode != PB_OFF) {
         if (c->h.set_mode)
@@ -268,7 +195,6 @@ static void pb_safe_pin(pb_core *c, unsigned i) {
         c->pins[i].mode = PB_HIZ;
         c->pins[i].level = 0;
     }
-    c->pins[i].listen = 0;
 }
 static void pb_safe_state(pb_core *c) {
     unsigned i;
@@ -367,9 +293,7 @@ static void pb_init(pb_core *c, const pb_hal *h) {
     unsigned j;
     memset(c, 0, sizeof(*c));
     c->h = *h;
-    c->wdg = 5000;
-    c->last_feed = pb_now(c);
-    c->boot_ms = c->last_feed;
+    c->boot_ms = pb_now(c);
     button = pb_pin("PB1"); power = pb_pin("PA1"); led = pb_pin("PC7");
     c->led_mode = 4; /* dark until the startup hold completes */
     if (button >= 0 && c->h.set_mode) {
@@ -403,29 +327,13 @@ static void pb_init(pb_core *c, const pb_hal *h) {
     pb_sensors_prepare(c);
 }
 /* Low-level printer primitives. All timing executes on the MCU, not over USB/WebSocket. */
-static int pb_u32(const char *s, uint32_t *out) {
-    uint32_t v = 0;
-    if (!*s)
-        return 0;
-    while (*s) {
-        if (*s < '0' || *s > '9')
-            return 0;
-        unsigned digit = (unsigned)(*s++ - '0');
-        if (v > (UINT32_MAX - digit) / 10u)
-            return 0;
-        v = v * 10u + digit;
-    }
-    *out = v;
-    return 1;
-}
 /* Read a physical input. Callers require a connected read_port HAL function. */
 static unsigned pb_sample_pin(pb_core *c, unsigned index) {
     return (c->h.read_port(c->h.ctx, pb_defs[index].port) >> pb_defs[index].bit) & 1u;
 }
 
-/* The printer and GPIO command modules share this state and reply interface. */
+/* Shared printer hardware helpers used by the TBP executor. */
 #include "pb_printer.h"
-#include "pb_commands.h"
 
 static void pb_printer_outputs_init(pb_core *c) {
     /* Initialize head/latch and heater-off only; leave motor coils released until motion is requested. */
@@ -1364,17 +1272,11 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         }
     }
     if (!allhex) {
-        /* Legacy commands are word-led. A line with four leading hex digits
-         * is treated as a TBP candidate, so mixed-hex corruption cannot fall
-         * through into the legacy command parser with a misleading error. */
-        if (chars >= 4 && pb_tbp_hexval(line[0]) >= 0 &&
-            pb_tbp_hexval(line[1]) >= 0 && pb_tbp_hexval(line[2]) >= 0 &&
-            pb_tbp_hexval(line[3]) >= 0) {
-            uint8_t id = (uint8_t)((pb_tbp_hexval(line[0]) << 4) | pb_tbp_hexval(line[1]));
-            pb_tbp_err(c, id, 2, 0);
-            return 1;
-        }
-        return 0;
+        uint8_t id = 0;
+        if (chars >= 2 && pb_tbp_hexval(line[0]) >= 0 && pb_tbp_hexval(line[1]) >= 0)
+            id = (uint8_t)((pb_tbp_hexval(line[0]) << 4) | pb_tbp_hexval(line[1]));
+        pb_tbp_err(c, id, 2, 0);
+        return 1;
     }
     if ((chars & 1u) || chars < 10u || chars > 520u) {
         pb_tbp_err(c, 0, 2, 0);
@@ -1395,8 +1297,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
         pb_tbp_err(c, id, 1, 0);
         return 1;
     }
-    c->last_feed = pb_now(c);
-    c->tbp_last_frame_ms = c->last_feed;
+    c->tbp_last_frame_ms = pb_now(c);
     if (op == 0x01u) {
         uint8_t info[38] = {1, 0, 0, 0, 0, 1, 0x80, PB_TBP_QUEUE_DEPTH, PB_TBP_QUEUE_DEPTH,
                             0x03, 0xE8, 0x03, 0xE8,
@@ -1722,46 +1623,6 @@ static int pb_tbp_line(pb_core *c, const char *line) {
     return 1;
 }
 
-static void pb_command(pb_core *c, char *line) {
-    char **v = c->scratch_v;
-    int n = pb_token(line, v, 16);
-    uint32_t now = pb_now(c);
-    c->reply[0] = 0;
-    if (!n)
-        return;
-    if (n > 16) {
-        pb_error(c, "arg", "");
-        return;
-    }
-    if (c->dbg) {
-        char message[48] = "";
-        size_t len = 0;
-        pb_append(message, sizeof message, &len, "#rx ");
-        pb_append(message, sizeof message, &len, v[0]);
-        pb_append(message, sizeof message, &len, " t=");
-        pb_num(message, sizeof message, &len, now);
-        pb_reply(c, message);
-    }
-    if (pb_eq(v[0], "PHEAD") || pb_eq(v[0], "PLATCH") || pb_eq(v[0], "PHEAT") ||
-        pb_eq(v[0], "PSTEP") || pb_eq(v[0], "PSTEPSTAT") || pb_eq(v[0], "PDIAG") || pb_eq(v[0], "PHDIAG") ||
-        pb_eq(v[0], "PTIME") || pb_eq(v[0], "PEVENT"))
-        pb_printer_command(c, v, n);
-    else if (pb_eq(v[0], "HEL") || pb_eq(v[0], "DBG") || pb_eq(v[0], "WDG") || pb_eq(v[0], "RST"))
-        pb_control_command(c, v, n, now);
-    else if (pb_eq(v[0], "MOD"))
-        pb_cmd_mode(c, v, n, now);
-    else if (pb_eq(v[0], "SET"))
-        pb_cmd_set(c, v, n, now);
-    else if (pb_eq(v[0], "GET") || pb_eq(v[0], "STA"))
-        pb_cmd_read(c, v, n, now);
-    else if (pb_eq(v[0], "ADC"))
-        pb_cmd_adc(c, v, n, now);
-    else if (pb_eq(v[0], "LSN"))
-        pb_cmd_listen(c, v, n, now);
-    else
-        pb_error(c, "cmd", v[0]);
-}
-
 static void pb_rx(pb_core *c, const uint8_t *data, size_t len) {
     size_t i;
     for (i = 0; i < len; i++) {
@@ -1772,30 +1633,22 @@ static void pb_rx(pb_core *c, const uint8_t *data, size_t len) {
             if (!c->discard && c->llen && c->line[c->llen - 1] == '\r')
                 c->llen--;
             if (c->discard) {
-                pb_reply(c, "err len");
+                pb_tbp_err(c, 0, 2, 0);
                 c->discard = 0;
                 c->llen = 0;
                 continue;
             }
             c->line[c->llen] = 0;
-            char *s = c->line;
-            while (*s == ' ' || *s == '\t')
-                s++;
-            if (*s && *s != '#' && !pb_tbp_line(c, s))
-                pb_command(c, s);
+            if (c->llen)
+                (void)pb_tbp_line(c, c->line);
             c->llen = 0;
             continue;
         }
         if (c->discard)
             continue;
-        if (c->llen >= 128) {
-            size_t j;
-            int hex_prefix = 1;
-            for (j=0;j<c->llen;j++) if (pb_tbp_hexval(c->line[j])<0) { hex_prefix=0; break; }
-            if (!hex_prefix || pb_tbp_hexval(x)<0 || c->llen>=520) {
-                c->discard = 1;
-                continue;
-            }
+        if (c->llen >= 520) {
+            c->discard = 1;
+            continue;
         }
         c->line[c->llen++] = x;
     }
@@ -1807,10 +1660,8 @@ static void pb_poll(pb_core *c) {
     pb_boot_wiggle_poll(c);
     if (c->step_done_pending) {
         c->step_done_pending = 0;
-        if (!c->tbp_running) {
-            pb_reply(c, "!step done");
-            if (!pb_tbp_used(c)) pb_coils_idle(c);
-        }
+        if (!c->tbp_running && !pb_tbp_used(c))
+            pb_coils_idle(c);
     }
     pb_tbp_exec_poll(c, now);
     if (c->tbp_coils_release_at && !pb_tbp_used(c) && !c->step_active &&
@@ -1853,38 +1704,6 @@ static void pb_poll(pb_core *c) {
         pb_tbp_send(c, 0u, 0x84u, event, sizeof event);
         c->tbp_last_hb_ms = now;
     }
-    unsigned i, port = c->pollport++ % 4;
-    int anyout = 0;
-    for (i = 0; i < PB_NPINS; i++) {
-        if ((c->pins[i].mode == PB_LO || c->pins[i].mode == PB_HI || c->pins[i].mode == PB_PWM) &&
-            !pb_eq(pb_defs[i].name, "PA1") && !pb_eq(pb_defs[i].name, "PC7")) anyout = 1;
-        if (c->pins[i].listen && pb_defs[i].port == port && c->h.read_port) {
-            unsigned level = pb_sample_pin(c, i);
-            if (level != c->pins[i].last) {
-                char b[48];
-                size_t n = 0;
-                pb_append(b, sizeof b, &n, "!");
-                pb_append(b, sizeof b, &n, pb_defs[i].name);
-                pb_append(b, sizeof b, &n, "=");
-                pb_append(b, sizeof b, &n, level ? "1" : "0");
-                pb_append(b, sizeof b, &n, " @");
-                pb_num(b, sizeof b, &n, now);
-                pb_reply(c, b);
-                c->pins[i].last = (uint8_t)level;
-            }
-        }
-    }
-    /* TBP owns its own optional link timeout. The legacy watchdog must not
-       tear down a live TBP session or emit non-protocol !wdg text. */
-    if (!c->tbp_active && c->wdg && anyout && (uint32_t)(now - c->last_feed) >= c->wdg) {
-        pb_tbp_cancel_work(c, 3u);
-        pb_safe_state(c);
-        c->tbp_active=0; pb_led_idle(c, now);
-        if (c->dbg)
-            pb_reply(c, "#wdg trip");
-        pb_reply(c, "!wdg");
-        c->last_feed = now;
-        c->wdg = 0;
-    }
+
 }
 #endif

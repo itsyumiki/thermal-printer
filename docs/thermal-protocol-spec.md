@@ -5,7 +5,7 @@ Values marked **TBD** are owner decisions or need measurement. Section 14 lists 
 
 ### Current implementation boundary
 
-The Bun host implements TBP framing/CRC, sequential IDs, bounded retry recovery, a credit-gated four-command outstanding window, and ROW/MOVE/DWELL payloads. The C core advertises `queue_depth=4` and `max_window=4`, has a fixed four-command FIFO, and advances ROW/MOVE/DWELL from the poll loop. QUEUED/RUNNING/PROGRESS/terminal states, FIFO cancellation, ESTOP queue clearing, link-timeout cancellation and watchdog cancellation have C transcript coverage. This is still **not full v1 conformance**: the full parser and executor share the command task, although a higher-priority USB RX task independently scans CRC-valid ESTOP frames, cuts PB11 low and requests an executor abort before parser-side cancellation. Heating is now fail-closed: INFO reports zero heater/duty/shift limits and no sensor capabilities; nonzero ROW burn, legacy PHEAT/heat-bearing PEVENT, and direct PB11-high requests are rejected. PC4/PC5/PB3 are exposed only as unvalidated raw inputs. Heartbeat and link timeout are configurable, while nonzero coil hold is rejected and motor outputs release after motion. No validated temperature/battery/paper sampling, calibrated heater timer, nonzero duty budget, or hardware measurement of cancellation/ESTOP latency is available. Host/C tests and remote builds do not establish hardware safety.
+The Bun host implements TBP framing/CRC, sequential IDs, bounded retry recovery, a credit-gated four-command outstanding window, and ROW/MOVE/DWELL payloads. The C core advertises `queue_depth=4` and `max_window=4`, has a fixed four-command FIFO, and advances ROW/MOVE/DWELL from the poll loop. QUEUED/RUNNING/PROGRESS/terminal states, FIFO cancellation, ESTOP queue clearing, link-timeout cancellation and watchdog cancellation have C transcript coverage. This is still **not full v1 conformance**: the full parser and executor share the command task, although a higher-priority USB RX task independently scans CRC-valid ESTOP frames, cuts PB11 low and requests an executor abort before parser-side cancellation. Heating is now fail-closed: INFO reports zero heater/duty/shift limits and no sensor capabilities; nonzero ROW burn and direct PB11-high requests are rejected. The legacy plaintext PHEAT/PEVENT interface has been removed. PC4/PC5/PB3 are exposed only as unvalidated raw inputs. Heartbeat and link timeout are configurable, while nonzero coil hold is rejected and motor outputs release after motion. No validated temperature/battery/paper sampling, calibrated heater timer, nonzero duty budget, or hardware measurement of cancellation/ESTOP latency is available. Host/C tests and remote builds do not establish hardware safety.
 
 This replaces the G-code-style idea in `thermal-design-doc.md` (still untracked, not edited). The queue and look-ahead
 goals of that document are kept; the text syntax, the `R`/`P` staging commands and printer-side calibration are dropped.
@@ -48,7 +48,7 @@ One frame per line. Same layout in both directions.
 | CRC16 | 2 bytes | CRC-16/CCITT-FALSE over ID, OP, LEN and DATA (poly `0x1021`, init `0xFFFF`, no reflection, xorout `0`). |
 
 - A frame is 5 + LEN bytes, so 10 + 2·LEN hex characters, then `\n` (`0x0A`). Maximum wire line length is 521 characters including `\n` (520 hex characters plus LF). Implementations must allocate an additional NUL byte if using C strings; this storage byte is not part of the wire limit.
-- Receivers ignore a `\r` immediately before `\n` and ignore empty lines. An embedded `\r`, spaces, odd digit counts and non-hex characters are a format error. In the firmware receiver, a malformed line with at least four leading hex characters is treated as a TBP candidate and returns `ERR FORMAT`; word-led legacy commands (including `ADC`) remain on the legacy parser path.
+- Receivers ignore a `\r` immediately before `\n` and ignore empty lines. An embedded `\r`, spaces, odd digit counts and non-hex characters are a format error. Every non-empty firmware input line is handled exclusively by the TBP frame parser: malformed or plaintext input returns a hex-encoded `ERR FORMAT` response, and no legacy parser fallback exists.
 - CRC check value: CRC of the ASCII string `123456789` is `0x29B1`.
 - The CRC does not make anything safe. Safety is enforced by firmware limits regardless of frame validity (section 9).
 
@@ -374,7 +374,7 @@ A stationary burn (`steps = 0`) is legal and is the building block for gray (sec
 | Battery | Quarter-VBAT SDK channel in mV; below 3400 mV a heat row fails LOWBAT. |
 | Paper | PB3 low = present. Absent at start or before any slice: FAILED NOPAPER. |
 | Sensor invalid | Open/shorted/unreadable temperature, unreadable battery or paper: FAILED SENSOR (arg 01/02/03), heater off, queued jobs CANCELLED reason `03`. Gates are re-run before every heater slice. |
-| Heater on only inside a ROW slice or a gated PHEAT/PEVENT pulse | Heater is off in every other state, including STOPPED, IDLE, session loss and boot. Direct PB11-high through MOD/SET is blocked because it bypasses every gate. |
+| Heater on only inside a gated ROW slice | Heater is off in every other state, including STOPPED, IDLE, session loss and boot. Direct PB11-high requests are not exposed because they bypass every gate. |
 
 ### 9.2 What the host can and cannot do
 
@@ -534,6 +534,6 @@ Typical job: `HELLO`, `CONFIG`, several `ROW`s sent until credits or `T_target` 
 
 ## 15. Relationship to the rest of the project
 
-- The Pinbridge diagnostic commands (`PHEAD`, `PLATCH`, `PHEAT`, `PSTEP`, WebSocket demos) are unchanged. TBP is intended as a separate application firmware that may reuse Pinbridge's pin tables and head/stepper drivers, but this document does not decide that structure.
+- The old Pinbridge diagnostic/text commands (`PHEAD`, `PLATCH`, `PHEAT`, `PSTEP`, `PDIAG`, `PHDIAG`, `PTIME`, and `PEVENT`) have been removed from firmware dispatch. The TBP executor retains shared hardware primitives internally; see `docs/legacy-text-protocol-removal.md` for the migration summary.
 - Safety limits stay in firmware here, unlike Pinbridge's diagnostic path where the host is the policy layer.
 - This design implements the direction in `stock-print-scheduler-handoff.md`: a firmware-side scheduler with continuous motion across rows, status and cancel. Items from its "known unknowns" that remain open are listed in section 14.

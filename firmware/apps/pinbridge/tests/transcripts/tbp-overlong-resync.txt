@@ -1,7 +1,7 @@
 # Overlong input is discarded through LF and the next valid frame is parsed.
 @config real
 @long 521
-< err len
+< 00830202005FEA
 > 01010101E654
 < 01810100CD2F
 < 0182270301000000000180040403E803E80001EA60006400C8EA600BB8005AFFFF0F00000000000000002236

@@ -1,9 +1,9 @@
-# length and ignored lines
-
-# comment
+# Plaintext is rejected as a binary TBP FORMAT error; an overlong line resynchronizes at LF.
+@config real
 > HEL
-< ok jlpin 2 {cfg} up={int}
+< 00830202005FEA
 @long 140
-< err len
-> HEL
-< ok jlpin 2 {cfg} up={int}
+< 00830202005FEA
+> 01010101E654
+< 01810100CD2F
+< 0182270301000000000180040403E803E80001EA60006400C8EA600BB8005AFFFF0F00000000000000002236

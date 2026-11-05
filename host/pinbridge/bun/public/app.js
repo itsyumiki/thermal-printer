@@ -14,7 +14,6 @@ const state = {
   printTotal: 0,
   printDone: 0,
   toastTimer: null,
-  timeTestRunning: false,
 };
 const pending = new Map();
 const STEPS_PER_MM = 32;
@@ -49,16 +48,15 @@ function send(action, extra = {}) {
   const requestId = ++state.requestSeq;
   state.ws.send(JSON.stringify({ action, ...extra, requestId }));
   return new Promise((resolve, reject) => {
-    pending.set(requestId, { resolve, reject, action });
-    const timeoutMs =
-      action === "print-solid" ? 3600000 : action === "time-test" ? 180000 : 15000;
-    setTimeout(() => {
+    const timeoutMs = action === "print-solid" ? 3600000 : 15000;
+    const timer = setTimeout(() => {
       const p = pending.get(requestId);
       if (p) {
         pending.delete(requestId);
         p.reject(new Error("Host request timed out"));
       }
     }, timeoutMs);
+    pending.set(requestId, { resolve, reject, action, timer });
   });
 }
 function safeSend(action, extra = {}) {
@@ -122,14 +120,8 @@ function setConnection(c) {
     "refreshStatus",
     "flushBtn",
     "estopBtn",
-    "diagStepBtn",
-    "diagHeaterBtn",
-    "diagBusyBtn",
-    "diagTickBtn",
   ])
     $(id).disabled = !state.connected;
-  for (const b of document.querySelectorAll(".time-btn"))
-    b.disabled = !state.connected || state.timeTestRunning;
   const info = state.info;
   const wasHeatReady = state.heatReady;
   const requiredSensors = 0x01 | 0x02 | 0x08;
@@ -324,6 +316,7 @@ function handleMessage(m) {
     const p = pending.get(m.requestId);
     if (p) {
       pending.delete(m.requestId);
+      clearTimeout(p.timer);
       if (m.error) {
         p.reject(new Error(m.error));
         log(`${p.action}: ${m.error}`, "error");
@@ -372,10 +365,6 @@ function handleMessage(m) {
   }
   if (m.type === "print-progress") {
     updateProgress(m.done, m.total);
-    return;
-  }
-  if (m.type === "time-test-progress") {
-    timeShowProgress(m);
     return;
   }
   if (m.type === "command-error") {
@@ -436,6 +425,11 @@ function connectSocket() {
     if (state.ws !== ws) return;
     state.socketUp = false;
     state.ws = null;
+    for (const [requestId, p] of pending) {
+      clearTimeout(p.timer);
+      pending.delete(requestId);
+      p.reject(new Error("Host WebSocket disconnected"));
+    }
     setConnection({ state: "reconnecting" });
     log(
       `Host WebSocket closed (code ${event.code}${event.reason ? `: ${event.reason}` : ""})`,
@@ -556,155 +550,4 @@ $("printBtn").onclick = async () => {
     $("printBtn").disabled = !state.connected;
   }
 };
-// ---- Diagnostics: replaces typing PDIAG / PHDIAG into tio ----
-function diagShow(text, level = "info") {
-  $("diagOut").textContent = text;
-  log(text, level);
-}
-async function runDiag(cmd) {
-  try {
-    const r = await send("diag", { cmd });
-    diagShow(r.reply);
-    return r.reply;
-  } catch (e) {
-    diagShow(e.message, "error");
-    return null;
-  }
-}
-const diagField = (reply, key) => {
-  const m = new RegExp(`${key}=(\\d+)`).exec(reply ?? "");
-  return m ? Number(m[1]) : null;
-};
-$("diagStepBtn").onclick = () => runDiag("PDIAG");
-$("diagHeaterBtn").onclick = () => runDiag("PHDIAG");
-$("diagBusyBtn").onclick = () => runDiag("PSTEPSTAT");
-// Stepper tick-rate test: one short heatless feed at the 1000 us floor; compares the
-// firmware's step-timer callback count with wall-clock time. 1 ms tick -> ~1000/s.
-$("diagTickBtn").onclick = async () => {
-  $("diagTickBtn").disabled = true;
-  try {
-    const steps = 480;
-    const before = await runDiag("PDIAG");
-    const t0 = performance.now();
-    await send("move", {
-      distanceMm: steps / STEPS_PER_MM,
-      speedMmS: 31.25,
-      releaseAfter: true,
-    });
-    const ms = performance.now() - t0;
-    const after = await runDiag("PDIAG");
-    const a = diagField(before, "ticks"),
-      b = diagField(after, "ticks");
-    if (a === null || b === null) {
-      diagShow("Tick test: could not read ticks counter from PDIAG", "error");
-      return;
-    }
-    const rate = ((b - a) * 1000) / ms;
-    diagShow(
-      `Tick test: ${b - a} timer callbacks in ${ms.toFixed(0)} ms = ${rate.toFixed(0)}/s ` +
-        `(${(1000 / rate).toFixed(2)} ms per tick; ${steps} half-steps took ${ms.toFixed(0)} ms, ` +
-        `ideal at a 1 ms tick is ${steps} ms)`,
-      "success",
-    );
-  } catch (e) {
-    diagShow("Tick test failed: " + e.message, "error");
-  } finally {
-    $("diagTickBtn").disabled = !state.connected;
-  }
-};
-// ---- Timer self-test: firmware PTIME + host wall clock --------------------------------------
-// Each clock counts ~1000 ms in its own units; the host times the firmware's begin/end lines.
-// ratio = wall / what the firmware thinks it counted (1.00 = the clock is right).
-const TIME_SOURCES = ["T3D16", "T3D4", "T3D64", "T3D256", "STEP", "JIFFY", "DELAY", "DELAY2"];
-const TIME_LABELS = {
-  T3D16: "heater timer /16",
-  T3D4: "heater timer /4",
-  T3D64: "heater timer /64",
-  T3D256: "heater timer /256",
-  STEP: "step tick",
-  JIFFY: "jiffies",
-  DELAY: "delay 1000us",
-  DELAY2: "delay 2us",
-};
-const timeReport = [];
-function timeVerdict(r) {
-  const off = (r.ratio - 1) * 100;
-  if (Math.abs(off) <= 2) return "OK";
-  return r.ratio > 1
-    ? `SLOW ${r.ratio.toFixed(2)}x (real time is longer than the firmware assumes)`
-    : `FAST ${(1 / r.ratio).toFixed(2)}x (real time is shorter than the firmware assumes)`;
-}
-function timeDetail(r) {
-  const bits = [];
-  if (r.impliedOscMHz != null)
-    bits.push(`oscillator ${r.impliedOscMHz.toFixed(2)} MHz (assumed 24)`);
-  if (r.src === "STEP" && r.msPerUnit != null)
-    bits.push(`${r.msPerUnit.toFixed(3)} ms per step tick (assumed 1)`);
-  if (r.src === "JIFFY" && r.msPerUnit != null)
-    bits.push(`${r.msPerUnit.toFixed(2)} ms per jiffy (assumed 10)`);
-  if (r.src === "DELAY" && r.msPerUnit != null)
-    bits.push(`${(r.msPerUnit * 1000).toFixed(1)} us per call (asked 1000)`);
-  if (r.src === "DELAY2" && r.msPerUnit != null)
-    bits.push(`${(r.msPerUnit * 1000).toFixed(3)} us per call (asked 2)`);
-  if (r.msPerJiffy != null)
-    bits.push(`jiffy cross-check ${r.msPerJiffy.toFixed(2)} ms`);
-  if (r.isrPerRun != null)
-    bits.push(`compare IRQ fired ${r.isrPerRun.toFixed(0)}x per run`);
-  return bits.join(", ");
-}
-function timeRender(extra = "") {
-  const head = "clock               want ms   wall ms (mean +- sd, min..max)       ratio  verdict";
-  const lines = timeReport.map((r) => {
-    if (r.error) return `${(TIME_LABELS[r.src] ?? r.src).padEnd(19)} ${r.error}`;
-    return (
-      `${(TIME_LABELS[r.src] ?? r.src).padEnd(19)} ${r.wantMs.toFixed(0).padStart(7)}   ` +
-      `${r.meanWallMs.toFixed(1).padStart(7)} +- ${r.stdevMs.toFixed(1).padEnd(5)} ` +
-      `${r.minWallMs.toFixed(1)}..${r.maxWallMs.toFixed(1)}`.padEnd(22) +
-      ` ${r.ratio.toFixed(3)}  ${timeVerdict(r)}\n${" ".repeat(20)}${timeDetail(r)}`
-    );
-  });
-  $("timeOut").textContent = [head, ...lines, extra].filter(Boolean).join("\n");
-}
-function timeShowProgress(m) {
-  timeRender(
-    `${TIME_LABELS[m.src] ?? m.src}: run ${m.run}/${m.reps}, ${m.wallMs.toFixed(1)} ms wall for ${m.wantMs.toFixed(0)} ms counted...`,
-  );
-}
-function timeSetRunning(on) {
-  state.timeTestRunning = on;
-  for (const b of document.querySelectorAll(".time-btn"))
-    b.disabled = on || !state.connected;
-}
-async function runTimeTests(sources) {
-  if (state.timeTestRunning) return;
-  timeSetRunning(true);
-  timeReport.length = 0;
-  timeRender(`starting ${sources.length} test(s)...`);
-  try {
-    for (const src of sources) {
-      try {
-        const r = await send("time-test", { src, ms: 1000, reps: 5 });
-        if (r.error) throw new Error(r.error);
-        timeReport.push(r);
-        log(
-          `Timer test ${src}: ${r.meanWallMs.toFixed(1)} ms wall for ${r.wantMs.toFixed(0)} ms counted (${r.ratio.toFixed(3)}x) ${timeVerdict(r)}`,
-          Math.abs(r.ratio - 1) <= 0.02 ? "success" : "warn",
-        );
-      } catch (e) {
-        timeReport.push({ src, error: e.message });
-        log(`Timer test ${src} failed: ${e.message}`, "error");
-        timeRender();
-        // A busy printer or a dead link will not get better by retrying the next source.
-        break;
-      }
-      timeRender();
-    }
-  } finally {
-    timeSetRunning(false);
-    timeRender();
-  }
-}
-$("timeAllBtn").onclick = () => runTimeTests(TIME_SOURCES);
-for (const b of document.querySelectorAll(".time-btn[data-src]"))
-  b.onclick = () => runTimeTests([b.dataset.src]);
 connectSocket();

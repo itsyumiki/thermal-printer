@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, extname } from "node:path";
 import { Uart, listPorts } from "./uart.ts";
 import { motionFromMessage } from "./units.ts";
+import { startConsole } from "./console.ts";
 import { headTempCFromRaw } from "./thermistor.ts";
 import {
   OP,
@@ -10,90 +11,34 @@ import {
   encode,
   decode,
   decodeInfo,
+  decodeStat,
+  ROW_FLAG,
+  nameOf,
+  type Frame,
+  type Message,
+  decodeMessage,
+  describeMessage,
+  translate,
   row,
   move,
   u16,
   join,
   DEFAULT_HEATER_SLICES,
-} from "./tbp.ts";
+  type Command,
+} from "./tbp/index.ts";
 
 const root = resolve(import.meta.dir, "public");
 const host = process.env.PINBRIDGE_HOST ?? "127.0.0.1";
 const port = Number(process.env.PINBRIDGE_PORT ?? 8765);
 const autoPath = process.env.PINBRIDGE_UART ?? "";
 const mockMode = process.env.PINBRIDGE_MOCK === "1";
-// Raw UART frame logging to stdout: PINBRIDGE_DEBUG=1 or `bun run server.ts --debug`.
+// stdin console: on by default; PINBRIDGE_CONSOLE=0 or --no-console turns it off (e.g. when stdin belongs to something else).
+const consoleEnabled =
+  process.env.PINBRIDGE_CONSOLE !== "0" &&
+  !process.argv.includes("--no-console");
 const HELLO_TIMEOUT_MS = 400;
 const HELLO_RETRY_DELAY_MS = 100;
-/** Clock sources the firmware PTIME command can test, in firmware order (pb_time_srcs). */
-export const TIME_TEST_SOURCES = [
-  "T3D4",
-  "T3D16",
-  "T3D64",
-  "T3D256",
-  "STEP",
-  "JIFFY",
-  "DELAY",
-  "DELAY2",
-] as const;
-export interface TimeRun {
-  wallMs: number;
-  n: number;
-  wantUs: number;
-  dj: number | null;
-  ticks: number | null;
-  div: number | null;
-  isr: number | null;
-}
-const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
-const stdev = (a: number[]) =>
-  a.length < 2
-    ? 0
-    : Math.sqrt(a.reduce((x, y) => x + (y - mean(a)) ** 2, 0) / (a.length - 1));
-/**
- * Average repeated PTIME runs. ratio = host wall time / what the firmware says it counted: 1.0 means the
- * timer is right, 2.0 means the real interval was twice as long as the firmware assumed.
- */
-export function summarizeTimeRuns(src: string, runs: TimeRun[]) {
-  const wall = runs.map((r) => r.wallMs);
-  const wantMs = runs[0].wantUs / 1000;
-  const meanWallMs = mean(wall);
-  const out: Record<string, any> = {
-    src,
-    runs: runs.length,
-    wantMs,
-    meanWallMs,
-    stdevMs: stdev(wall),
-    minWallMs: Math.min(...wall),
-    maxWallMs: Math.max(...wall),
-    ratio: meanWallMs / wantMs,
-    nPerRun: runs[0].n,
-  };
-  // What the unit is really worth, from the measured wall time.
-  const perRun = (f: (r: TimeRun) => number | null) => {
-    const v = runs.map(f).filter((x): x is number => x !== null && isFinite(x));
-    return v.length ? mean(v) : null;
-  };
-  out.msPerUnit = perRun((r) => (r.n > 0 ? r.wallMs / r.n : null));
-  if (src.startsWith("T3D"))
-    // ticks counted at the post-divider rate; the oscillator is ticks * div per elapsed time. One compare
-    // is one ISR, so when the firmware reports its ISR count the ticks are rescaled to it: n may also
-    // hold compares seen through the pending flag (old firmware), which would count a compare twice.
-    out.impliedOscMHz = perRun((r) => {
-      if (!r.ticks || !r.div) return null;
-      const ticks = r.isr && r.n > 0 ? (r.ticks * r.isr) / r.n : r.ticks; // isr 0: the IRQ never fired
-      return (ticks * r.div) / (r.wallMs * 1000);
-    });
-  if (src !== "JIFFY")
-    out.msPerJiffy = perRun((r) => (r.dj ? r.wallMs / r.dj : null));
-  const isr = perRun((r) => r.isr);
-  if (isr !== null) {
-    out.isrPerRun = isr;
-    // False means n and the ISR count disagree: the run counted some compare twice (old firmware).
-    out.isrMatchesN = runs.every((r) => r.isr === null || r.isr === r.n);
-  }
-  return out;
-}
+// Raw UART frame logging to stdout: PINBRIDGE_DEBUG=1 or `bun run server.ts --debug`.
 const debugFrames =
   /^(1|true|yes|on)$/i.test(process.env.PINBRIDGE_DEBUG ?? "") ||
   process.argv.includes("--debug");
@@ -102,6 +47,97 @@ function debugStamp() {
   const p = (n: number, w = 2) => String(n).padStart(w, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
 }
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/**
+ * Calls onStall(ms) whenever the JS event loop was blocked for at least thresholdMs. While it is blocked the
+ * HTTP server cannot accept a WebSocket upgrade, so this is what a "web UI waits to connect" looks like
+ * from the inside. Returns a function that stops the watcher.
+ */
+export function watchEventLoop(
+  onStall: (ms: number) => void,
+  intervalMs = 100,
+  thresholdMs = 150,
+) {
+  let last = performance.now();
+  const timer = setInterval(() => {
+    const now = performance.now();
+    const late = now - last - intervalMs;
+    last = now;
+    if (late >= thresholdMs) onStall(Math.round(late));
+  }, intervalMs);
+  return () => clearInterval(timer);
+}
+const pick = (o: any, keys: string[]) =>
+  keys
+    .filter((k) => o?.[k] !== undefined)
+    .map((k) => `${k}=${o[k]}`)
+    .join(" ");
+/** Short label for the log line of a UI command. */
+function describeCommand(action: string, msg: any): string {
+  switch (action) {
+    case "print-job":
+      return `print-job rows=${Array.isArray(msg.rows) ? msg.rows.length : 0}`;
+    case "print-solid":
+      return `print-solid rows=${msg.rows ?? 24} burnUs=${msg.burnUs ?? 0}`;
+    case "move":
+      return `move ${pick(msg, ["distanceMm", "speedMmS", "steps", "periodUs", "releaseAfter"])}`.trim();
+    case "row":
+      return `row ${pick(msg, ["black", "burnUs", "distanceMm", "speedMmS", "steps", "periodUs", "slices"])}`.trim();
+    case "dwell":
+      return `dwell ${msg.ms}ms`;
+    case "coils":
+      return `coils ${msg.enabled ? "on" : "off"}`;
+    case "config":
+      return `config key=${msg.key} value=${msg.value}`;
+    case "connect":
+      return `connect ${msg.path || "auto"}`;
+    default:
+      return action;
+  }
+}
+/** What a UI command returned, for its log line (empty when there is nothing worth saying). */
+function summarizeResult(action: string, r: any): string {
+  switch (action) {
+    case "print-job":
+    case "print-solid":
+      return ` -> ${r.done}/${r.total} rows${r.stopped ? " (stopped)" : ""}`;
+    case "connect":
+      return ` -> ${r.state}`;
+    case "status": {
+      const s = r.status;
+      if (!s) return "";
+      return ` -> state=${s.state} queue=${s.queueUsed}/${s.queueDepth} head=${s.headTempC ?? "?"}C batt=${s.batteryMv}mV paper=${s.paper} flags=0x${Number(s.flags ?? 0).toString(16)}`;
+    }
+    default:
+      return "";
+  }
+}
+/** Commands that run for a while: their start is logged too, not just their end. */
+const LONG_ACTIONS = new Set(["print-job", "print-solid"]);
+const QUIET_ACTIONS = new Set(["ports", "status"]);
+/** Per-command ack/terminal timeout for console and UI sends. */
+function commandTimeoutMs(cmd: Command): number {
+  switch (cmd.type) {
+    case "move":
+      return Math.min(
+        60000,
+        Math.ceil((Math.abs(cmd.steps) * cmd.periodUs) / 1000) + 2000,
+      );
+    case "row":
+      return Math.min(
+        30000,
+        Math.ceil((Math.abs(cmd.steps) * cmd.periodUs) / 1000) + 5000,
+      );
+    case "dwell":
+      return cmd.ms + 2000;
+    case "estop":
+      return 5000;
+    default:
+      return 1200;
+  }
+}
+/** How long a raw hex send waits for the printer's reply before giving up. */
+const RAW_REPLY_WAIT_MS = 1500;
 type Client = { send: (s: string) => void };
 type Pending = {
   id: number;
@@ -145,6 +181,49 @@ export class PrinterLink {
     try {
       this.debugSink(`${debugStamp()} ${tag.padEnd(5)} ${text}`);
     } catch {}
+  }
+  /** Where the always-on operational log goes (stdout). Raw frames stay behind the debug flag and debugSink. */
+  logSink: (line: string) => void = (line) => console.log(line);
+  /** What the host is doing right now; the event-loop stall watcher prints it so a stall can be attributed. */
+  phase = "idle";
+  private throttled = new Map<string, { at: number; hidden: number }>();
+  /** One stamped line of the normal-mode log; never throws. */
+  logLine(tag: string, text: string) {
+    try {
+      this.logSink(`${debugStamp()} ${tag.padEnd(5)} ${text}`);
+    } catch {}
+  }
+  log(level: "info" | "warn" | "error", text: string) {
+    this.logLine(level.toUpperCase(), text);
+  }
+  /** log() for a condition that can repeat every second: print it at most once per everyMs, with a count of what was held back. */
+  logThrottled(
+    key: string,
+    level: "info" | "warn" | "error",
+    text: string,
+    everyMs = 10000,
+  ) {
+    const now = Date.now();
+    const t = this.throttled.get(key);
+    if (t && now - t.at < everyMs) {
+      t.hidden++;
+      return;
+    }
+    this.throttled.set(key, { at: now, hidden: 0 });
+    this.log(
+      level,
+      t?.hidden ? `${text} (+${t.hidden} more since the last report)` : text,
+    );
+  }
+  /** Log to stdout and to the browser event log. throttleKey keeps a repeating warning from flooding stdout (the browser still gets every one). */
+  uiLog(
+    level: "info" | "warn" | "error",
+    message: string,
+    throttleKey?: string,
+  ) {
+    if (throttleKey) this.logThrottled(throttleKey, level, message);
+    else this.log(level, message);
+    this.emit("log", { level, message });
   }
   emit(type: string, data: any = {}) {
     const packet = JSON.stringify({ type, ...data, at: Date.now() });
@@ -276,18 +355,33 @@ export class PrinterLink {
       if (!this.path || !list.some((p) => p.path === this.path))
         this.path = autoPath || (list[0]?.path ?? "");
       if (!this.path) throw new Error("No UART device found");
+      this.log("info", `UART: opening ${this.path} at 115200`);
       const serial = new Uart(this.path, 115200);
       serial.onLine = (line) => this.onLine(line);
       serial.onError = (e) => this.onPortError(e);
       serial.onClose = () => this.onPortClose();
       this.serial = serial;
-      serial.open();
+      // open() runs stty and opens the tty off the event loop; the time is logged so a slow device shows up.
+      const openStart = performance.now();
+      this.phase = `UART open of ${this.path}`;
+      try {
+        await serial.open();
+      } finally {
+        this.phase = "idle";
+      }
+      const openMs = performance.now() - openStart;
+      this.log(
+        openMs >= 500 ? "warn" : "info",
+        `UART: opened ${this.path} in ${openMs.toFixed(0)} ms`,
+      );
       if (gen !== this.generation) {
         serial.close();
         return;
       }
       await new Promise((r) => setTimeout(r, 120));
       let helloInfo: ReturnType<typeof decodeInfo> | null = null;
+      let helloFailures = 0;
+      const helloStart = performance.now();
       while (gen === this.generation && this.serial?.isOpen) {
         try {
           this.serial.discardPartialLine();
@@ -301,12 +395,14 @@ export class PrinterLink {
           break;
         } catch (e) {
           if (gen !== this.generation || !this.serial?.isOpen) throw e;
-          const message = e instanceof Error ? e.message : String(e);
+          const message = errText(e);
           this.lastError = message;
-          this.emit("log", {
-            level: "warn",
-            message: `HELLO failed; retrying on open UART: ${message}`,
-          });
+          helloFailures++;
+          this.uiLog(
+            "warn",
+            `HELLO failed; retrying on open UART: ${message}`,
+            "hello-failed",
+          );
           await new Promise((r) => setTimeout(r, HELLO_RETRY_DELAY_MS));
         }
       }
@@ -316,6 +412,16 @@ export class PrinterLink {
       this.stopRequested = false;
       this.setState("connected");
       this.startKeepalive();
+      this.log(
+        "info",
+        `printer connected: ${this.path} · TBP v${this.info.version} · build ` +
+          `${Number(this.info.buildId ?? 0)
+            .toString(16)
+            .padStart(8, "0")} · uid ${this.info.uid} · ` +
+          `${this.info.dots} dots · queue ${this.info.queueDepth}/window ${this.info.maxWindow} · ` +
+          `HELLO took ${(performance.now() - helloStart).toFixed(0)} ms` +
+          (helloFailures ? ` after ${helloFailures} failed attempt(s)` : ""),
+      );
       this.emit("toast", {
         level: "success",
         message:
@@ -326,7 +432,15 @@ export class PrinterLink {
       });
       this.emit("printer", { info: this.info, status: this.status });
     } catch (e) {
-      this.lastError = e instanceof Error ? e.message : String(e);
+      // A newer connect() or drop() owns the link now; this attempt was superseded, not failed.
+      if (gen !== this.generation) return;
+      this.lastError = errText(e);
+      this.logThrottled(
+        "connect-failed:" + this.lastError,
+        "warn",
+        `UART connect failed: ${this.lastError}; retrying`,
+        15000,
+      );
       this.setState("reconnecting");
       this.closePort();
       this.scheduleReconnect();
@@ -343,7 +457,7 @@ export class PrinterLink {
   onPortError(e: Error) {
     this.lastError = e.message;
     this.dbg("ERR", "UART: " + e.message);
-    this.emit("log", { level: "error", message: "UART: " + e.message });
+    this.uiLog("error", "UART: " + e.message);
     this.drop("UART error");
   }
   onPortClose() {
@@ -389,6 +503,7 @@ export class PrinterLink {
   }
   drop(reason: string) {
     this.dbg("DROP", reason);
+    this.log("warn", `link dropped: ${reason}; reconnecting in 1400 ms`);
     this.sequenceResyncing = false;
     this.stopKeepalive();
     this.generation++;
@@ -406,26 +521,26 @@ export class PrinterLink {
     this.scheduleReconnect(1400);
   }
   onLine(line: string) {
-    if (this.textWaiter && this.textWaiter.match(line.trim())) return;
     let f;
     try {
       f = decode(line);
     } catch (e) {
       // Raw text is JSON-quoted so stray bytes/CR are visible (e.g. a firmware "!wdg" line).
-      this.dbg(
-        "RX?",
-        `${JSON.stringify(line)} (${e instanceof Error ? e.message : String(e)})`,
-      );
-      this.emit("log", {
-        level: "warn",
-        message: `Ignored non-TBP UART line: ${JSON.stringify(line)}`,
-      });
+      this.dbg("RX?", `${JSON.stringify(line)} (${errText(e)})`);
+      // A stdin session shows the line itself as the printer's reply; otherwise it is unsolicited (e.g. "!wdg").
+      if (this.rawSession) {
+        this.rawSession.onLine(line.trim());
+        return;
+      }
+      this.uiLog("warn", `Ignored non-TBP UART line: ${JSON.stringify(line)}`);
       return;
     }
+    this.rawSession?.onLine(line.trim());
     this.dbg(
       "RX",
       `id=${f.id} op=${f.op.toString(16).padStart(2, "0")} ${line.trim()}`,
     );
+    this.logFrame(f);
     if (f.op === KIND.EVENT) {
       this.emit("event", { id: f.id, data: [...f.data] });
       if (f.data[0] === 1 && f.data.length >= 14)
@@ -493,16 +608,16 @@ export class PrinterLink {
               new Error("Blocked by TBP sequence resynchronization"),
             );
           }
-          this.emit("log", {
-            level: "warn",
-            message: `Sequence mismatch after ACK; next ID reset to ${arg}; current job status is ambiguous`,
-          });
+          this.uiLog(
+            "warn",
+            `Sequence mismatch after ACK; next ID reset to ${arg}; current job status is ambiguous`,
+          );
           this.wakeCreditWaiters(true);
         } else {
           this.wakeCreditWaiters();
         }
         p.reject(error);
-        this.emit("log", { level: "warn", message: error.message });
+        this.uiLog("warn", error.message);
         return;
       }
       // ERR SEQ means this frame was not accepted. Cancel later unsent IDs,
@@ -558,10 +673,10 @@ export class PrinterLink {
         p.retries = 0;
         this.nextId = arg;
         this.sequenceResyncing = true;
-        this.emit("log", {
-          level: "warn",
-          message: `TBP sequence mismatch; probing expected ID ${arg} with STAT before retrying command`,
-        });
+        this.uiLog(
+          "warn",
+          `TBP sequence mismatch; probing expected ID ${arg} with STAT before retrying command`,
+        );
         void this.transact(OP.STAT, new Uint8Array(), true, 400)
           .then(() => {
             this.sequenceResyncing = false;
@@ -580,10 +695,10 @@ export class PrinterLink {
               new Error(`TBP sequence resynchronization failed: ${reason}`),
             );
             this.wakeCreditWaiters(true);
-            this.emit("log", {
-              level: "warn",
-              message: `TBP sequence resynchronization failed: ${reason}`,
-            });
+            this.uiLog(
+              "warn",
+              `TBP sequence resynchronization failed: ${reason}`,
+            );
           });
         return;
       }
@@ -643,22 +758,74 @@ export class PrinterLink {
       }
     }
   }
-  parseStatusBody(b: number[]) {
-    const u = (i: number) => (b[i] ?? 255) * 256 + (b[i + 1] ?? 255);
-    const headTempRaw = u(5);
-    return {
-      state: b[0],
-      queueUsed: b[1],
-      queueDepth: b[2],
-      runningId: b[3],
-      lastTerminalId: b[4],
-      headTempRaw,
-      headTempC: headTempCFromRaw(headTempRaw),
-      batteryRaw: u(7),
-      batteryMv: u(9),
-      paper: b[11],
-      flags: b[12],
+  /** Normal-mode log line for the printer messages worth reading: failures, cancellations, events, odd row flags. */
+  private logFrame(f: Frame) {
+    let m: Message;
+    try {
+      m = decodeMessage(f, { opOf: (id) => this.pending.get(id)?.op });
+    } catch {
+      return;
+    }
+    const opName = (id: number) => {
+      const op = this.pending.get(id)?.op;
+      const name = op === undefined ? undefined : nameOf(OP, op);
+      return name ? ` (${name.toLowerCase()})` : "";
     };
+    if (m.type === "event") {
+      if (m.event === "heartbeat") return;
+      const level = m.event === "paper" ? "info" : "warn";
+      this.log(level, `printer: ${describeMessage(m)}`);
+      return;
+    }
+    if (m.type === "err") {
+      // The protocol parser has decoded the numeric return code and its name.
+      // Keep repeated BUSY/QFULL/SEQ replies from flooding stdout during retries.
+      this.logThrottled(
+        `tbp-err:${m.code}`,
+        "warn",
+        `printer: ${describeMessage(m)}${opName(f.id)}`,
+        5000,
+      );
+      return;
+    }
+    if (m.type !== "status") return;
+    const responseOp = this.pending.get(f.id)?.op;
+    if (
+      m.state === "done" &&
+      responseOp !== OP.STAT &&
+      responseOp !== OP.HELLO
+    ) {
+      this.log("info", `printer: ${describeMessage(m)}${opName(f.id)}`);
+    }
+    if (m.state === "failed" || m.state === "cancelled") {
+      const text = describeMessage(m).replace(
+        / id=(\d+)/,
+        ` id=$1${opName(f.id)}`,
+      );
+      this.log(m.state === "failed" ? "error" : "warn", `printer: ${text}`);
+    } else if (m.state === "done" && m.result.kind === "row") {
+      const odd = m.result.row.flags & ~ROW_FLAG.NO_HEAT & ~ROW_FLAG.COLD_START;
+      if (odd)
+        this.logThrottled(
+          `row-flags:${odd}`,
+          "warn",
+          `printer: ${describeMessage(m)}`,
+          5000,
+        );
+    } else if (
+      m.state === "done" &&
+      m.result.kind === "flushed" &&
+      m.result.flushed > 0
+    ) {
+      this.log(
+        "info",
+        `printer: ${m.result.flushed} queued command(s) discarded`,
+      );
+    }
+  }
+  parseStatusBody(b: number[]) {
+    const stat = decodeStat(b);
+    return { ...stat, headTempC: headTempCFromRaw(stat.headTempRaw) };
   }
   transact(
     op: number,
@@ -736,7 +903,7 @@ export class PrinterLink {
           reject(error);
           this.wakeCreditWaiters();
           this.releaseSend(id);
-          this.emit("log", { level: "warn", message: error.message });
+          this.uiLog("warn", error.message);
           return;
         }
         const sendFrame = () => {
@@ -796,283 +963,126 @@ export class PrinterLink {
       );
     }
   }
-  /** Send one plain-text firmware command and resolve with the first reply line matching `expect`. */
-  private textWaiter: { match: (line: string) => boolean } | null = null;
-  async textCommand(
-    cmd: string,
-    expect: RegExp,
-    timeoutMs = 2000,
-  ): Promise<string> {
-    if (!this.serial?.isOpen || this.state !== "connected")
-      throw new Error("UART is not connected");
-    if (this.textWaiter) throw new Error("Another text command is in progress");
-    return await new Promise<string>((resolve, reject) => {
-      const done = (fn: () => void) => {
-        clearTimeout(timer);
-        this.textWaiter = null;
-        fn();
-      };
-      const timer = setTimeout(
-        () =>
-          done(() =>
-            reject(new Error(`${cmd.split(" ")[0]}: no reply from firmware`)),
-          ),
-        timeoutMs,
+  /** Line callback of an in-flight console send; it sees every line the printer writes, valid TBP or not. */
+  rawSession: { onLine: (line: string) => void } | null = null;
+  /**
+   * The stdin console entry point: one hex frame in, the lines to show out. TBP is hex only, so anything
+   * else is refused. The frame goes to the UART exactly as typed (its id and CRC are not touched) and every
+   * line the printer writes back is shown until the command's own terminal reply arrives or the wait runs out.
+   * If the printer accepted the frame, the host's next command id follows it so the web UI keeps working.
+   */
+  async sendHex(input: string): Promise<string[]> {
+    const hex = input.trim().toUpperCase();
+    if (!/^[0-9A-F]+$/.test(hex) || hex.length % 2)
+      throw new Error(
+        "hex frames only: an even number of hex digits such as 01010101E654 (no words, no spaces)",
       );
-      this.textWaiter = {
-        match: (line) => {
-          if (expect.test(line)) {
-            done(() => resolve(line));
-            return true;
-          }
-          if (/^err /.test(line)) {
-            done(() => resolve(line)); // callers decide what an err reply means
-            return true;
-          }
-          return false;
-        },
-      };
-      this.dbg("TX", `text ${cmd.slice(0, 40)}`);
-      this.serial!.write(cmd + "\n", (e) => {
-        if (e) done(() => reject(e));
-      });
-    });
-  }
-  /** Monotonic millisecond clock used to timestamp PTIME lines; replaceable in tests. */
-  clock: () => number = () => performance.now();
-  private timeTestBusy = false;
-  /**
-   * One firmware PTIME run: send the command, timestamp the "ptime begin" line and the final line, and
-   * return the wall time between them. The firmware writes both straight to USB around the counted interval.
-   */
-  private timeRun(src: string, ms: number): Promise<TimeRun> {
-    if (!this.serial?.isOpen || this.state !== "connected")
-      return Promise.reject(new Error("UART is not connected"));
-    if (this.textWaiter)
-      return Promise.reject(new Error("Another text command is in progress"));
-    return new Promise<TimeRun>((resolve, reject) => {
-      let begin: number | null = null;
-      let wantUs = 0;
-      let timer: any;
-      const finish = (fn: () => void) => {
-        clearTimeout(timer);
-        this.textWaiter = null;
-        fn();
-      };
-      const arm = (limitMs: number, why: string) => {
-        clearTimeout(timer);
-        timer = setTimeout(
-          () => finish(() => reject(new Error(`PTIME ${src}: ${why}`))),
-          limitMs,
-        );
-      };
-      arm(2000, "no reply from firmware");
-      this.textWaiter = {
-        match: (line) => {
-          const t = this.clock(); // stamp as early as possible
-          if (begin === null) {
-            if (/^ptime begin /.test(line)) {
-              wantUs = Number(/ want=(\d+)/.exec(line)?.[1] ?? 0);
-              begin = t;
-              // Generous: a 10x slow timer must still be able to finish and report.
-              arm(wantUs / 1000 * 12 + 5000, "no end line (firmware stuck?)");
-              return true;
-            }
-            if (/^err /.test(line)) {
-              finish(() => reject(new Error(`PTIME ${src}: firmware said "${line}"`)));
-              return true;
-            }
-            return false;
-          }
-          if (/^err /.test(line) && !/^err timeout PTIME /.test(line)) {
-            finish(() => reject(new Error(`PTIME ${src}: firmware said "${line}"`)));
-            return true;
-          }
-          if (/^(ok ptime|err timeout PTIME) /.test(line)) {
-            const f = (k: string) => {
-              const m = new RegExp(` ${k}=(\\d+)`).exec(line);
-              return m ? Number(m[1]) : null;
-            };
-            if (line.startsWith("err ")) {
-              finish(() =>
-                reject(
-                  new Error(
-                    `PTIME ${src}: the firmware's timer never finished (counted ${f("n")} of its target before its safety timeout)`,
-                  ),
-                ),
-              );
-              return true;
-            }
-            const run: TimeRun = {
-              wallMs: t - begin,
-              n: f("n") ?? 0,
-              wantUs: f("want") ?? wantUs,
-              dj: f("dj"),
-              ticks: f("ticks"),
-              div: f("div"),
-              isr: f("isr"),
-            };
-            finish(() => resolve(run));
-            return true;
-          }
-          return false;
-        },
-      };
-      this.dbg("TX", `text PTIME ${src} ${ms}`);
-      this.serial!.write(`PTIME ${src} ${ms}\n`, (e) => {
-        if (e) finish(() => reject(e));
-      });
-    });
-  }
-  /**
-   * Timer self-test: `reps` runs of one clock source, each counting about `ms` in the source's own units
-   * while the host times the firmware's begin/end lines. Blocks the printer for the duration, so the
-   * keepalive is paused (the firmware cannot answer STAT while counting).
-   */
-  async timeTest(src: string, ms = 1000, reps = 5) {
-    if (!(TIME_TEST_SOURCES as readonly string[]).includes(src))
-      throw new Error(`Unknown timer source: ${src}`);
-    ms = Math.max(100, Math.min(3000, Math.trunc(Number(ms) || 1000)));
-    reps = Math.max(1, Math.min(10, Math.trunc(Number(reps) || 5)));
-    if (this.mock) {
-      const runs: TimeRun[] = Array.from({ length: reps }, () => ({
-        wallMs: ms,
-        n: ms,
-        wantUs: ms * 1000,
-        dj: ms / 10,
-        ticks: src.startsWith("T3D") ? ms * 1500 : null,
-        div: src.startsWith("T3D") ? 16 : null,
-        isr: src.startsWith("T3D") ? 0 : null,
-      }));
-      return { ...summarizeTimeRuns(src, runs), mock: true };
+    if (!this.serial?.isOpen)
+      throw new Error("no open UART to send a frame on");
+    if (this.rawSession)
+      throw new Error("another frame is still waiting for its reply");
+    const sent = translate(hex);
+    const out: string[] = [];
+    let id: number | null = null;
+    let cmd: Command | null = null;
+    let waitMs = RAW_REPLY_WAIT_MS;
+    if (sent.ok && sent.direction === "to-printer") {
+      id = sent.id;
+      cmd = sent.command;
+      waitMs = Math.max(waitMs, commandTimeoutMs(cmd));
+      out.push(`TX ${hex}  [${sent.text}]`);
+    } else if (sent.ok) {
+      out.push(
+        `TX ${hex}  [${sent.text}; printer->host frames are not commands, sent as typed]`,
+      );
+    } else {
+      out.push(`TX ${hex}  (${sent.text}; sent as typed)`);
     }
-    if (this.timeTestBusy) throw new Error("A timer self-test is already running");
-    if (this.pending.size || this.outbound.length)
-      throw new Error("Printer is busy with a queued job");
-    this.timeTestBusy = true;
+    const opOf = (frameId: number) =>
+      frameId === id ? sent.frame?.op : undefined;
+    let accepted = false;
+    let seqHint: number | null = null;
     this.stopKeepalive();
     try {
-      // A keepalive STAT may still be in flight; let it finish before the firmware goes deaf.
-      for (let i = 0; this.pending.size && i < 75; i++)
-        await new Promise((r) => setTimeout(r, 20));
-      if (this.pending.size) throw new Error("Printer is busy with a request");
-      const runs: TimeRun[] = [];
-      for (let i = 0; i < reps; i++) {
-        const run = await this.timeRun(src, ms);
-        runs.push(run);
-        this.emit("time-test-progress", {
-          src,
-          run: i + 1,
-          reps,
-          wallMs: run.wallMs,
-          wantMs: run.wantUs / 1000,
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, waitMs);
+        const finish = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        this.rawSession = {
+          onLine: (line) => {
+            const t = translate(line, { opOf });
+            out.push(`RX ${t.ok ? `${t.hex}  [${t.text}]` : line}`);
+            if (!t.ok || t.direction !== "from-printer" || id === null) return;
+            const m = t.message;
+            if (m.id !== id) return;
+            if (m.type === "ack") accepted = true;
+            if (m.type === "status") {
+              accepted = true;
+              if (m.state === "done") {
+                if (m.result.kind === "info") this.info = m.result.info;
+                if (m.result.kind === "stat")
+                  this.status = {
+                    ...m.result.stat,
+                    headTempC: headTempCFromRaw(m.result.stat.headTempRaw),
+                  };
+              }
+            }
+            if (m.type === "err" && m.code === 6 && m.arg >= 1) seqHint = m.arg;
+            const terminal =
+              m.type === "err" ||
+              (m.type === "status" &&
+                ["done", "failed", "cancelled"].includes(m.state));
+            if (terminal) finish();
+          },
+        };
+        this.dbg("TX", `console ${hex}`);
+        this.serial!.write(hex + "\n", (e) => {
+          if (e) {
+            clearTimeout(timer);
+            reject(e);
+          }
         });
-        // Let the firmware's tx/rx tasks settle between runs.
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      return summarizeTimeRuns(src, runs);
+      });
     } finally {
-      this.timeTestBusy = false;
+      this.rawSession = null;
       if (this.state === "connected") this.startKeepalive();
     }
-  }
-  /** Read-only firmware diagnostics (PDIAG/PHDIAG/PSTEPSTAT). */
-  async diag(cmd: string): Promise<string> {
-    const allowed: Record<string, RegExp> = {
-      PDIAG: /^ok diag /,
-      PHDIAG: /^ok hdiag /,
-      PSTEPSTAT: /^ok (busy|done)$/,
-    };
-    const expect = allowed[cmd];
-    if (!expect) throw new Error(`Unknown diagnostic command: ${cmd}`);
-    if (this.mock) return `ok mock ${cmd.toLowerCase()} (no hardware)`;
-    const reply = await this.textCommand(cmd, expect);
-    if (/^err /.test(reply))
-      throw new Error(`${cmd}: firmware said "${reply}"`);
-    return reply;
-  }
-  /**
-   * A/B test: print solid black rows the way the old checker demo did, with the firmware's legacy
-   * PEVENT command (shift + latch + software-timed heat pulse + one half-step, per event, four
-   * events per row). If this prints dark while the normal row print is white, the TBP row
-   * executor (hardware pulse timer / one shift per row) is the suspect, not the head or paper.
-   */
-  async legacyPrint(rows: number, heatUs: number) {
-    const EVENT_MS = 6;
-    if (this.mock) return { rows, events: rows * 4, refused: {}, mock: true };
-    if (this.pending.size || this.outbound.length)
-      throw new Error("Printer is busy with a queued job");
-    this.stopRequested = false;
-    for (const cmd of [
-      "MOD PB10 lo",
-      "MOD PB9 lo",
-      "MOD PB8 hi",
-      "MOD PB11 lo",
-    ]) {
-      const r = await this.textCommand(cmd, /^ok/);
-      if (!r.startsWith("ok")) throw new Error(`${cmd}: ${r}`);
+    if (cmd && id !== null && cmd.type !== "estop") {
+      if (accepted) this.nextId = id >= 255 ? 1 : id + 1;
+      else if (seqHint !== null) this.nextId = seqHint;
     }
-    const hex = "FF".repeat(48);
-    const refused: Record<string, number> = {};
-    let next = performance.now();
-    let doneRows = 0;
+    if (cmd?.type === "stat")
+      this.emit("printer", { info: this.info, status: this.status });
+    if (out.length === 1) out.push("(no reply)");
+    return out;
+  }
+  /** UI/console entry that logs what it was asked and what came back (ports/status stay quiet: the UI polls them). */
+  async loggedCommand(action: string, msg: any) {
+    const label = describeCommand(action, msg);
+    const quiet = QUIET_ACTIONS.has(action);
+    const started = performance.now();
+    const took = () => `${(performance.now() - started).toFixed(0)} ms`;
+    if (!quiet && LONG_ACTIONS.has(action))
+      this.log("info", `cmd: ${label} started`);
     try {
-      for (let row = 0; row < rows && !this.stopRequested; row++) {
-        for (let ev = 0; ev < 4 && !this.stopRequested; ev++) {
-          const wait = next - performance.now();
-          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-          next = Math.max(next, performance.now()) + EVENT_MS;
-          const r = await this.textCommand(
-            `PEVENT ${hex} 2 1 2 ${heatUs} 1`,
-            /^ok event$/,
-          );
-          if (r.startsWith("err ")) {
-            refused[r] = (refused[r] ?? 0) + 1;
-            // A duty refusal just skips this event's heat; anything else is a real stop.
-            if (!/^err duty/.test(r)) throw new Error(`PEVENT refused: ${r}`);
-          }
-        }
-        doneRows++;
-        this.emit("print-progress", { done: doneRows, total: rows });
-      }
-    } finally {
-      try {
-        await this.transact(OP.COILS, Uint8Array.of(0), true);
-      } catch {}
+      const result = await this.command(action, msg);
+      if (!quiet)
+        this.log(
+          "info",
+          `cmd: ${label}${summarizeResult(action, result)} (${took()})`,
+        );
+      return result;
+    } catch (e) {
+      this.log("warn", `cmd: ${label} failed: ${errText(e)} (${took()})`);
+      throw e;
     }
-    return { rows: doneRows, events: doneRows * 4, refused };
   }
   async command(action: string, msg: any) {
-    // The firmware cannot answer anything while a PTIME run is counting.
-    if (
-      this.timeTestBusy &&
-      !["ports", "connect", "disconnect", "time-test"].includes(action)
-    )
-      throw new Error("A timer self-test is running; wait for it to finish");
     switch (action) {
       case "ports":
         return { ports: await this.ports() };
-      case "diag":
-        return {
-          cmd: String(msg.cmd),
-          reply: await this.diag(String(msg.cmd)),
-        };
-      case "time-test":
-        return await this.timeTest(
-          String(msg.src ?? ""),
-          Number(msg.ms ?? 1000),
-          Number(msg.reps ?? 5),
-        );
-      case "legacy-print": {
-        const rows = Math.max(
-          1,
-          Math.min(100, Math.trunc(Number(msg.rows ?? 24))),
-        );
-        // No host-side upper bound: the firmware rejects out-of-range heat itself.
-        const heatUs = Math.max(0, Math.trunc(Number(msg.heatUs ?? 1500)));
-        if (heatUs > 0) this.requireHeatReady(heatUs);
-        return await this.legacyPrint(rows, heatUs);
-      }
       case "connect": {
         const requested = String(msg.path ?? "");
         this.path = requested || autoPath;
@@ -1350,6 +1360,7 @@ if (import.meta.main) {
         const client = { send: (s: string) => ws.send(s) };
         ws.data.client = client;
         link.clients.add(client);
+        link.log("info", `web UI connected (${link.clients.size} open)`);
         ws.send(
           JSON.stringify({
             type: "snapshot",
@@ -1370,7 +1381,7 @@ if (import.meta.main) {
         }
         if (msg.action === "connect") link.connectWanted = true;
         void link
-          .command(String(msg.action ?? ""), msg)
+          .loggedCommand(String(msg.action ?? ""), msg)
           .then((result) =>
             ws.send(
               JSON.stringify({
@@ -1394,12 +1405,29 @@ if (import.meta.main) {
       },
       close(ws) {
         if (ws.data.client) link.clients.delete(ws.data.client);
+        link.log("info", `web UI disconnected (${link.clients.size} open)`);
       },
     },
   });
+  // A blocked event loop is what a web UI that "waits to connect" looks like from the inside: say so, and say why.
+  watchEventLoop((ms) =>
+    link.logThrottled(
+      "loop-stall",
+      "warn",
+      `host event loop was blocked for ${ms} ms${link.phase === "idle" ? "" : ` during: ${link.phase}`}; web UI requests waited`,
+      5000,
+    ),
+  );
   await link.start();
   console.log(`Pinbridge host listening on http://${host}:${server.port}`);
   if (debugFrames) console.log("Debug: logging raw UART frames to stdout");
+  if (consoleEnabled) {
+    startConsole(link, process.stdin);
+    if (process.stdin.isTTY)
+      console.log(
+        "Console: paste a hex frame (e.g. 01010101E654 = HELLO); the printer's reply is shown here.",
+      );
+  }
   let shuttingDown = false;
   const shutdown = () => {
     if (shuttingDown) return;

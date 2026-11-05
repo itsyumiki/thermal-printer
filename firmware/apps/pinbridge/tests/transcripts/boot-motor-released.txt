@@ -1,10 +1,3 @@
 # boot must not energize the stepper coils (DRV8833 is always powered)
 @config real
-> STA PA9
-< ok PA9=hiz
-> STA PA10
-< ok PA10=hiz
-> STA PC3
-< ok PC3=hiz
-> STA PC2
-< ok PC2=hiz
+@hw PA9=hiz PA10=hiz PC3=hiz PC2=hiz

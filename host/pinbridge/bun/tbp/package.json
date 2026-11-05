@@ -1,0 +1,12 @@
+{
+  "name": "pinbridge-tbp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TBP v1 hex frame translator: no I/O, no dependencies",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  }
+}
