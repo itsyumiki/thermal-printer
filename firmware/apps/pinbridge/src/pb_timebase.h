@@ -26,6 +26,16 @@
  * and the counter must not run backwards between the two counter reads. A wrap whose ISR has not run yet
  * (pending flag set) is added in here, so the result never steps back by 10 ms while an ISR is late.
  * Limit: if interrupts stay masked for more than one period (10 ms) a wrap is lost and time steps back. */
+/* Shared deadman decision used by the TIMER3 ISR and host tests. Signed subtraction keeps
+ * deadlines valid across the u32 microsecond-clock wrap for intervals shorter than 2^31 us. */
+static inline int pb_heater_deadman_expire(volatile uint8_t *armed, uint32_t now, uint32_t deadline,
+                                           volatile uint32_t *trips) {
+    if (!*armed || (int32_t)(now - deadline) < 0) return 0;
+    *armed = 0;
+    if (trips) (*trips)++;
+    return 1;
+}
+
 static inline uint32_t pb_tb_us(void) {
     uint32_t w, cnt, cnt2, pend;
     unsigned tries;

@@ -16,9 +16,11 @@ extern void wdt_clear(void);
 #endif
 #define PB_USB 0
 #define PB_RING 1024
+#define PB_HEATER_DEADMAN_MARGIN_US 100u /* setup allowance; wrap ISR adds up to another 10 ms */
 static pb_core core;
 static u16 step_timer_id;
 static volatile u8 heater_timer_armed, timebase_ready, timebase_stalled;
+static volatile u32 heater_deadman_at;
 static volatile u32 tb_wraps, tb_isr_con; /* timebase wrap count and the CON value the wrap ISR writes back */
 static OS_SEM rx_sem, cmd_sem, tx_sem;
 static volatile u8 detached, rx_overflow, estop_fast_requested, hello_fast_clear_requested, fast_estop_id;
@@ -29,7 +31,7 @@ static unsigned fast_line_len;
 static u8 fast_line_discard;
 static JL_PORT_FLASH_TypeDef *ports[4] = {JL_PORTA, JL_PORTB, JL_PORTC, JL_PORTD};
 static int hal_mode(void *ctx, unsigned port, unsigned bit, unsigned mode, unsigned level);
-static void hal_heater_pulse_cancel(void *ctx);
+static void hal_heater_deadman_disarm(void *ctx);
 static void pb_wakeup(void *dev) {
     (void)dev;
     os_sem_post(&rx_sem);
@@ -64,7 +66,7 @@ static void request_fast_abort(u8 id) {
     estop_fast_requested = 1;
     fast_estop_id = id;
     core.emergency_abort_requested = 1;
-    hal_heater_pulse_cancel(0);
+    hal_heater_deadman_disarm(0);
     k = pb_pin("PB11");
     if (k >= 0) (void)hal_mode(0, pb_defs[k].port, pb_defs[k].bit, PB_LO, 0);
 }
@@ -257,6 +259,14 @@ ___interrupt
 void pb_timebase_isr(void) {
     tb_wraps++; /* before the pending flag is cleared: pb_tb_us() relies on this order */
     core.heater_isr_count++; /* every TIMER3 ISR, kept for the TIMETEST TIMER3 rows */
+    if (pb_heater_deadman_expire(&heater_timer_armed,
+            (tb_wraps * PB_TB_PERIOD_US) + ((PB_TB_TIMER->CNT & 0xffffu) / PB_TB_TICKS_PER_US),
+            heater_deadman_at, &core.heater_deadman_trips)) {
+        /* TIMER3 wraps every 10 ms: the main loop normally ends the pulse at its exact
+         * deadline plus the 100 us setup allowance; this independent cutoff is bounded by one
+         * additional wrap period after that margin. */
+        ports[1]->OUT &= ~(1u << 11);
+    }
     PB_TB_TIMER->CON = tb_isr_con; /* PB_TB_CON: clear pending and keep counting (TIMETEST swaps in BIT(14): stop) */
 }
 /* (Re)start the timebase from zero with the given wrap count. Task context only (local_irq_* do not nest). */
@@ -335,47 +345,24 @@ static void tx_task(void *priv) {
             os_sem_pend(&tx_sem, 1);
     }
 }
-/* Interim heater pulse (Sprint 2). TIMER3 is the timebase now, so the one-shot compare ISR is gone: the pulse is
- * timed in-line against pb_tb_us(), and PB11 is forced low on every way out (done, cancelled by the USB
- * RX task through hal_heater_pulse_cancel, or the bound below). The bound is independent of the timebase:
- * the jiffy counter (SDK tick, 10 ms), so a dead TIMER3 cannot hold PB11 high past a few jiffies. Sprint 3 moves this
- * into the executor with a deadman in the wrap ISR; nothing here is a safety timer. */
-static int hal_heater_pulse_start(void *ctx, unsigned usec) {
-    u32 t0;
-    unsigned long j0, jmax;
-    int rc = 0;
+/* The core owns PB11's normal deadline. This independent wrap-ISR deadman is armed before
+ * PB11 rises and cuts it low if the executor wedges. The 100 us setup allowance plus the
+ * 10 ms TIMER3 wrap bounds the cutoff to about 10.1 ms after the requested deadline; this is
+ * not a precision timer. */
+static int hal_heater_deadman_arm(void *ctx, unsigned usec) {
     (void)ctx;
     if (!timebase_ready || timebase_stalled || !usec || usec > PB_TUNE_HEATER_SLICE_MAX_US) return -1;
-    core.heater_pulse_starts++;
-    j0 = jiffies;
-    jmax = usec / 10000u + 3u;
     local_irq_disable();
+    heater_deadman_at = pb_tb_us() + usec + PB_HEATER_DEADMAN_MARGIN_US;
     heater_timer_armed = 1;
-    ports[1]->OUT |= (1u << 11);
-    t0 = pb_tb_us();
     local_irq_enable();
-    while (heater_timer_armed && (u32)(pb_tb_us() - t0) < usec) {
-        if ((unsigned long)(jiffies - j0) > jmax) {
-            rc = -1;
-            break;
-        }
-    }
+    return 0;
+}
+static void hal_heater_deadman_disarm(void *ctx) {
+    (void)ctx;
     local_irq_disable();
     ports[1]->OUT &= ~(1u << 11);
     heater_timer_armed = 0;
-    local_irq_enable();
-    if (rc) core.heater_overruns++;
-    return rc;
-}
-static int hal_heater_pulse_active(void *ctx) {
-    (void)ctx;
-    return heater_timer_armed != 0;
-}
-static void hal_heater_pulse_cancel(void *ctx) {
-    (void)ctx;
-    local_irq_disable();
-    heater_timer_armed = 0; /* ends the in-line pulse loop; the timebase keeps running */
-    ports[1]->OUT &= ~(1u << 11);
     local_irq_enable();
 }
 /* ---- TIMETEST (opcode F0): timer self-test ------------------------------------------------------
@@ -617,9 +604,8 @@ static void command_task(void *priv) {
         .millis = hal_ms,
         .tx_write = hal_tx,
         .delay_us = hal_delay_us,
-        .heater_pulse_start = hal_heater_pulse_start,
-        .heater_pulse_active = hal_heater_pulse_active,
-        .heater_pulse_cancel = hal_heater_pulse_cancel,
+        .heater_deadman_arm = hal_heater_deadman_arm,
+        .heater_deadman_disarm = hal_heater_deadman_disarm,
         .time_test = hal_time_test,
         .tx_direct = hal_tx_direct,
         .micros = hal_micros,

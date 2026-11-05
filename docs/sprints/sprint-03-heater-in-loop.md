@@ -36,3 +36,29 @@ Raising any heater limit, changing step handling.
 ## Handoff on completion
 
 Include scope captures, deadman margin, and the counters' meaning. Next: Sprint 4.
+
+## Implementation status (2026-11-05; not yet hardware-accepted)
+
+Implemented locally, not committed or flashed:
+
+- Removed `heater_pulse_start/active/cancel` and the executor's asynchronous-pulse pending state. The executor now asserts PB11 and polls the shared `micros()` clock until the requested slice duration, checking the emergency-abort flag and a coarse jiffy fallback while PB11 is high.
+- Added `heater_deadman_arm/disarm` as the minimal HAL contract for the independent shutoff. The TIMER3 wrap ISR compares the current microsecond time with the armed deadline and directly clears PB11 if the executor has not done so. Disarm atomically clears PB11 before clearing the armed flag.
+- The deadman deadline is the requested pulse deadline plus a 100 µs setup allowance. TIMER3's 10 ms wrap period means the independent cutoff may occur up to about 10.1 ms after the requested deadline; this is a safety bound, not the precision pulse timer. The core also exits on a coarse jiffy bound if the timebase stops.
+- Removed the obsolete `tbp_heater_pending`, `heater_poll_ends`, and `heater_last_cnt/con` fields. Added `heater_deadman_trips` and `heater_over_deadline`; the latter counts a jiffy fallback or a pulse more than 1 ms over its requested duration.
+- Extended the race harness to check simulated 1 ms, 2 ms and 3 ms pulse widths, abort at pulse start and mid-pulse. Extended the timebase harness to exercise deadman expiry with a simulated wedged executor and across u32 wrap.
+
+### Local verification
+
+- C transcripts against the real pin table: 40/40 pass.
+- `pb_race_test`: 2005 cases pass, including pulse-width accounting and abort cases.
+- `pb_led_test`: pass.
+- `pb_timebase_test`: pass, including deadman expiry and u32-wrap cases.
+- Bun `run check`: 90 tests pass; Prettier passes.
+- `git diff --check`: pass.
+
+### Still required before closing Sprint 3
+
+- CI firmware build; no local JieLi toolchain is available.
+- Owner-run scope captures at three pulse widths, verifying PB11 width within 5% and immediate low on e-stop.
+- Owner-run forced-loop-wedge test confirming the independent ISR cutoff within the documented one-wrap margin.
+- Hardware evidence and final review of the counters. No hardware has been touched.

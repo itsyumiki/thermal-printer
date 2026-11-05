@@ -7,7 +7,7 @@
 #include <ctype.h>
 #include "../../src/pb_core.h"
 static unsigned now_ms, writes;
-static unsigned delay_remainder_us;
+static unsigned delay_remainder_us, heat_clock_us, abort_heat_after_us;
 static pb_core *active_core;
 static uint16_t outs[4], pads[4];
 static char output[32768];
@@ -76,10 +76,16 @@ static void delay_us(void *x, unsigned us) {
         pb_step_tick(active_core);
     }
 }
-/* Simulated microsecond clock: the millisecond counter plus the sub-millisecond remainder that delay_us() keeps. */
+/* Simulated microsecond clock. While PB11 is high, each read advances by 1 us so the
+ * executor's real polling loop can be tested without a wall-clock delay. */
 static uint32_t micros_mock(void *x) {
     (void)x;
-    return now_ms * 1000u + delay_remainder_us;
+    if (outs[1] & (1u << 11)) {
+        heat_clock_us++;
+        if (abort_heat_after_us && heat_clock_us >= abort_heat_after_us && active_core)
+            active_core->emergency_abort_requested = 1;
+    }
+    return now_ms * 1000u + delay_remainder_us + heat_clock_us;
 }
 static int tx(void *x, const char *s, size_t n) {
     (void)x;
@@ -109,7 +115,9 @@ static void consume(unsigned line, const char *expect) {
 }
 int main(int argc, char **argv) {
     pb_core c;
-    pb_hal h = {0, mode, wr, rd, adc, 0, ms, tx, delay_us, wr, 0, 0, 0, time_test_mock, 0, micros_mock}; /* wr doubles as the fast writer */
+    pb_hal h = {.set_mode = mode, .write_port = wr, .write_port_fast = wr, .read_port = rd,
+                .adc_read = adc, .millis = ms, .tx_write = tx, .delay_us = delay_us,
+                .time_test = time_test_mock, .micros = micros_mock}; /* wr doubles as the fast writer */
     FILE *f;
     char line[2048];
     unsigned ln = 0;

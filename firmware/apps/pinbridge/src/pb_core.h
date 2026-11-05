@@ -90,10 +90,10 @@ typedef struct {
     void (*delay_us)(void *, unsigned);
     /* Optional fast writer for ports not touched by interrupt-context code. */
     void (*write_port_fast)(void *, unsigned, uint16_t, uint16_t);
-    /* Optional asynchronous heater pulse. Start asserts PB11 and arms a hardware shutoff. */
-    int (*heater_pulse_start)(void *, unsigned);
-    int (*heater_pulse_active)(void *);
-    void (*heater_pulse_cancel)(void *);
+    /* Optional independent deadman for core-managed PB11 pulses. Arm before asserting PB11;
+     * disarm after forcing it low. The timer ISR may force PB11 low if this task wedges. */
+    int (*heater_deadman_arm)(void *, unsigned);
+    void (*heater_deadman_disarm)(void *);
     /* Optional blocking timer self-test behind TIMETEST (spec 7.10). It must send the RUNNING frame itself,
      * just before it starts counting (see tx_direct_on), and return a PB_TIME_* value. */
     int (*time_test)(void *, unsigned src, unsigned ms, pb_time_result *out);
@@ -138,7 +138,7 @@ typedef struct {
     uint8_t tbp_feed_deferred, tbp_feed_reverse;
     volatile uint8_t emergency_abort_requested;
     pb_tbp_command tbp_current;
-    uint8_t tbp_exec_stage, tbp_exec_slice, tbp_heater_pending;
+    uint8_t tbp_exec_stage, tbp_exec_slice;
     uint16_t tbp_exec_bit;
     uint32_t tbp_exec_deadline, tbp_exec_progress_at;
     uint32_t tbp_exec_watchdog_at, tbp_exec_watchdog_steps, tbp_exec_watchdog_remaining;
@@ -161,8 +161,8 @@ typedef struct {
     volatile uint32_t step_timer_callbacks;
     volatile uint16_t step_timer_id;
     volatile uint8_t step_timer_reg_failures;
-    volatile uint32_t heater_pulse_starts, heater_isr_count, heater_poll_ends, heater_overruns;
-    volatile uint32_t heater_last_cnt, heater_last_con;
+    volatile uint32_t heater_pulse_starts, heater_isr_count;
+    volatile uint32_t heater_deadman_trips, heater_over_deadline;
     volatile uint32_t timebase_stalls; /* times the timebase failed to advance and a delay fell back to the software loop */
     uint32_t step_scheduled_total, step_segment_remaining;
     pb_step_segment step_segments[PB_TBP_QUEUE_DEPTH];
@@ -1186,12 +1186,6 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
         }
         if (c->tbp_exec_stage == 3u) {
             if (c->emergency_abort_requested) { pb_heater_off(c); return; }
-            if (c->tbp_heater_pending) {
-                if (c->h.heater_pulse_active && c->h.heater_pulse_active(c->h.ctx)) return;
-                c->tbp_heater_pending = 0;
-                if (c->tbp_exec_slice < slices) pb_wait_us(c, PB_TBP_GUARD_US);
-                return;
-            }
             if (c->tbp_exec_slice < slices) {
                 /* Heater slice i may start only after its corresponding motor edge. */
                 if (steps) {
@@ -1218,24 +1212,44 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
                         pb_tbp_fail_stop(c, g == PB_GATE_HOT ? 0x12u : code, g == PB_GATE_HOT ? 0u : arg);
                         return;
                     }
-                    if (c->h.heater_pulse_start) {
-                        /* The hardware timer owns the pulse deadline. Do not busy-wait in
-                         * the command task while the printhead heater is energized. */
-                        if (c->h.heater_pulse_start(c->h.ctx, on) < 0) {
+                    /* The core owns the pulse deadline. While PB11 is high, only poll the
+                     * microsecond deadline and abort flag; the HAL deadman independently
+                     * cuts PB11 low at the next TIMER3 wrap if this loop wedges. */
+                    {
+                        uint32_t start_us, start_ms, elapsed = 0;
+                        uint8_t over_deadline = 0;
+                        if (!c->h.micros || !c->h.millis) {
+                            pb_tbp_fail_stop(c, 0x1Fu, 0u);
+                            return;
+                        }
+                        if (c->h.heater_deadman_arm && c->h.heater_deadman_arm(c->h.ctx, on) < 0) {
+                            pb_tbp_fail_stop(c, 0x1Fu, 0u);
+                            return;
+                        }
+                        if (c->emergency_abort_requested) { pb_heater_off(c); return; }
+                        if (pb_printer_pin(c, "PB11", 1) < 0) {
                             pb_heater_off(c);
                             pb_tbp_fail_stop(c, 0x1Fu, 0u);
                             return;
                         }
-                        { int heater = pb_pin("PB11");
-                          if (heater >= 0) { c->pins[heater].mode = PB_HI; c->pins[heater].level = 1; } }
-                        c->tbp_heater_pending = 1;
-                        return;
+                        start_us = pb_micros(c);
+                        start_ms = pb_now(c);
+                        c->heater_pulse_starts++;
+                        while (!c->emergency_abort_requested && elapsed < on) {
+                            uint32_t now_us = pb_micros(c);
+                            elapsed = (uint32_t)(now_us - start_us);
+                            if (elapsed >= on) break;
+                            /* A stopped timebase must not leave PB11 energized forever. */
+                            if ((uint32_t)(pb_now(c) - start_ms) > on / 10000u + 3u) {
+                                over_deadline = 1u;
+                                break;
+                            }
+                        }
+                        if (elapsed > on + 1000u) over_deadline = 1u;
+                        if (over_deadline) c->heater_over_deadline++;
+                        pb_heater_off(c);
+                        if (c->emergency_abort_requested) return;
                     }
-                    /* Portable-core fallback for HALs without a hardware pulse timer. */
-                    (void)pb_printer_pin(c, "PB11", 1);
-                    if (c->emergency_abort_requested) { pb_heater_off(c); return; }
-                    pb_wait_us(c, on);
-                    (void)pb_printer_pin(c, "PB11", 0);
                 }
                 if (c->tbp_exec_slice < slices) pb_wait_us(c, PB_TBP_GUARD_US);
                 return;
@@ -1572,8 +1586,7 @@ static int pb_tbp_line(pb_core *c, const char *line) {
             pb_tbp_err(c, id, 3, op);
             return 1;
         }
-        if (pb_tbp_used(c) || c->step_active || c->step_timer_id ||
-            (c->h.heater_pulse_active && c->h.heater_pulse_active(c->h.ctx))) {
+        if (pb_tbp_used(c) || c->step_active || c->step_timer_id) {
             pb_tbp_err(c, id, 9, 0);
             return 1;
         }

@@ -189,6 +189,28 @@ static void test_stalled(void) {
     }
 }
 
+/* Simulate a wedged executor: only the independent wrap-ISR deadman runs and must force PB11 low. */
+static void test_heater_deadman_wedge(void) {
+    volatile uint8_t armed = 1u;
+    volatile uint32_t trips = 0u;
+    unsigned pb11_high = 1u;
+    uint32_t deadline = 2500u;
+    CHECK(!pb_heater_deadman_expire(&armed, deadline - 1u, deadline, &trips),
+          "deadman tripped before the requested deadline");
+    CHECK(armed && pb11_high && trips == 0u, "early deadman changed heater state");
+    /* Main-loop polling is deliberately absent here; the timer ISR owns this transition. */
+    if (pb_heater_deadman_expire(&armed, deadline, deadline, &trips)) pb11_high = 0u;
+    CHECK(!armed && !pb11_high && trips == 1u, "wedged-loop deadman did not force PB11 low");
+    CHECK(!pb_heater_deadman_expire(&armed, deadline + PB_TB_PERIOD_US, deadline, &trips) && trips == 1u,
+          "deadman counted a second trip after disarming");
+    /* Deadline comparison must also survive the 32-bit microsecond clock wrapping. */
+    armed = 1u; pb11_high = 1u; trips = 0u;
+    deadline = 0xfffffff0u;
+    CHECK(!pb_heater_deadman_expire(&armed, 0xffffffe0u, deadline, &trips), "wrapped deadline fired early");
+    if (pb_heater_deadman_expire(&armed, 5u, deadline, &trips)) pb11_high = 0u;
+    CHECK(!armed && !pb11_high && trips == 1u, "wrapped deadline did not expire");
+}
+
 /* The u32 microsecond count wraps every 2^32 us; differences must stay right across it. */
 static void test_u32_wrap(void) {
     /* Start 3 ms before the u32 wrap point: 2^32 us = 25769803776 ticks. */
@@ -209,6 +231,7 @@ int main(void) {
     test_read_with_irq_masked();
     test_delay();
     test_stalled();
+    test_heater_deadman_wedge();
     test_u32_wrap();
     if (failures) {
         printf("%u failure(s)\n", failures);

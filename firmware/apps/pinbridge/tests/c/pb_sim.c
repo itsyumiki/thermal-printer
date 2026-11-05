@@ -59,8 +59,9 @@ static void sim_delay_us(void *ctx, unsigned us) {
 
 int main(void) {
     pb_core core;
-    const pb_hal hal = {NULL, sim_mode,   sim_write, sim_read,    sim_adc,
-                        NULL, sim_millis, sim_tx,    sim_delay_us, NULL,  NULL, NULL, NULL, NULL, NULL, sim_micros};
+    const pb_hal hal = {.set_mode = sim_mode, .write_port = sim_write, .read_port = sim_read,
+                        .adc_read = sim_adc, .millis = sim_millis, .tx_write = sim_tx,
+                        .delay_us = sim_delay_us, .micros = sim_micros};
     int ch;
     pb_init(&core, &hal);
     while ((ch = getchar()) != EOF) {
