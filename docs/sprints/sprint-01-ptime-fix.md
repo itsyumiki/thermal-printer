@@ -1,6 +1,6 @@
 # Sprint 1 — Trustworthy timer self-test
 
-**Status (2026-11-05):** The TIMER3 loop counts ISR deltas only, and the Bun `TIMETEST` encoder/parser/summary plus firmware adapter are included in this change. Local Bun and Python tests pass (see `docs/sprints/README.md`). CI validation is pending. Hardware acceptance remains blocked on the owner flashing a CI artifact and running the four TIMER3 cases.
+**Status (2026-11-05): hardware acceptance met.** The TIMER3 loop counts ISR deltas only, and the Bun `TIMETEST` encoder/parser/summary plus firmware adapter are in the tree. The owner flashed build `ac07f950` and ran the four TIMER3 cases at 1,000 ms: every ratio is within 0.25 % of 1.0, the implied oscillator is 23.94-23.98 MHz, and `isr == n` (100 / 25 / 10 / 2). Full table: `docs/timer-architecture-and-usage.md` section 3. The web UI has a timer self-test panel again (binary `TIMETEST`, five runs per source). The remaining sources (STEP, JIFFY, DELAY, DELAY2) have not been run on this firmware, and CI for the commit that adds the UI panel has not been checked.
 
 **Size:** S  
 **Depends on:** nothing  
@@ -22,9 +22,9 @@
 
 ## Acceptance criteria
 
-- On hardware, all four TIMER3 rows report a ratio within 2 % and an implied oscillator near 24 MHz.
-- `isr` per run matches the expected period count.
-- Python/C and Bun suites pass; CI builds.
+- On hardware, all four TIMER3 rows report a ratio within 2 % and an implied oscillator near 24 MHz. **Met 2026-11-05.**
+- `isr` per run matches the expected period count. **Met 2026-11-05.**
+- Python/C and Bun suites pass; CI builds. Bun passes locally (90 tests); the firmware build with this `TIMETEST` code was flashed and ran. Python was not re-run for the UI change.
 
 ## Out of scope
 
@@ -35,6 +35,8 @@ New timer sources, any change to heater behavior.
 - The firmware counts `heater_isr_count` deltas only; it does not also count TIMER3 pending-flag observations. The IRQ remains enabled and the test restarts the timer after each ISR, so a small positive timing bias is possible and has not been measured.
 - The legacy text `PTIME` path was removed with the legacy protocol. This change adds diagnostic TBP opcode `F0` (`TIMETEST`) with sources `T3D4`, `T3D16`, `T3D64`, `T3D256`, `STEP`, `JIFFY`, `DELAY`, and `DELAY2`; the host times the RUNNING-to-DONE interval and reports ratio, implied oscillator, and `isr == n`.
 - Local checks pass: Bun 86/86 and Python suite 52/52. This is local test evidence only. The most recent CI success predates this change, so CI validation is still required.
-- Hardware table is pending. Owner: run all four TIMER3 sources at 1000 ms; require every ratio within 2 %, implied oscillator near 24 MHz, and `isr == n` (expected counts 100 / 25 / 10 / 2). No flashing was performed by this agent.
+- Hardware table (owner run, build `ac07f950`, 1,000 ms, one run each): /4 ratio 1.0025 (23.94 MHz), /16 1.0010 (23.98 MHz), /64 1.0010 (23.98 MHz), /256 1.0009 (23.98 MHz); `isr == n` in all four. The /4 row reads 0.25 % long, about 25 us of ISR-entry latency per restart; the others are within the 1 ms resolution of the host timing. No flashing was performed by this agent.
+- Web UI: "Timer self-test" panel with one button per source plus "Run all" (about 50 s). The host action `time-test` runs `TIMETEST` N times, pauses the keepalive meanwhile, and refuses other commands until it finishes.
+- Console gotcha: pasting `TIMETEST` frames by hand can collide with the host's 1.5 s STAT keepalive ids and come back as `ACK` plus an empty `DONE` without running. Not fixed; see `docs/timer-architecture-and-usage.md` section 3.
 
-Next: after current-tree CI passes and the owner records the hardware table, close Sprint 1 and start Sprint 2. Do not begin hardware-dependent timebase conclusions from mock or CI-only evidence.
+Next: run the STEP, JIFFY, DELAY and DELAY2 sources from the web UI and record them as the Sprint 7 baseline, then close Sprint 1 and start Sprint 2.

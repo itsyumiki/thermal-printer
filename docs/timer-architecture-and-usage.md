@@ -17,7 +17,7 @@ There are several different mechanisms that have been called “timers” in thi
 
 A proposed alternative was discussed: move stepper pacing onto TIMER3 and replace the heater's hardware shutoff with a synchronous busy delay, on the assumption that the main loop can do heater and communications work between motor steps. This is plausible only after defining what “stepper spins” means and quantifying the longest heater pulse. If TIMER3 interrupts advance the motor phase, a blocking delay with interrupts enabled can stretch heater pulses through ISR interference; with interrupts disabled it can delay motor steps and all other interrupts. A 30 ms heater slice is not a negligible gap in a millisecond-scale step train.
 
-**Correction 2026-11-05: the TIMER3 /4, /16 and /64 inconsistency was a bug in the old PTIME test, not evidence that the timer itself is misclocked.** The old test could count one compare twice (see section 3). Its `/4`, `/16` and `/64` totals are not valid calibration results; the `/256` run was close to one second but is too short to resolve the PRD-versus-PRD+1 question. The replacement binary TBP `TIMETEST` counts ISR deltas only. A corrected hardware run is still pending, and none of these timing figures is a PB11 scope measurement.
+**Correction 2026-11-05: the TIMER3 /4, /16 and /64 inconsistency was a bug in the old PTIME test, not evidence that the timer itself is misclocked.** The old test could count one compare twice (see section 3). Its `/4`, `/16` and `/64` totals are not valid calibration results; the `/256` run was close to one second but is too short to resolve the PRD-versus-PRD+1 question. The replacement binary TBP `TIMETEST` counts ISR deltas only. The corrected hardware run passes (section 3, corrected hardware table: all four ratios within 0.25 % of 1.0, `isr == n`, about 23.98 MHz). None of these timing figures is a PB11 scope measurement.
 
 ## 2. Timer ownership and use in Pinbridge
 
@@ -161,7 +161,28 @@ What changed in the test (`hal_time_test` in `app.c`):
 - Every restart (the ISR stops the timer, the loop starts it again from zero) adds the ISR entry and loop latency to that period, so n periods read slightly long. This bias is not measured; the 2 % gate allows 200 us per 10 ms period at /4. If it turns out to matter, the next step is a masked-IRQ, flag-only variant reported separately.
 - A dead compare IRQ ends in `STATUS FAILED` with the TIMETEST timeout argument (the watchdog is cleared while waiting), rather than returning a misleading count or causing a watchdog reset.
 
-Corrected hardware table: pending. The owner needs a CI build of this change and must run binary `TIMETEST` for all four TIMER3 sources; paste the table here. Acceptance: every row's ratio within 2 % of 1.0, an implied oscillator near 24 MHz, `isr` equal to the expected period count (100 / 25 / 10 / 2 for the default 1,000 ms).
+### Corrected hardware table (2026-11-05, owner run)
+
+Measured on the printer by the owner, 2026-11-05 about 11:30 (Europe/Istanbul), firmware build `ac07f950` (the build id HELLO reports; commit `ac07f95`), through the Bun host's stdin console with `TIMETEST` at 1,000 ms. One run per source. "Wall" is the host's clock between the printer's RUNNING and DONE frames (both written straight to USB), so it includes a millisecond or so of USB and host-scheduling jitter. This is a host-side measurement of the timer clock, not a PB11 scope measurement.
+
+| Source | Counted `n` | `isr` | Jiffies `dj` | `ticks` | Wall | Wall / want | Implied oscillator | Jiffy |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| TIMER3 /4 | 100 | 100 | 100 | 6,000,000 | 1002.5 ms | 1.0025 | 23.94 MHz | 10.02 ms |
+| TIMER3 /16 | 25 | 25 | 100 | 1,500,000 | 1001.0 ms | 1.0010 | 23.98 MHz | 10.01 ms |
+| TIMER3 /64 | 10 | 10 | 100 | 375,000 | 1001.0 ms | 1.0010 | 23.98 MHz | 10.01 ms |
+| TIMER3 /256 | 2 | 2 | 101 | 93,750 | 1000.9 ms | 1.0009 | 23.98 MHz | 9.91 ms |
+
+Result: Sprint 1 acceptance is met on hardware (every ratio within 2 %, implied oscillator about 24 MHz, `isr` equal to `n` and to the expected 100 / 25 / 10 / 2).
+
+- **The double count is gone.** `isr == n` on every row, where the old test counted some compares twice. The compare interrupt fires once per period at all four prescalers, and the CON encoding (source `0b10`, prescale index 1 / 2 / 3 / 8) is right.
+- **The crystal is 24 MHz.** The /16, /64 and /256 rows imply 23.98 MHz, within 0.1 % of 24; the earlier derived figures of 22.7-23.9 MHz came from the buggy run.
+- **Restart bias is small.** The /4 row restarts the timer 100 times and reads 2.5 ms (0.25 %) long, about 25 us per restart, which is the ISR entry plus loop latency this section predicted. The other rows are within 1 ms, which is the resolution of this method, so a bias there cannot be separated from jitter.
+- **Jiffies are 10 ms.** 9.91-10.02 ms per jiffy; `dj` is 100 or 101 because the run does not start on a jiffy edge.
+- **Not answered by this run:** whether the counter period is PRD or PRD + 1 (invisible at these large PRD values; it only matters for the stock heater's PRD of 45), the STEP, JIFFY, DELAY and DELAY2 sources (not run here), and the PB11 pulse width, which still needs a scope.
+
+Gotcha when repeating this by pasting frames into the console by hand: the host's 1.5 s STAT keepalive uses the printer's frame ids too, so a pasted frame whose id was already consumed gets `ACK` plus an empty `DONE` (the firmware's replay of the stored state) and does not run. The first attempt on 2026-11-05 looked exactly like that. Paste the frames back to back, or use the web UI buttons below, which pause the keepalive for the run. The host does not yet handle this for console frames.
+
+Web UI: the "Timer self-test" panel (`host/pinbridge/bun/public`) runs each source five times through binary `TIMETEST` and shows the mean, spread, ratio, implied oscillator, `isr` against `n`, and per-unit cost for the step tick, jiffy and delay sources. Use it to re-run the table above and to measure the STEP, JIFFY, DELAY and DELAY2 sources.
 
 ## 4. Stock thermal-printer firmware: different allocation and timing model
 
@@ -274,12 +295,12 @@ A timer-driven stepper and a hardware-timed heater pulse are not mutually exclus
 - The measured Pinbridge SDK step callback interval is about 2 ms, despite the 1 ms request.
 - Jiffies are about 10 ms each.
 - The software delay helper does not match requested durations exactly, especially at very short waits.
-- The old TIMER3 `/256` run was close to 1 second, but the old `/4`, `/16`, and `/64` results are invalid because the test could count a compare once from the ISR and again from the pending flag (section 3, Correction). Do not treat the old table as calibration evidence.
+- The old TIMER3 `/256` run was close to 1 second, but the old `/4`, `/16`, and `/64` results are invalid because the test could count a compare once from the ISR and again from the pending flag (section 3, Correction). Do not treat the old table as calibration evidence. The corrected TIMER3 table is in section 3 and passes.
 
 ### Not yet established
 
 - Actual PB11 pulse widths for Pinbridge at each requested duration.
-- The corrected binary `TIMETEST` TIMER3 table on hardware (CI validation for this change and the owner’s new run are pending).
+- The STEP, JIFFY, DELAY and DELAY2 `TIMETEST` sources on the current firmware (only the four TIMER3 sources have been run since the test fix; the web UI panel runs the rest).
 - Whether the counter period is PRD or PRD + 1 (invisible at the large PRD values PTIME uses; it would be a 2.2 % effect on the stock heater tick).
 - Whether TIMER3 can be cleanly reassigned to stepper pacing in the exact SDK configuration without another hidden consumer.
 - The maximum heater pulse duration required in normal printing after experimental limits are restored or reselected.
@@ -298,7 +319,7 @@ A timer-driven stepper and a hardware-timed heater pulse are not mutually exclus
 
 ## 9. Practical conclusion
 
-The current design has a clear separation of concerns: the SDK timer paces stepper work, TIMER3 independently ends heater pulses, jiffies handle coarse time, and NOP loops handle short software waits. The TIMER3 `/4`, `/16`, and `/64` inconsistency was a test bug: the old test could count one compare from both the ISR and pending flag. The corrected loop now counts ISR deltas only, and the replacement diagnostic is binary TBP opcode `F0` (`TIMETEST`) because the legacy plaintext `PTIME` command was removed. Local host tests pass, but CI validation of this timing change is pending; the corrected four-row table has not been measured on hardware, so Sprint 1 is still open. Sprint 0’s stock pulse estimates are derived from static analysis; the owner’s direct PB11/motor-phase scope capture is also still pending.
+The current design has a clear separation of concerns: the SDK timer paces stepper work, TIMER3 independently ends heater pulses, jiffies handle coarse time, and NOP loops handle short software waits. The TIMER3 `/4`, `/16`, and `/64` inconsistency was a test bug: the old test could count one compare from both the ISR and pending flag. The corrected loop now counts ISR deltas only, and the replacement diagnostic is binary TBP opcode `F0` (`TIMETEST`) because the legacy plaintext `PTIME` command was removed. The corrected four-row TIMER3 table has been measured on hardware and passes (section 3), so a misclocked TIMER3 is unlikely to explain the blank prints (the PB11 pulse width still needs a scope), and Sprint 1's hardware acceptance is met. Sprint 0’s stock pulse estimates are derived from static analysis; the owner’s direct PB11/motor-phase scope capture is also still pending.
 
 Moving the stepper to TIMER3 and using a busy delay for the heater is a reasonable experiment to discuss, not yet a demonstrated improvement. It exchanges independent heater shutoff for blocking software timing and creates a direct conflict between pulse duration and stepper service unless the motion is intentionally paused or the interrupt behavior is carefully designed. The next decisive evidence is a simultaneous measurement of PB11 and a motor phase pin under representative print load.
 
