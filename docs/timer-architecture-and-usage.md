@@ -88,7 +88,7 @@ for (n = 0; n < loops; n++) {
 
 The comment records a hardware calibration on 2026-11-02. The earlier loop estimate was substantially wrong; the current calibration uses roughly 1.1 loop iterations per requested microsecond.
 
-The PTIME test reported:
+The old PTIME test reported (superseded by the `TIMETEST` baseline in section 3: 940.2 us and 5.216 us per call on build `a3270e1c`):
 
 - requested 1,000 us: about 881.4 us per call;
 - requested 2 us: about 4.965 us per call, including call/loop overhead.
@@ -183,6 +183,29 @@ Result: Sprint 1 acceptance is met on hardware (every ratio within 2 %, implied 
 Gotcha when repeating this by pasting frames into the console by hand: the host's 1.5 s STAT keepalive uses the printer's frame ids too, so a pasted frame whose id was already consumed gets `ACK` plus an empty `DONE` (the firmware's replay of the stored state) and does not run. The first attempt on 2026-11-05 looked exactly like that. Paste the frames back to back, or use the web UI buttons below, which pause the keepalive for the run. The host does not yet handle this for console frames.
 
 Web UI: the "Timer self-test" panel (`host/pinbridge/bun/public`) runs each source five times through binary `TIMETEST` and shows the mean, spread, ratio, implied oscillator, `isr` against `n`, and per-unit cost for the step tick, jiffy and delay sources. Use it to re-run the table above and to measure the STEP, JIFFY, DELAY and DELAY2 sources.
+
+### Full TIMETEST baseline (2026-11-05, owner run, build `a3270e1c`)
+
+All eight sources, five runs each, 1,000 ms target, from the web UI "Timer self-test" panel (the host pauses the keepalive for each run). Wall is the host's clock between the RUNNING and DONE frames, so it carries about a millisecond of USB and scheduling jitter. This is a host-side measurement, not a PB11 scope measurement. Build `a3270e1c` is the HELLO build id of commit `a3270e1`.
+
+| Source | Wall (mean +- sd; min..max) | Ratio | Notes |
+|---|---:|---:|---|
+| TIMER3 /16 | 1001.1 +- 0.3 ms; 1000.5..1001.4 | 1.001 | 23.97 MHz, 25 compare IRQs per run (counted 25) |
+| TIMER3 /4 | 1001.4 +- 1.8 ms; 998.2..1002.3 | 1.001 | 23.97 MHz, 100 IRQs (counted 100) |
+| TIMER3 /64 | 1000.7 +- 0.0 ms; 1000.6..1000.7 | 1.001 | 23.98 MHz, 10 IRQs (counted 10) |
+| TIMER3 /256 | 1000.2 +- 0.6 ms; 999.0..1000.6 | 1.000 | 24.00 MHz, 2 IRQs (counted 2) |
+| Step tick | 1999.8 +- 0.8 ms; 1998.9..2001.0 | 2.000 | 2.000 ms per callback (assumed 1); jiffy cross-check 10.03 ms |
+| Jiffies | 1000.3 +- 0.1 ms; 1000.2..1000.5 | 1.000 | 10.00 ms per jiffy |
+| `delay(1000 us)` | 940.2 +- 2.0 ms; 938.2..942.5 | 0.940 | 940.2 us per call |
+| `delay(2 us)` | 2608.0 +- 86.8 ms; 2512.6..2672.7 | 2.608 | 5.216 us per call |
+
+Reading:
+
+- **TIMER3 passes at every prescaler** (ratios 1.000-1.001, `isr == n`). The residual 0.2-1.4 ms is about the host timing resolution and does not separate a per-restart bias from jitter. PRD versus PRD + 1 is still not answered: at PRD 37500-60000 it is a 0.002 % effect, and the restart-per-compare design adds a latency (about 25 us per the first run) that is comparable to the stock 30 us tick, so this test cannot resolve it even at PRD 45. That needs a free-running mode or a scope.
+- **The step callback is 2.000 ms, by design of the SDK.** The jiffy cross-check agrees (199-200 jiffies per 1000 callbacks), and it matches the stock analysis in section 4: TIMER1 runs at PRD 12000 on 24 MHz / 4, a fixed 2.000 ms, and `drv_timer1_update_period` ignores the requested period. The `1` passed to `sys_hi_timer_add` has no effect.
+- **The host prints "OUT OF GATE" for STEP, DELAY and DELAY2.** That is a label problem: the 2 % gate was defined for the TIMER3 sources only, but `summarizeTimeTest` applies it to all eight. Treat these three as baselines.
+- **`hal_delay_us` is not a stable clock.** Fitting `t = a + b x loops` to the two delay rows (loops = 1100 and 2) gives about 3.5 us fixed per call and about 0.85 us per loop iteration (two-point fit, approximate). The code assumes 0.91 us per iteration. The loop source has not changed since 2026-11-02, yet the old PTIME build measured 881.4 us and 4.965 us per call, which fits about 3.4 us fixed and 0.80 us per iteration. The same loop therefore ran about 6.7 % differently between two builds, so it cannot be calibrated once and trusted. `delay(2 us)` is also bimodal across runs (runs at 2.51 s and 2.67 s, about 0.32 us per call apart); the cause is unknown (cache or flash alignment and ISR load are guesses).
+- **Safety-relevant consequence.** The heater pulse fallback loop in `app.c` counts `spent += 2u` per `hal_delay_us(NULL, 2u)` call, but a call costs at least 5.2 us. Its `usec + 2000 us` bound is therefore at least 2.6x longer in real time than intended (a 30 ms pulse: about 83 ms instead of 32 ms if TIMER3 were dead). DERIVED from this baseline, not measured. The normal path (TIMER3 ISR) is not affected. The path is being replaced in Sprints 2-3; see the Sprint 3 note.
 
 ## 4. Stock thermal-printer firmware: different allocation and timing model
 
@@ -292,16 +315,15 @@ A timer-driven stepper and a hardware-timed heater pulse are not mutually exclus
 
 ### Established by the reported bench test
 
-- The measured Pinbridge SDK step callback interval is about 2 ms, despite the 1 ms request.
-- Jiffies are about 10 ms each.
-- The software delay helper does not match requested durations exactly, especially at very short waits.
+- The measured Pinbridge SDK step callback interval is 2.000 ms, despite the 1 ms request, and the jiffy cross-check agrees (section 3, full baseline).
+- Jiffies are 10.00 ms each.
+- The software delay helper does not match requested durations: 0.940 at 1000 us and 2.608 at 2 us on build `a3270e1c`, and the same loop measured differently (0.881 and 2.483) on the older PTIME build.
 - The old TIMER3 `/256` run was close to 1 second, but the old `/4`, `/16`, and `/64` results are invalid because the test could count a compare once from the ISR and again from the pending flag (section 3, Correction). Do not treat the old table as calibration evidence. The corrected TIMER3 table is in section 3 and passes.
 
 ### Not yet established
 
 - Actual PB11 pulse widths for Pinbridge at each requested duration.
-- The STEP, JIFFY, DELAY and DELAY2 `TIMETEST` sources on the current firmware (only the four TIMER3 sources have been run since the test fix; the web UI panel runs the rest).
-- Whether the counter period is PRD or PRD + 1 (invisible at the large PRD values PTIME uses; it would be a 2.2 % effect on the stock heater tick).
+- Whether the counter period is PRD or PRD + 1 (invisible at the large PRD values `TIMETEST` uses and not resolvable by the restart-per-compare design; it would be a 2.2 % effect on the stock heater tick).
 - Whether TIMER3 can be cleanly reassigned to stepper pacing in the exact SDK configuration without another hidden consumer.
 - The maximum heater pulse duration required in normal printing after experimental limits are restored or reselected.
 - Whether heater busy-wait blocking would be acceptable for the real motor cadence and USB/control responsiveness.
