@@ -113,7 +113,7 @@ function summarizeResult(action: string, r: any): string {
     case "connect":
       return ` -> ${r.state}`;
     case "time-test":
-      return ` -> ${r.src} x${r.runs}: ratio ${Number(r.ratio).toFixed(4)}${r.withinGate ? "" : " OUT OF GATE"}`;
+      return ` -> ${r.src} x${r.runs}: ratio ${Number(r.ratio).toFixed(4)}${r.gated === false ? " (baseline)" : r.withinGate ? "" : " OUT OF GATE"}`;
     case "status": {
       const s = r.status;
       if (!s) return "";

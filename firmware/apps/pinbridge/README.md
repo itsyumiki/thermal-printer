@@ -24,4 +24,4 @@ See [`../../../docs/thermal-protocol-spec.md`](../../../docs/thermal-protocol-sp
 
 Firmware builds run through [the Pinbridge GitHub Actions workflow](../../../.github/workflows/pinbridge.yml). This environment has no local JieLi toolchain; do not attempt to reinstall it. CI builds do not flash hardware. **Do not flash or connect the printhead/motor/battery supply without a separate reviewed build and hardware-safety checklist.** This experimental firmware has not been validated on hardware for all timing, ADC, heater and disconnect cases.
 
-Run the portable transcript tests with the repository's Python test suite or compile `tests/c/pb_test.c` against the synthetic and real pin tables. Do not run `cargo test` in this environment.
+Run the portable tests by compiling the C harnesses under `tests/c/` (build commands are in each file's header). `pb_test` replays each `tests/transcripts/*.txt`; build it once with the default synthetic pin table and once with `-DPB_PINS_HEADER='"pb_pins.h"'` for the real one (the transcripts need the real table). The Python host suite is dropped. Do not run `cargo test` in this environment.

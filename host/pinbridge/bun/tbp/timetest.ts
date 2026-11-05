@@ -11,6 +11,19 @@ export const TIME_GATE_TIMEBASE = 0.01;
 /** The ratio tolerance that applies to a source (the other sources keep the 2 % figure; see the sprint docs). */
 const gateOf = (src: string) =>
   src === "TIMEBASE" ? TIME_GATE_TIMEBASE : TIME_GATE;
+/**
+ * Only the timer sources have a pass/fail gate (TIMER3 prescalers: Sprint 1, TIMEBASE: Sprint 2). STEP, JIFFY,
+ * DELAY and DELAY2 are baselines: they measure what the firmware's clocks really are (a 2 ms step tick, a
+ * software delay with a per-call floor), so a ratio far from 1.0 is a finding, not a failure. `withinGate` is
+ * still computed for them against the 2 % figure but means nothing; callers check `gated` first.
+ */
+export const GATED_SOURCES: ReadonlySet<string> = new Set([
+  "T3D4",
+  "T3D16",
+  "T3D64",
+  "T3D256",
+  "TIMEBASE",
+]);
 
 export function summarizeTimeTest(
   t: ReturnType<typeof decodeTimeTestResult>,
@@ -26,6 +39,7 @@ export function summarizeTimeTest(
     wantMs,
     ratio,
     gate: gateOf(src),
+    gated: GATED_SOURCES.has(src),
     /** Oscillator the wall time implies, TIMER3 only: ticks counted at the post-divider rate times div. */
     impliedOscMHz:
       t3 && wallMs > 0 ? (t.ticks * t.div) / (wallMs * 1000) : null,
@@ -47,7 +61,9 @@ export function describeTimeTestSummary(
     (s.impliedOscMHz !== null ? `, osc ${f(s.impliedOscMHz, 2)} MHz` : "") +
     (s.isrMatchesN !== null ? `, isr==n ${s.isrMatchesN ? "yes" : "NO"}` : "") +
     (s.msPerJiffy !== null ? `, ${f(s.msPerJiffy, 2)} ms/jiffy` : "") +
-    ` -> ${s.withinGate ? `within ${(s.gate * 100).toFixed(0)} %` : "OUT OF GATE"}`
+    (!s.gated
+      ? " -> baseline (not gated)"
+      : ` -> ${s.withinGate ? `within ${(s.gate * 100).toFixed(0)} %` : "OUT OF GATE"}`)
   );
 }
 
@@ -91,6 +107,7 @@ export function summarizeTimeTestRuns(runs: TimeTestRun[]) {
     maxWallMs: Math.max(...wall),
     ratio: first.wantMs > 0 ? meanWallMs / first.wantMs : NaN,
     gate: first.gate,
+    gated: first.gated,
     nPerRun: runs[0]!.test.n,
     /** What one counted unit is really worth (ms): a step tick, a jiffy, a delay call or a TIMER3 period. */
     msPerUnit: avg((s, r) => (r.test.n > 0 ? s.wallMs / r.test.n : null)),

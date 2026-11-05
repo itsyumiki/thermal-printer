@@ -62,3 +62,13 @@ Implemented and pushed in commit `fb4e707` (2026-11-05); CI run [42006282931](ht
 - Owner-run scope captures at three pulse widths, verifying PB11 width within 5% and immediate low on e-stop.
 - Owner-run forced-loop-wedge test confirming the independent ISR cutoff within the documented ~10.1 ms maximum after the requested deadline.
 - Hardware evidence and final review of the counters. No hardware has been touched.
+
+### Review fix (2026-11-05, before any flashing)
+
+A review of `fb4e707` found a unit bug in the executor's jiffy fallback: it compared a millisecond difference (`pb_now`, which the real HAL advances in 10 ms jiffies) against `on / 10000 + 3`, where `on` is microseconds. That threshold is 10x too small. On hardware it would have cut a 30 ms slice at the first jiffy tick (within 10 ms) and a 2.5 ms slice about a quarter of the time, and each cut counted as `heater_over_deadline`. The race harness missed it because it holds `now_ms` still during a pulse.
+
+- Fix: `pb_heater_jiffy_expired(elapsed_ms, on_us)` in `pb_core.h` trips at `on_us / 1000 + 30` ms (three jiffies of slack), so a pulse that ends on time never trips it and a dead-timebase pulse is cut within about 40 ms of the request.
+- Test: `pb_race_test` now models a jiffy clock with the pulse starting at every 250 us phase of the jiffy, for 11 pulse widths from 100 us to 60 ms. It requires no trip at or before the deadline (plus 1 ms) and a trip within 50 ms of it, and it checks that the old formula would have failed (it fails 248 cases). 2499 cases pass.
+- Integration test: `pb_race_test` kind `K_HEATED_JIFFY` runs full heated rows through the executor with `millis` quantized to 10 ms jiffies (20 variants: 10 jiffy phases, 3 ms and 14 ms slices) and requires `heater_over_deadline == 0` and no deadman trip. With the old formula 16 of the 20 fail.
+- Also from the review: the independent ISR deadman checks only at TIMER3 wraps, so it can overshoot a wedged pulse by up to about 10.1 ms. For a stock-sized pulse (0.7-2.2 ms) that is 5x or more; it is a backstop, and the executor loop is the precise timer.
+- The fallback is still coarse and is the only protection if TIMER3 itself dies (the ISR deadman stops with it).

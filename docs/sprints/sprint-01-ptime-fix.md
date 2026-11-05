@@ -48,6 +48,6 @@ New timer sources, any change to heater behavior.
 | `delay(1000 us)` | 940.2 +- 2.0 ms | 0.940 | 940.2 us per call |
 | `delay(2 us)` | 2608.0 +- 86.8 ms | 2.608 | 5.216 us per call; bimodal, 2.51 s vs 2.67 s |
 
-- Known issue, not fixed: the host applies the 2 % gate to every source, so STEP, DELAY and DELAY2 print "OUT OF GATE". The gate was only defined for the TIMER3 sources; treat the other four as informational baselines. A small change in `summarizeTimeTest` (`timetest.ts`) would limit `withinGate` to TIMER3.
+- Gate label (fixed after closing): the host used to apply the 2 % gate to every source, so STEP, DELAY and DELAY2 printed "OUT OF GATE". Only the TIMER3 and TIMEBASE sources are gated now (`gated` in `summarizeTimeTest`); STEP, JIFFY, DELAY and DELAY2 are reported as baselines.
 
 Closed. Next: Sprint 2, starting from the baseline above (it replaces `hal_delay_us`, so `delay(1000)` and `delay(2)` are the before numbers).

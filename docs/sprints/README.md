@@ -27,7 +27,7 @@ One cooperative loop owns all printer timing. TIMER3 becomes a free-running time
 ## Current verification snapshot (2026-11-05)
 
 - Latest firmware implementation commit: `fb4e707` on `pinbridge`. CI (GitHub Actions) passed both host checks and the firmware build on run [42006282931](https://github.com/itsyumiki/thermal-printer/actions/runs/42006282931). Earlier baseline builds succeeded on `a3270e1` and `ac07f95`.
-- Local tests on the Sprint 3 implementation: Bun 90/90; C transcripts 40/40 against the real pin table; `pb_race_test` 2059 cases; `pb_led_test` and `pb_timebase_test` pass. The Python suite is dropped (see constraints below). No local firmware build was attempted.
+- Local tests on the Sprint 3 implementation: Bun 90/90; C transcripts 40/40 against the real pin table; `pb_race_test` 2499 cases (includes the jiffy-bound model added in the review fix); `pb_led_test` and `pb_timebase_test` pass. The Python suite is dropped (see constraints below). No local firmware build was attempted.
 - Hardware (owner, 2026-11-05, build `a3270e1c`): all eight `TIMETEST` sources were run five times each from the web UI. The four TIMER3 rows pass the 2 % gate with `isr == n`. The STEP, JIFFY, DELAY and DELAY2 rows are baselines, not gated; the table is in `docs/timer-architecture-and-usage.md` section 3 (full baseline).
 - No printer hardware was flashed or measured by the agent. There is still no PB11 or motor-phase scope capture.
 
@@ -38,7 +38,7 @@ One cooperative loop owns all printer timing. TIMER3 becomes a free-running time
 | 0 | Pin down the stock heater and step timing | Static/derived timing table and scope plan documented; actual stock PB11 scope capture still pending | [Sprint 0](sprint-00-stock-timing.md) |
 | 1 | Make the timer self-test trustworthy | Binary `TIMETEST` passes CI and all four TIMER3 rows are within 2 % on hardware with `isr == n`. **Met 2026-11-05** (CI green on `a3270e1`; baseline for the other four sources recorded) | [Sprint 1](sprint-01-ptime-fix.md) |
 | 2 | Free-running timebase and accurate delays | `micros()` HAL call, `hal_delay_us` within 2 %, deadman design proven. **Closed 2026-11-05: timebase 1.001, `delay(1000)` +1.3 %; `delay(2)` floor about 9-13 us per call** | [Sprint 2](sprint-02-timebase.md) |
-| 3 | Heater pulse in the executor, on the timebase | Scope-measured PB11 width within 5 % of request, deadman verified | [Sprint 3](sprint-03-heater-in-loop.md) |
+| 3 | Heater pulse in the executor, on the timebase | Scope-measured PB11 width within 5 % of request, deadman verified. **Implemented, CI green, not flashed; owner scope and wedge tests pending** | [Sprint 3](sprint-03-heater-in-loop.md) |
 | 4 | Main loop that polls while busy | Row throughput and e-stop latency measured, no TX starvation, no watchdog resets | [Sprint 4](sprint-04-main-loop.md) |
 | 5 | Stepper in the loop, SDK step timer removed | `sys_hi_timer`, `step_lock`, race hooks gone; step period measured | [Sprint 5](sprint-05-stepper-in-loop.md) |
 | 6 | Faster, bounded head shift | Shift time measured, nothing slow while PB11 is high | [Sprint 6](sprint-06-shift.md) |

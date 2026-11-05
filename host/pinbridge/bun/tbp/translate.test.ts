@@ -9,6 +9,7 @@ import {
   describeLine,
   encodeCommand,
   encodeRaw,
+  describeTimeTestSummary,
   summarizeTimeTest,
   summarizeTimeTestRuns,
   translate,
@@ -428,6 +429,29 @@ describe("TIMETEST (F0)", () => {
     });
     expect(summarizeTimeTest(tb, 1015).withinGate).toBe(false);
     expect(summarizeTimeTest({ ...tb, src: 4 }, 1015).withinGate).toBe(true);
+    // Only the TIMER3 and TIMEBASE sources are gated; STEP, JIFFY, DELAY and DELAY2 are baselines.
+    const gatedOf = (src: number) =>
+      summarizeTimeTest({ ...tb, src }, 1000).gated;
+    expect([0, 1, 2, 3, 8].map(gatedOf)).toEqual([
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect([4, 5, 6, 7].map(gatedOf)).toEqual([false, false, false, false]);
+    expect(
+      describeTimeTestSummary(summarizeTimeTest({ ...tb, src: 7 }, 2608)),
+    ).toContain("baseline (not gated)");
+    expect(
+      describeTimeTestSummary(summarizeTimeTest({ ...tb, src: 7 }, 2608)),
+    ).not.toContain("OUT OF GATE");
+    expect(
+      describeTimeTestSummary(summarizeTimeTest({ ...tb, src: 8 }, 1030)),
+    ).toContain("OUT OF GATE");
+    expect(
+      summarizeTimeTestRuns([{ test: { ...tb, src: 7 }, wallMs: 2608 }]).gated,
+    ).toBe(false);
     expect(summarizeTimeTestRuns([{ test: tb, wallMs: 1015 }]).withinGate).toBe(
       false,
     );

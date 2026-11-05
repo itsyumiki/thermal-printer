@@ -657,7 +657,7 @@ async function runTimeTests(sources) {
         timeReport.push(r);
         log(
           `Timer test ${src}: ${r.meanWallMs.toFixed(1)} ms wall for ${r.wantMs.toFixed(0)} ms counted (${r.ratio.toFixed(3)}x) ${timeVerdict(r)}`,
-          r.withinGate ? "success" : "warn",
+          r.gated === false ? "info" : r.withinGate ? "success" : "warn",
         );
       } catch (e) {
         timeReport.push({ src, error: e.message });
