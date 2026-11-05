@@ -49,7 +49,7 @@ Include the chosen configuration, measured resolution and wrap, and the measured
 
 ## Status (2026-11-05): code complete, not closed
 
-CI result, commit SHA and the hardware run are not in yet; Sprint 2 stays open until the acceptance criteria below are met on hardware.
+Commit `c2b08e2`, CI green (run 42002821340, build id `0xC2B08E2F`, `app.bin` 80,840 bytes, SHA-256 `0cf02e7d...4f85`). The hardware run is not in yet; Sprint 2 stays open until the acceptance criteria below are met on hardware. Local re-check on 2026-11-05 after the push: Bun 90/90, `pb_test` 40/40 (synthetic and real pin tables), `pb_timebase_test`, `pb_race_test` (2005 cases) and `pb_led_test` pass, generated-file check OK. Still no hardware evidence.
 
 ### What was built
 
