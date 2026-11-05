@@ -92,7 +92,14 @@ static int adc(void *x, int ch, unsigned *r, unsigned *m) {
     if (m) *m = ch == -2 ? 4000u : ch == 10 ? 1236u : 1219u;
     return 0;
 }
-static uint32_t ms(void *x) { (void)x; return now_ms; }
+static unsigned jiffy_mode, jiffy_phase_us;
+/* Normally millis is the loop's own counter (frozen while a pulse runs). In jiffy mode it is what the real HAL
+ * returns: true elapsed time (loop time plus the simulated pulse time) in 10 ms steps, at an arbitrary jiffy phase. */
+static uint32_t ms(void *x) {
+    (void)x;
+    if (jiffy_mode) return ((now_ms * 1000u + mock_heater_clock_us + jiffy_phase_us) / 10000u) * 10u;
+    return now_ms;
+}
 static uint32_t usec(void *x) {
     (void)x;
     if (mock_heater_active && (outs[1] & (1u << 11))) {
@@ -173,8 +180,8 @@ static void parse(result *r) {
         p = e + 1;
     }
 }
-enum { K_MOVE, K_ROW, K_HEATED_ROW, K_HEATED_ROW_SHORT, K_HEATED_ROW_LONG, K_HEATED_PAIR, K_HEATER_FAIL, K_HEATER_CANCEL, K_MOVE_FWD_REV, K_MIXED, K_EXTEND_SWEEP, K_FORCED_UNREACHABLE, K_COUNT };
-static const char *const kname[K_COUNT] = {"MOVE +80", "ROW +40", "heated ROW 2 ms slices", "heated ROW 1 ms slices", "heated ROW 3 ms slices", "two continuous heated rows", "heater abort at pulse start", "heater abort mid-pulse", "MOVE +80 then -80", "ROW+30,MOVE-30,ROW+30", "extend near end of train", "forced unreachable target"};
+enum { K_MOVE, K_ROW, K_HEATED_ROW, K_HEATED_ROW_SHORT, K_HEATED_ROW_LONG, K_HEATED_PAIR, K_HEATED_JIFFY, K_HEATER_FAIL, K_HEATER_CANCEL, K_MOVE_FWD_REV, K_MIXED, K_EXTEND_SWEEP, K_FORCED_UNREACHABLE, K_COUNT };
+static const char *const kname[K_COUNT] = {"MOVE +80", "ROW +40", "heated ROW 2 ms slices", "heated ROW 1 ms slices", "heated ROW 3 ms slices", "two continuous heated rows", "heated ROW, jiffy-quantized millis", "heater abort at pulse start", "heater abort mid-pulse", "MOVE +80 then -80", "ROW+30,MOVE-30,ROW+30", "extend near end of train", "forced unreachable target"};
 static unsigned variant; /* K_EXTEND_SWEEP: start offset (0..9 ms) and how close to the train end the 2nd MOVE arrives */
 
 static int trial(int kind, unsigned per, int site, int verbose) {
@@ -193,6 +200,7 @@ static int trial(int kind, unsigned per, int site, int verbose) {
     memset(mock_heater_requested, 0, sizeof mock_heater_requested);
     memset(mock_heater_width, 0, sizeof mock_heater_width);
     memset(heater_edge_steps, 0, sizeof heater_edge_steps);
+    jiffy_mode = 0; jiffy_phase_us = 0;
     used = 0; out[0] = 0; now_ms = 1000; armed_site = 0; memset(site_hits, 0, sizeof site_hits);
     pb_init(&c, &h);
     { uint8_t d[1] = {1}; send_frame(&c, 1, 0x01, d, 1); } /* HELLO */
@@ -216,6 +224,10 @@ static int trial(int kind, unsigned per, int site, int verbose) {
     case K_HEATED_PAIR:
         send_heated_row(&c, 2, 8000u); send_heated_row(&c, 3, 8000u);
         expect_ids = 2; total_steps = 8; per = 6000u; per_ms = 6u; break;
+    case K_HEATED_JIFFY:
+        /* variant 0..19: jiffy phase 0..9 ms; variants >= 10 use 14 ms slices (always spans a jiffy tick). */
+        jiffy_mode = 1; jiffy_phase_us = (variant % 10u) * 1000u;
+        send_heated_row(&c, 2, variant < 10u ? 12000u : 56000u); expect_ids = 1; total_steps = 4; per = 6000u; per_ms = 6u; break;
     case K_HEATER_FAIL:
         mock_heater_abort_after_us = 1u; send_heated_row(&c, 2, 8000u);
         total_steps = 4; per = 6000u; per_ms = 6u; break;
@@ -238,7 +250,7 @@ static int trial(int kind, unsigned per, int site, int verbose) {
     for (i = 0; i < total_steps * per_ms + (kind == K_FORCED_UNREACHABLE ? 1500u : 2500u); i++) {
         now_ms++;
         pb_step_tick(&c);
-        if ((kind == K_HEATED_ROW || kind == K_HEATED_ROW_SHORT || kind == K_HEATED_ROW_LONG || kind == K_HEATED_PAIR || kind == K_HEATER_FAIL || kind == K_HEATER_CANCEL) || now_ms % 10u == 0u) pb_poll(&c);
+        if ((kind == K_HEATED_ROW || kind == K_HEATED_ROW_SHORT || kind == K_HEATED_ROW_LONG || kind == K_HEATED_PAIR || kind == K_HEATED_JIFFY || kind == K_HEATER_FAIL || kind == K_HEATER_CANCEL) || now_ms % 10u == 0u) pb_poll(&c);
         if ((kind == K_HEATER_FAIL || kind == K_HEATER_CANCEL) && c.emergency_abort_requested && !cancel_sent) {
             pb_tbp_cancel_work(&c, 2u); /* model RX-task cancellation after the pulse loop yields */
             cancel_sent = 1;
@@ -262,9 +274,9 @@ static int trial(int kind, unsigned per, int site, int verbose) {
         for (id = 2; id < 2u + expect_ids; id++) if (!r.done[id] || r.failed[id] || r.cancelled[id]) ok = 0;
         if (c.step_completed != total_steps || c.step_active) ok = 0;
     }
-    if (kind == K_HEATED_ROW || kind == K_HEATED_ROW_SHORT || kind == K_HEATED_ROW_LONG || kind == K_HEATED_PAIR) {
+    if (kind == K_HEATED_ROW || kind == K_HEATED_ROW_SHORT || kind == K_HEATED_ROW_LONG || kind == K_HEATED_PAIR || kind == K_HEATED_JIFFY) {
         unsigned j, rows = kind == K_HEATED_PAIR ? 2u : 1u;
-        unsigned pulse_us = kind == K_HEATED_ROW_SHORT ? 1000u : kind == K_HEATED_ROW_LONG ? 3000u : 2000u;
+        unsigned pulse_us = kind == K_HEATED_JIFFY ? (variant < 10u ? 3000u : 14000u) : kind == K_HEATED_ROW_SHORT ? 1000u : kind == K_HEATED_ROW_LONG ? 3000u : 2000u;
         if (latch_rises != rows || clock_rises != 384u * rows || heater_rises != 4u * rows ||
             mock_heater_pulses != 4u * rows || (outs[1] & (1u << 11)) != 0u) ok = 0;
         for (j = 0; j < 4u * rows; j++)
@@ -272,19 +284,53 @@ static int trial(int kind, unsigned per, int site, int verbose) {
                 mock_heater_width[j] < mock_heater_requested[j] ||
                 mock_heater_width[j] > mock_heater_requested[j] + mock_heater_requested[j] / 20u) ok = 0;
         if (mock_heater_long_waits) ok = 0; /* no blocking delay >= 1 ms in the pulse path */
+        if (c.heater_over_deadline || c.heater_deadman_trips) ok = 0; /* a pulse that ended on time is not an overrun */
     }
     for (i = 0; i < MAX_SITE; i++) total_site_hits[i] += site_hits[i];
     if (!ok || verbose)
         printf("%s kind=\"%s\" period=%uus site=%d hits=%u: completed=%u target=%u active=%u (expected %u steps)\n",
                ok ? "PASS" : "FAIL", kname[kind], per, site, site ? site_hits[site] : 0u,
                (unsigned)c.step_completed, (unsigned)c.tbp_feed_target, (unsigned)c.step_active, total_steps);
-    if ((kind == K_HEATED_ROW || kind == K_HEATED_ROW_SHORT || kind == K_HEATED_ROW_LONG || kind == K_HEATED_PAIR || kind == K_HEATER_FAIL || kind == K_HEATER_CANCEL) && (!ok || verbose))
+    if ((kind == K_HEATED_ROW || kind == K_HEATED_ROW_SHORT || kind == K_HEATED_ROW_LONG || kind == K_HEATED_PAIR || kind == K_HEATED_JIFFY || kind == K_HEATER_FAIL || kind == K_HEATER_CANCEL) && (!ok || verbose))
         printf("  row observations: latch=%u clocks=%u heater=%u stage=%u slices=%u flags=%u\n",
                latch_rises, clock_rises, heater_rises, c.tbp_exec_stage, c.tbp_exec_slice, c.tbp_row_flags);
-    if ((kind == K_HEATED_ROW || kind == K_HEATED_ROW_SHORT || kind == K_HEATED_ROW_LONG || kind == K_HEATED_PAIR || kind == K_HEATER_FAIL || kind == K_HEATER_CANCEL) && (!ok || verbose)) {
+    if ((kind == K_HEATED_ROW || kind == K_HEATED_ROW_SHORT || kind == K_HEATED_ROW_LONG || kind == K_HEATED_PAIR || kind == K_HEATED_JIFFY || kind == K_HEATER_FAIL || kind == K_HEATER_CANCEL) && (!ok || verbose)) {
         unsigned j; printf("  heater steps:"); for (j = 0; j < heater_rises; j++) printf(" %lu", (unsigned long)heater_edge_steps[j]); printf("\n");
     }
     return ok;
+}
+/* Jiffy fallback bound (pb_heater_jiffy_expired). The real HAL's millis advances in 10 ms jiffies and a pulse
+ * starts at any phase of the jiffy, so model exactly that. A pulse that ends on time must never trip the bound,
+ * and a dead-timebase pulse must be cut within 50 ms of its request. The previous formula (on / 10000 + 3, in the
+ * wrong unit) fails the first check; the last check keeps this test honest about that. */
+static uint32_t jiffy_ms(uint32_t real_us) { return (real_us / 10000u) * 10u; }
+static unsigned jiffy_bound_cases(unsigned *cases) {
+    static const unsigned ons[] = {100u, 500u, 1000u, 2000u, 2500u, 3000u, 6000u, 9999u, 10000u, 30000u, 60000u};
+    unsigned fails = 0, oi, phase, t, old_false_trips = 0;
+    for (oi = 0; oi < sizeof ons / sizeof *ons; oi++)
+        for (phase = 0; phase < 10000u; phase += 250u) {
+            uint32_t on = ons[oi];
+            int tripped_at = -1;
+            (*cases)++;
+            for (t = 0; t <= on + 60000u; t += 100u) {
+                uint32_t el = jiffy_ms(phase + t) - jiffy_ms(phase);
+                if (pb_heater_jiffy_expired(el, on)) { tripped_at = (int)t; break; }
+            }
+            if (tripped_at >= 0 && (unsigned)tripped_at <= on + 1000u) {
+                printf("FAIL jiffy bound trips at %d us for a %u us pulse (phase %u)\n", tripped_at, on, phase);
+                fails++;
+            } else if (tripped_at < 0 || (unsigned)tripped_at > on + 50000u) {
+                printf("FAIL jiffy bound does not cut a dead-timebase %u us pulse in time (phase %u, at %d us)\n",
+                       on, phase, tripped_at);
+                fails++;
+            }
+            if (on == 30000u) {
+                uint32_t el = jiffy_ms(phase + on) - jiffy_ms(phase);
+                if (el > on / 10000u + 3u) old_false_trips++; /* the old, wrong-unit formula */
+            }
+        }
+    if (!old_false_trips) { printf("FAIL jiffy test would not have caught the old unit bug\n"); fails++; }
+    return fails;
 }
 int main(int argc, char **argv) {
     static const unsigned periods[] = {1000u, 2000u, 6000u};
@@ -295,14 +341,15 @@ int main(int argc, char **argv) {
     for (ki = 0; ki < K_COUNT; ki++)
         for (pi = 0; pi < sizeof periods / sizeof *periods; pi++)
             for (si = 0; si < sizeof sites / sizeof *sites; si++) {
-                unsigned nv = ki == K_EXTEND_SWEEP ? 70u : 1u;
+                unsigned nv = ki == K_EXTEND_SWEEP ? 70u : ki == K_HEATED_JIFFY ? 20u : 1u;
                 if (ki == K_FORCED_UNREACHABLE && sites[si] != 0) continue;
-                if ((ki == K_HEATED_ROW || ki == K_HEATED_PAIR || ki == K_HEATER_FAIL || ki == K_HEATER_CANCEL) && (pi != 0u || si != 0u)) continue;
+                if ((ki == K_HEATED_ROW || ki == K_HEATED_JIFFY || ki == K_HEATED_PAIR || ki == K_HEATER_FAIL || ki == K_HEATER_CANCEL) && (pi != 0u || si != 0u)) continue;
                 for (variant = 0; variant < nv; variant++) {
                     cases++;
                     if (!trial((int)ki, periods[pi], sites[si], verbose)) fails++;
                 }
             }
+    fails += jiffy_bound_cases(&cases);
     for (si = 0; si < sizeof required / sizeof *required; si++)
         if (!total_site_hits[required[si]]) {
             printf("FAIL race point %d was never reached: the test no longer covers it\n", required[si]);

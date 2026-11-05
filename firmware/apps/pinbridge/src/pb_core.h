@@ -192,6 +192,15 @@ static uint32_t pb_now(pb_core *c) {
 static inline uint32_t pb_micros(pb_core *c) {
     return c->h.micros ? c->h.micros(c->h.ctx) : pb_now(c) * 1000u;
 }
+/* Last-resort bound on PB11-high time if the microsecond timebase stops advancing. Both arguments are in the
+ * units their names say: `elapsed_ms` is a difference of pb_now() (milliseconds, but the real HAL advances it in
+ * 10 ms jiffies, so it is off by up to +-10 ms), `on_us` is the requested pulse in microseconds. The slack is
+ * three jiffies. It is far above the quantization error, so a pulse that ends on time never trips it, and it
+ * still cuts a dead-timebase pulse within roughly 40 ms of the request. */
+#define PB_HEATER_JIFFY_SLACK_MS 30u
+static inline int pb_heater_jiffy_expired(uint32_t elapsed_ms, uint32_t on_us) {
+    return elapsed_ms > on_us / 1000u + PB_HEATER_JIFFY_SLACK_MS;
+}
 static int pb_eq(const char *a, const char *b) {
     while (*a && *b) {
         char x = *a++, y = *b++;
@@ -1240,7 +1249,7 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
                             elapsed = (uint32_t)(now_us - start_us);
                             if (elapsed >= on) break;
                             /* A stopped timebase must not leave PB11 energized forever. */
-                            if ((uint32_t)(pb_now(c) - start_ms) > on / 10000u + 3u) {
+                            if (pb_heater_jiffy_expired((uint32_t)(pb_now(c) - start_ms), on)) {
                                 over_deadline = 1u;
                                 break;
                             }
