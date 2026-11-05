@@ -72,3 +72,7 @@ A review of `fb4e707` found a unit bug in the executor's jiffy fallback: it comp
 - Integration test: `pb_race_test` kind `K_HEATED_JIFFY` runs full heated rows through the executor with `millis` quantized to 10 ms jiffies (20 variants: 10 jiffy phases, 3 ms and 14 ms slices) and requires `heater_over_deadline == 0` and no deadman trip. With the old formula 16 of the 20 fail.
 - Also from the review: the independent ISR deadman checks only at TIMER3 wraps, so it can overshoot a wedged pulse by up to about 10.1 ms. For a stock-sized pulse (0.7-2.2 ms) that is 5x or more; it is a backstop, and the executor loop is the precise timer.
 - The fallback is still coarse and is the only protection if TIMER3 itself dies (the ISR deadman stops with it).
+
+### First bench observation (2026-11-05, owner, not acceptance)
+
+On the `c5bce5d` build, heated lines at 1 ms and 8 ms printed nothing and 30000 us printed gray (not full dark). No scope capture, so this does not close the PB11-width criterion, and the heater counters are not visible from the host. Details: `docs/bugs/2026-11-04-heater-blank-prints-timing.md` section 9.

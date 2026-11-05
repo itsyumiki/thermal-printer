@@ -189,3 +189,29 @@ more than a few percent away from these points to a different tick; a PRD + 1 re
 Then repeat on the Pinbridge build for requested widths of 2, 10 and 30 ms (section 7, item 2).
 
 Not done in Sprint 0: any hardware capture, and the 2 ms vs 4 ms callback boundary question.
+
+## 9. Bench observations on the Sprint 3 build (2026-11-05)
+
+Firmware: the CI build of the Sprint 3 code with the jiffy-fallback fix (commit `c5bce5d`, downloaded by the owner from CI; the
+host does not print a build id, so this is assumed). Executor-timed heater pulses (`micros()` deadline, PB11 forced low on every
+exit), TIMER3 timebase, deadman armed. No scope, no counter readout. [owner]
+
+| Heat entered in the web UI | Result |
+|---|---|
+| 1 ms | no mark at all (blank) |
+| 8 ms | no mark at all (blank) |
+| 30000 us (30 ms) | gray, **not full dark** |
+
+- The same session's `TIMETEST` run matched Sprint 2 within noise (timebase 1.001, TIMER3 rows 1.001-1.002 with `isr == n`,
+  `delay(1000)` 1018 us, `delay(2)` 11.4 us per call, step tick 1.998 ms, jiffy 9.99 ms). The clocks are not what changed.
+- Which UI field these values were typed into is **not recorded**. If it is "Heat per row, total" (the same assumption as
+  section 1), 1 / 8 / 30 ms are 0.25 / 2 / 7.5 ms per slice with four slices. If it is per event, they are 4x longer per row.
+- This is the same pattern as before Sprint 2/3 (blank at stock-derived widths, dark-ish only at 50 ms or more per row): the
+  Sprint 2/3 timing rework did not change the symptom, and 30 ms is still gray. Darkness rises with the requested width in these
+  three points, which is consistent with an energy shortfall; it does not show what the head actually receives.
+- **Not known:** the real PB11 width and count per row on this build (no scope), whether any slice was cut short (the counters
+  `heater_pulse_starts`, `heater_over_deadline` and `heater_deadman_trips` exist but are not exposed to the host or the UI), and
+  the head supply voltage during the pulse.
+- The candidate differences in section 8.3 (re-shift and re-latch before every slice, phase offset to the motor coil change,
+  shift/latch timing, supply sag, head temperature) are all still untested. Items 1 and 4 there (a re-latch-per-slice row variant,
+  and a PB11 scope capture at 2 / 10 / 30 ms) remain the cheapest next tests.
