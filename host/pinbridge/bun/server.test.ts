@@ -113,6 +113,26 @@ describe("debug frame logging", () => {
   });
 });
 
+describe("firmware heater trace lines", () => {
+  test("HL lines go to the log sink, not to the UI warning log", () => {
+    const { link } = fakeLink(() => {});
+    const lines: string[] = [];
+    link.logSink = (l) => lines.push(l);
+    const uiLogs: string[] = [];
+    link.clients.add({
+      send: (wire) => {
+        const event = JSON.parse(wire);
+        if (event.type === "log") uiLogs.push(event.message);
+      },
+    });
+    link.onLine("HL 3 t=7500 pulse_end req_us=2500 loop_us=2512 flags=0\r");
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toMatch(/^\d\d:\d\d:\d\d\.\d{3} HL    3 t=7500 pulse_end /);
+    expect(lines[0].endsWith("flags=0")).toBe(true);
+    expect(uiLogs).toEqual([]);
+  });
+});
+
 describe("TBP fake-transport retry behavior", () => {
   test("retries BUSY on the same ID without dropping the UART", async () => {
     const sent: string[] = [];

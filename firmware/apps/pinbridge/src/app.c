@@ -16,12 +16,16 @@ extern void wdt_clear(void);
 #endif
 #define PB_USB 0
 #define PB_RING 1024
-#define PB_HEATER_DEADMAN_MARGIN_US 100u /* setup allowance; wrap ISR adds up to another 10 ms */
+#define PB_HEATER_DEADMAN_MARGIN_US 100u /* setup allowance; wrap ISR adds up to another 1 ms */
+/* Plain-text heater trace (see the HL section below). 0 compiles it out. */
+#ifndef PB_HEATER_TRACE
+#define PB_HEATER_TRACE 1
+#endif
 static pb_core core;
-static u16 step_timer_id;
 static volatile u8 heater_timer_armed, timebase_ready, timebase_stalled;
 static volatile u32 heater_deadman_at;
 static volatile u32 tb_wraps, tb_isr_con; /* timebase wrap count and the CON value the wrap ISR writes back */
+static volatile u32 tb_max_lag; /* largest TIMER3 CNT seen at ISR entry = worst ISR lateness in 1/6 us ticks */
 static OS_SEM rx_sem, cmd_sem, tx_sem;
 static volatile u8 detached, rx_overflow, estop_fast_requested, hello_fast_clear_requested, fast_estop_id;
 static u8 ring[PB_RING], usb_rx_ring[PB_RING];
@@ -32,6 +36,18 @@ static u8 fast_line_discard;
 static JL_PORT_FLASH_TypeDef *ports[4] = {JL_PORTA, JL_PORTB, JL_PORTC, JL_PORTD};
 static int hal_mode(void *ctx, unsigned port, unsigned bit, unsigned mode, unsigned level);
 static void hal_heater_deadman_disarm(void *ctx);
+/* HL trace hooks, defined after the timebase. Every hl_* that takes `_locked` must be called with IRQs masked. */
+enum { HL_K_PIN, HL_K_PULSE_START, HL_K_PULSE_END, HL_K_ARM };
+enum { HL_S_WRITE, HL_S_MODE, HL_S_DISARM, HL_S_ISR_CUT, HL_S_ARM };
+#if PB_HEATER_TRACE
+static void hl_pin_locked(u8 src, u32 old_out, u32 new_out, u8 in_isr);
+static void hl_arm_locked(u32 usec, u32 deadline);
+static void hl_flush(void);
+#else
+#define hl_pin_locked(src, o, n, i) ((void)0)
+#define hl_arm_locked(u, d) ((void)0)
+#define hl_flush() ((void)0)
+#endif
 static void pb_wakeup(void *dev) {
     (void)dev;
     os_sem_post(&rx_sem);
@@ -155,8 +171,10 @@ static void rx_task(void *priv) {
 static int hal_mode(void *ctx, unsigned port, unsigned bit, unsigned mode, unsigned level) {
     JL_PORT_FLASH_TypeDef *p = ports[port];
     u32 mask = 1u << bit;
+    u32 old_out;
     (void)ctx;
     local_irq_disable();
+    old_out = p->OUT;
     if (mode == PB_HIZ) {
         p->DIR |= mask;
         p->PU &= ~mask;
@@ -180,17 +198,25 @@ static int hal_mode(void *ctx, unsigned port, unsigned bit, unsigned mode, unsig
         local_irq_enable();
         return -1;
     }
+    if (port == 1 && bit == 11) hl_pin_locked(HL_S_MODE, old_out, p->OUT, 0);
     local_irq_enable();
     return 0;
 }
 static void hal_write(void *ctx, unsigned port, uint16_t mask, uint16_t vals) {
+    u32 old_out;
     (void)ctx;
     local_irq_disable();
-    ports[port]->OUT = (ports[port]->OUT & ~mask) | (vals & mask);
+    old_out = ports[port]->OUT;
+    ports[port]->OUT = (old_out & ~mask) | (vals & mask);
+    if (port == 1 && (mask & (1u << 11))) hl_pin_locked(HL_S_WRITE, old_out, ports[port]->OUT, 0);
     local_irq_enable();
 }
 static void hal_write_fast(void *ctx, unsigned port, uint16_t mask, uint16_t vals) {
     (void)ctx;
+    if (port == 1 && (mask & (1u << 11))) { /* rare: shift/clock writes never touch PB11 */
+        hal_write(ctx, port, mask, vals);
+        return;
+    }
     ports[port]->OUT = (ports[port]->OUT & ~mask) | (vals & mask);
 }
 static uint16_t hal_read(void *ctx, unsigned port) {
@@ -237,12 +263,16 @@ static uint32_t hal_ms(void *ctx) {
     return jiffies * 10u;
 }
 /* ---- Timebase (Sprint 2) ------------------------------------------------------------------------------
- * TIMER3 is a free-running microsecond timebase: 24 MHz oscillator / 4 = 6 ticks per us, PRD 60000 = one wrap
- * (and one ISR) every 10 ms exactly. Why /4 and 10 ms: the finest resolution (1/6 us) that still fits a whole
- * number of microseconds into PRD, and a wrap rate low enough that the ISR costs about 0.1 % of the CPU, while
- * 10 ms is also the period Sprint 3 wants for the heater deadman. /16 would need a 40 ms wrap for the same
- * PRD and coarser reads; /64 and /256 only hurt resolution. The prescale index comes from the SDK irflt.c
- * table (1 = /4); Sprint 1 measured the oscillator at 23.97-24.00 MHz for every prescaler.
+ * TIMER3 is a free-running microsecond timebase: 24 MHz oscillator / 4 = 6 ticks per us, PRD 6000 = one wrap
+ * (and one ISR) every 1 ms exactly. Sprint 2/3 used 10 ms; it is 1 ms now because the wrap ISR is also the
+ * STEPPER TICK (pb_step_tick runs from it while a motion is active), replacing the SDK sys_hi_timer, whose
+ * tick is a fixed 2.000 ms (TIMER1, measured) and capped feed speed at 15.625 mm/s. Costs: the ISR is about
+ * 10x as frequent (roughly 1 % of the CPU, not measured) and IRQs must never stay masked for 1 ms or more
+ * (one late wrap is covered by the pending flag, two are lost and the clock steps back by 1 ms). tb_max_lag
+ * records the worst ISR lateness, in 1/6 us ticks (6000 = a full period), so that margin is visible in the HL
+ * trace. The heater deadman now trips within about 1 ms of its deadline instead of 10 ms. /4 stays the finest
+ * resolution (1/6 us) that fits a whole number of microseconds into PRD. The prescale index comes from the
+ * SDK irflt.c table (1 = /4); Sprint 1 measured the oscillator at 23.97-24.00 MHz for every prescaler.
  * CON: [3:2]=0b10 oscillator, [7:4]=1 prescale /4, BIT(0) plain periodic timer mode, BIT(14) clear pending.
  * Do NOT set BIT(1): that is the IR-capture mode (bench 2026-11-04).
  * The read algorithm and the delay loop live in pb_timebase.h so the C harness tests the same code. Open
@@ -257,15 +287,31 @@ static uint32_t hal_ms(void *ctx) {
 #include "pb_timebase.h"
 ___interrupt
 void pb_timebase_isr(void) {
+    u32 cnt = PB_TB_TIMER->CNT & 0xffffu; /* the counter keeps running after the wrap: this is how late we are */
+    u8 normal = tb_isr_con == PB_TB_CON; /* false while TIMETEST borrows the timer */
     tb_wraps++; /* before the pending flag is cleared: pb_tb_us() relies on this order */
     core.heater_isr_count++; /* every TIMER3 ISR, kept for the TIMETEST TIMER3 rows */
+    if (normal && cnt > tb_max_lag) tb_max_lag = cnt;
     if (pb_heater_deadman_expire(&heater_timer_armed,
-            (tb_wraps * PB_TB_PERIOD_US) + ((PB_TB_TIMER->CNT & 0xffffu) / PB_TB_TICKS_PER_US),
+            (tb_wraps * PB_TB_PERIOD_US) + (cnt / PB_TB_TICKS_PER_US),
             heater_deadman_at, &core.heater_deadman_trips)) {
-        /* TIMER3 wraps every 10 ms: the main loop normally ends the pulse at its exact
+        /* TIMER3 wraps every 1 ms: the main loop normally ends the pulse at its exact
          * deadline plus the 100 us setup allowance; this independent cutoff is bounded by one
          * additional wrap period after that margin. */
-        ports[1]->OUT &= ~(1u << 11);
+        u32 old_out = ports[1]->OUT;
+        ports[1]->OUT = old_out & ~(1u << 11);
+        hl_pin_locked(HL_S_ISR_CUT, old_out, ports[1]->OUT, 1); /* IRQs are masked inside the ISR */
+    }
+    /* Stepper tick: one pb_step_tick per wrap = per 1 ms, only while a motion is active and TIMETEST is not
+     * running. An ESTOP request drops the motion here, as the old SDK-timer callback did. */
+    if (normal && core.step_active) {
+        core.step_timer_callbacks++;
+        if (estop_fast_requested) {
+            core.step_active = 0;
+            core.step_done_pending = 0;
+        } else {
+            pb_step_tick(&core);
+        }
     }
     PB_TB_TIMER->CON = tb_isr_con; /* PB_TB_CON: clear pending and keep counting (TIMETEST swaps in BIT(14): stop) */
 }
@@ -355,16 +401,241 @@ static int hal_heater_deadman_arm(void *ctx, unsigned usec) {
     local_irq_disable();
     heater_deadman_at = pb_tb_us() + usec + PB_HEATER_DEADMAN_MARGIN_US;
     heater_timer_armed = 1;
+    hl_arm_locked(usec, heater_deadman_at);
     local_irq_enable();
     return 0;
 }
 static void hal_heater_deadman_disarm(void *ctx) {
+    u32 old_out;
     (void)ctx;
     local_irq_disable();
-    ports[1]->OUT &= ~(1u << 11);
+    old_out = ports[1]->OUT;
+    ports[1]->OUT = old_out & ~(1u << 11);
     heater_timer_armed = 0;
+    hl_pin_locked(HL_S_DISARM, old_out, ports[1]->OUT, 0);
     local_irq_enable();
 }
+#if PB_HEATER_TRACE
+/* ---- HL: plain-text heater (PB11) trace -----------------------------------------------------------------
+ * Every touch of PB11 (HAL write/mode, deadman disarm, the TIMER3 ISR cut) and the executor's pulse start/end
+ * are recorded in a small RAM ring together with the TIMER3 state, then printed as plain text lines starting
+ * with "HL " from the command task (hl_flush, after pb_poll), never from the place that toggles the pin, so
+ * the trace does not stretch the pulse. The lines go through the normal CDC tx ring but are NOT TBP frames
+ * (the host shows them as non-TBP lines; the Bun host prints "HL " lines to stdout). They are dropped, and
+ * counted, rather than crowd out TBP replies: a line is only sent while 160 bytes of the ring stay free.
+ * Writes that leave PB11 unchanged are not logged (counted into `same=`), except a re-write of PB11 high.
+ * Line fields: t=timebase us, src, PB11 old->new (OUT latch), in= pin read-back (may lag the write by a cycle),
+ * dir=DIR bit (0 = output), armed/dl_left= deadman state and the us left to its deadline, cnt/con/wraps =
+ * TIMER3 counter, CON and wrap count at that moment. On a fall (PB11 1->0) and on pulse_end the line also has
+ * hi_us= how long PB11 stayed high by the timebase and hi_jiffy_ms= the same interval on the independent
+ * 10 ms jiffy clock, starts/trips/over = core heater counters, lag = worst TIMER3 ISR lateness (1/6 us
+ * ticks; 6000 = a whole period) and stp = stepper active. pulse_start/pulse_end come from the executor and
+ * carry the requested width (req_us) against what its own loop measured (loop_us). */
+typedef struct {
+    u32 us, wraps, dl, a, b, c, d;
+    u16 cnt, con, lag, pad;
+    u8 kind, src, old, nw, in, dir, armed, stp;
+} hl_ev;
+#define HL_N 40u
+#define HL_RESERVE 160u
+static hl_ev hl_ring[HL_N];
+static volatile u32 hl_wr, hl_rd, hl_lost, hl_same, hl_seq;
+static u32 hl_rise_us, hl_rise_ms;
+static hl_ev *hl_begin(u8 kind, u8 src, u8 in_isr) {
+    u32 next = (hl_wr + 1u) % HL_N;
+    hl_ev *e;
+    if (next == hl_rd) {
+        hl_lost++;
+        return 0;
+    }
+    e = &hl_ring[hl_wr];
+    e->kind = kind;
+    e->src = src;
+    e->cnt = (u16)(PB_TB_TIMER->CNT & 0xffffu);
+    e->con = (u16)(PB_TB_TIMER->CON & 0xffffu);
+    e->wraps = tb_wraps;
+    /* Inside the wrap ISR tb_wraps is already bumped while the pending flag is still set, so pb_tb_us() would
+     * count that wrap twice: build the time the same way the ISR deadman does. */
+    e->us = in_isr ? tb_wraps * PB_TB_PERIOD_US + e->cnt / PB_TB_TICKS_PER_US
+                   : (timebase_ready ? pb_tb_us() : (u32)jiffies * 10000u);
+    e->dl = heater_deadman_at;
+    e->armed = heater_timer_armed;
+    e->lag = (u16)tb_max_lag;
+    e->stp = core.step_active ? 1u : 0u;
+    e->in = (u8)((ports[1]->IN >> 11) & 1u);
+    e->dir = (u8)((ports[1]->DIR >> 11) & 1u);
+    e->old = e->nw = 0;
+    e->a = e->b = e->c = e->d = 0;
+    e->pad = 0;
+    return e;
+}
+static void hl_commit(void) {
+    hl_wr = (hl_wr + 1u) % HL_N;
+}
+static void hl_pin_locked(u8 src, u32 old_out, u32 new_out, u8 in_isr) {
+    u8 o = (u8)((old_out >> 11) & 1u), n = (u8)((new_out >> 11) & 1u);
+    hl_ev *e;
+    if (o == n && !n) {
+        hl_same++;
+        return;
+    }
+    e = hl_begin(HL_K_PIN, src, in_isr);
+    if (!e) return;
+    e->old = o;
+    e->nw = n;
+    e->a = core.heater_pulse_starts;
+    e->b = core.heater_deadman_trips;
+    e->c = core.heater_over_deadline;
+    if (n && !o) {
+        hl_rise_us = e->us;
+        hl_rise_ms = (u32)jiffies * 10u;
+    } else if (o && !n) {
+        e->d = e->us - hl_rise_us; /* PB11 high time on the timebase, us */
+        e->pad = (u16)(((u32)jiffies * 10u - hl_rise_ms) & 0xffffu); /* same interval on the jiffy clock, ms */
+    }
+    hl_commit();
+}
+static void hl_arm_locked(u32 usec, u32 deadline) {
+    hl_ev *e = hl_begin(HL_K_ARM, HL_S_ARM, 0);
+    if (!e) return;
+    e->a = usec;
+    e->b = deadline;
+    hl_commit();
+}
+/* Called by the core (task context, IRQs enabled) around each heater slice. */
+static void hal_heater_trace(void *ctx, unsigned kind, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+    hl_ev *e;
+    (void)ctx;
+    if (kind != 1u && kind != 2u) return;
+    local_irq_disable();
+    e = hl_begin(kind == 1u ? HL_K_PULSE_START : HL_K_PULSE_END, 0, 0);
+    if (e) {
+        e->a = a;
+        e->b = b;
+        e->c = c;
+        e->d = d;
+        hl_commit();
+    }
+    local_irq_enable();
+}
+static char hl_buf[240];
+static unsigned hl_len;
+static void hl_s(const char *s) {
+    while (*s && hl_len < sizeof hl_buf - 2u) hl_buf[hl_len++] = *s++;
+}
+static void hl_u(u32 v) {
+    char t[11];
+    unsigned n = 0;
+    do {
+        t[n++] = (char)('0' + v % 10u);
+        v /= 10u;
+    } while (v);
+    while (n && hl_len < sizeof hl_buf - 2u) hl_buf[hl_len++] = t[--n];
+}
+static void hl_i(s32 v) {
+    if (v < 0) {
+        hl_s("-");
+        hl_u((u32)(-(v + 1)) + 1u);
+    } else {
+        hl_u((u32)v);
+    }
+}
+static void hl_x(u32 v) {
+    static const char hx[] = "0123456789abcdef";
+    unsigned sh;
+    hl_s("0x");
+    for (sh = 16; sh; sh -= 4u)
+        if (hl_len < sizeof hl_buf - 2u) hl_buf[hl_len++] = hx[(v >> (sh - 4u)) & 15u];
+}
+static void hl_kv(const char *k, u32 v) {
+    hl_s(" ");
+    hl_s(k);
+    hl_s("=");
+    hl_u(v);
+}
+static const char *const hl_src_name[] = {"write", "mode", "disarm", "isr_cut", "arm"};
+static void hl_format(const hl_ev *e) {
+    u8 full = 0; /* the longer tail (lateness, stepper, counters) only where a pulse ends: keeps the line rate down */
+    hl_len = 0;
+    hl_s("HL ");
+    hl_u(hl_seq++);
+    hl_kv("t", e->us);
+    if (e->kind == HL_K_PIN) {
+        hl_s(" PB11 ");
+        hl_s(hl_src_name[e->src < 5u ? e->src : 0u]);
+        hl_s(" ");
+        hl_u(e->old);
+        hl_s("->");
+        hl_u(e->nw);
+        hl_kv("in", e->in);
+        hl_kv("dir", e->dir);
+        if (e->old && !e->nw) {
+            full = 1;
+            hl_kv("hi_us", e->d);
+            hl_kv("hi_jiffy_ms", e->pad);
+            hl_kv("starts", e->a);
+            hl_kv("trips", e->b);
+            hl_kv("over", e->c);
+        }
+    } else if (e->kind == HL_K_ARM) {
+        hl_s(" arm");
+        hl_kv("req_us", e->a);
+        hl_kv("deadline", e->b);
+    } else if (e->kind == HL_K_PULSE_START) {
+        hl_s(" pulse_start");
+        hl_kv("req_us", e->a);
+        hl_s(" slice=");
+        hl_u(e->b);
+        hl_s("/");
+        hl_u(e->c);
+        hl_kv("row_us", e->d);
+        hl_kv("in", e->in);
+    } else {
+        full = 1;
+        hl_s(" pulse_end");
+        hl_kv("req_us", e->a);
+        hl_kv("loop_us", e->b);
+        hl_kv("loop_jiffy_ms", e->c);
+        hl_kv("flags", e->d); /* bit0 = over deadline, bit1 = abort */
+        hl_kv("in", e->in);
+    }
+    hl_kv("armed", e->armed);
+    hl_s(" dl_left=");
+    hl_i((s32)(e->dl - e->us));
+    hl_kv("cnt", e->cnt);
+    hl_s(" con=");
+    hl_x(e->con);
+    hl_kv("wraps", e->wraps);
+    if (full) {
+        hl_kv("lag", e->lag);
+        hl_kv("stp", e->stp);
+    }
+    if (hl_same) {
+        hl_kv("same", hl_same);
+        hl_same = 0;
+    }
+    if (hl_lost) {
+        hl_kv("lost", hl_lost);
+        hl_lost = 0;
+    }
+    hl_s("\n");
+}
+/* Command task only (it owns the tx ring producer side together with pb_tx). */
+static void hl_flush(void) {
+    unsigned sent = 0;
+    if (detached) return;
+    while (hl_rd != hl_wr && sent < 12u) {
+        u16 free_space = (u16)((rd + PB_RING - wr - 1) % PB_RING);
+        hl_ev e;
+        if (free_space < HL_RESERVE + sizeof hl_buf) break; /* keep room for TBP replies; retry next pass */
+        e = hl_ring[hl_rd];
+        hl_rd = (hl_rd + 1u) % HL_N;
+        hl_format(&e);
+        (void)hal_tx(0, hl_buf, hl_len);
+        sent++;
+    }
+}
+#endif /* PB_HEATER_TRACE */
 /* ---- TIMETEST (opcode F0): timer self-test ------------------------------------------------------
  * Each source counts roughly `ms` milliseconds in its OWN units (compare periods, callbacks, jiffies, delay
  * calls). The RUNNING frame goes straight to USB just before counting starts and the DONE frame straight
@@ -375,6 +646,8 @@ static void hal_heater_deadman_disarm(void *ctx) {
  * task and cannot run while this function busy-waits. cdc_write_data is mutex-protected, so it is safe next to
  * tx_task. The command task is stalled for the whole run; the core refuses TIMETEST unless the printer is idle.
  * A CRC-valid ESTOP still cuts the heater in the USB RX task; the loops below see estop_fast_requested and stop. */
+/* PT_STEP times the SDK sys_hi_timer (TIMER1, 2.000 ms). The stepper no longer uses it: it runs from the TIMER3
+ * wrap ISR (1 ms). The row is kept as the reference for the old tick. */
 enum { PT_T3D4, PT_T3D16, PT_T3D64, PT_T3D256, PT_STEP, PT_JIFFY, PT_DELAY, PT_DELAY2, PT_TB };
 /* TIMER3 CON[7:4] prescale index (SDK irflt.c table: 1=/4, 2=/16, 3=/64, 8=/256) and a PRD that keeps one compare
  * period at 10 / 40 / 100 / 500 ms when the oscillator really is 24 MHz. */
@@ -403,7 +676,7 @@ static int hal_time_test(void *ctx, unsigned src, unsigned ms, pb_time_result *o
     if (estop_fast_requested || detached) return PB_TIME_ABORTED;
     if (t3 && (!timebase_ready || heater_timer_armed)) return PB_TIME_SETUP;
     if (src == PT_TB && (!timebase_ready || timebase_stalled)) return PB_TIME_SETUP;
-    if (src == PT_STEP && step_timer_id) return PB_TIME_SETUP;
+    if (src == PT_STEP && core.step_active) return PB_TIME_SETUP;
     /* Let queued output (the ACK) leave first so it cannot interleave with the direct frames below. */
     for (i = 0; rd != wr && i < 50; i++) os_time_dly(1);
     if (rd != wr) return PB_TIME_SETUP;
@@ -564,33 +837,11 @@ static int hal_time_test(void *ctx, unsigned src, unsigned ms, pb_time_result *o
     out->isr = isr_n;
     return rc;
 }
-static void pb_step_timer(void *priv) {
-    (void)priv;
-    core.step_timer_callbacks++;
-    if (estop_fast_requested) {
-        core.step_active = 0;
-        core.step_done_pending = 0;
-    } else pb_step_tick(&core);
-}
-/* The SDK's low-power-safe sys_s_hi_timer may stretch its period during sleep.
- * Use the awake 1 ms timer only while motion/boot wiggle is active, then release it. */
+/* The stepper tick runs from the TIMER3 wrap ISR (pb_timebase_isr), one pb_step_tick per 1 ms while
+ * core.step_active. Nothing to register or release any more; this only mirrors "a motion is running" into
+ * core.step_timer_id, which the CONFIG-busy check and PDIAG still read. step_timer_callbacks counts ticks. */
 static void sync_step_timer(void) {
-    if (core.step_active) {
-        if (!step_timer_id) {
-            step_timer_id = sys_hi_timer_add(NULL, pb_step_timer, 1);
-            core.step_timer_id = step_timer_id;
-            if (!step_timer_id) {
-                core.step_timer_reg_failures++;
-                /* Fail safe rather than leave an accepted motion waiting on a missing timer. */
-                pb_tbp_cancel_work(&core, 3u);
-                pb_safe_state(&core);
-            }
-        }
-    } else if (step_timer_id) {
-        sys_hi_timer_del(step_timer_id);
-        step_timer_id = 0;
-        core.step_timer_id = 0;
-    }
+    core.step_timer_id = core.step_active ? 1u : 0u;
 }
 static void command_task(void *priv) {
     u8 b[64];
@@ -609,11 +860,13 @@ static void command_task(void *priv) {
         .time_test = hal_time_test,
         .tx_direct = hal_tx_direct,
         .micros = hal_micros,
+#if PB_HEATER_TRACE
+        .heater_trace = hal_heater_trace,
+#endif
     };
     (void)priv;
     pb_timebase_init();
     pb_init(&core, &h);
-    step_timer_id = 0;
     core.step_timer_id = 0;
     if (estop_fast_requested) core.emergency_abort_requested = 1;
     for (;;) {
@@ -657,6 +910,7 @@ static void command_task(void *priv) {
         }
         pb_poll(&core);
         sync_step_timer();
+        hl_flush();
         if (++ticks >= 10) {
             ticks = 0;
             cdc_set_wakeup_handler(pb_wakeup);

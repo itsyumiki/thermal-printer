@@ -543,6 +543,12 @@ export class PrinterLink {
     try {
       f = decode(line);
     } catch (e) {
+      // Firmware heater trace (PB_HEATER_TRACE): plain-text "HL ..." lines, not TBP. Straight to stdout with the
+      // host clock, no UI warning, and never mistaken for a stdin-session reply.
+      if (line.startsWith("HL ")) {
+        this.logLine("HL", line.slice(3).trim());
+        return;
+      }
       // Raw text is JSON-quoted so stray bytes/CR are visible (e.g. a firmware "!wdg" line).
       this.dbg("RX?", `${JSON.stringify(line)} (${errText(e)})`);
       // A stdin session shows the line itself as the printer's reply; otherwise it is unsolicited (e.g. "!wdg").

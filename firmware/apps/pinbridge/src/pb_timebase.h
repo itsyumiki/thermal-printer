@@ -10,7 +10,7 @@
  * The ISR does `wraps++` and then clears the pending flag, in that order.
  *
  * Configuration (see docs/timer-architecture-and-usage.md, "Timebase"): 24 MHz oscillator / 4 = 6 ticks per us,
- * PRD 60000 = one wrap every 10 ms exactly. Resolution is 1/6 us; the u32 microsecond count wraps every
+ * PRD 6000 = one wrap every 1 ms exactly. Resolution is 1/6 us; the u32 microsecond count wraps every
  * 71.6 min, so callers must subtract (now - start) and never compare two raw values.
  */
 #ifndef PB_TIMEBASE_H
@@ -18,14 +18,19 @@
 #include <stdint.h>
 
 #define PB_TB_TICKS_PER_US 6u
-#define PB_TB_PERIOD_US 10000u
-#define PB_TB_PRD (PB_TB_PERIOD_US * PB_TB_TICKS_PER_US) /* 60000, fits the 16-bit PRD register */
+/* One wrap every 1 ms (was 10 ms until the stepper moved onto this timer): the wrap ISR is also the 1 ms
+ * step tick. The price is a shorter tolerance for masked interrupts: one wrap may be late (the pending
+ * flag covers it) but two in a row are lost, so IRQs must never stay masked for 1 ms or more. */
+#ifndef PB_TB_PERIOD_US
+#define PB_TB_PERIOD_US 1000u
+#endif
+#define PB_TB_PRD (PB_TB_PERIOD_US * PB_TB_TICKS_PER_US) /* 6000, fits the 16-bit PRD register */
 
 /* Microseconds since the timebase started. Lock-free and safe from any context, including with interrupts
  * masked and from inside an ISR. A reading that straddles a wrap is retried: the wrap count must not change
  * and the counter must not run backwards between the two counter reads. A wrap whose ISR has not run yet
- * (pending flag set) is added in here, so the result never steps back by 10 ms while an ISR is late.
- * Limit: if interrupts stay masked for more than one period (10 ms) a wrap is lost and time steps back. */
+ * (pending flag set) is added in here, so the result never steps back by one period while an ISR is late.
+ * Limit: if interrupts stay masked for more than one period (1 ms) a wrap is lost and time steps back. */
 /* Shared deadman decision used by the TIMER3 ISR and host tests. Signed subtraction keeps
  * deadlines valid across the u32 microsecond-clock wrap for intervals shorter than 2^31 us. */
 static inline int pb_heater_deadman_expire(volatile uint8_t *armed, uint32_t now, uint32_t deadline,

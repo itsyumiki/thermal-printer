@@ -5,7 +5,7 @@
  * the timer wraps, so every interleaving of "wrapped but ISR not run yet" is exercised.
  *
  * What is checked: pb_tb_us() never goes backwards and always lies between true time at call start and at call end
- * (so a late ISR does not cost 10 ms and a torn read does not either), for ISR lags from 0 to a full period minus
+ * (so a late ISR does not cost a whole period and a torn read does not either), for ISR lags from 0 to a full period minus
  * one tick, and with the ISR masked for a while; pb_tb_delay_us() waits at least the asked time and at most a small
  * overshoot, for 1 us up to 30 ms; a stopped timer ends in -1 within the spin bound instead of hanging; and the
  * u32 microsecond count subtracts correctly across its 71.6 minute wrap.
@@ -19,7 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define SIM_PRD 60000u
+#define SIM_PRD 6000u /* PB_TB_PERIOD_US (1000) x 6 ticks per us */
 static uint64_t sim_t;           /* true time in ticks (6 per us) */
 static uint32_t sim_wraps;       /* what the ISR has counted */
 static unsigned sim_lag;         /* ticks between a wrap and its ISR running */
@@ -88,14 +88,15 @@ static void reset(uint64_t start_ticks, unsigned lag) {
 }
 
 static void test_constants(void) {
-    CHECK(PB_TB_PRD == 60000u, "PRD %u", PB_TB_PRD);
+    CHECK(PB_TB_PRD == 6000u, "PRD %u", PB_TB_PRD);
+    CHECK(PB_TB_PRD == SIM_PRD, "test period out of step with the header");
     CHECK(PB_TB_PRD <= 0xffffu, "PRD does not fit the 16-bit register");
     CHECK(PB_TB_PRD % PB_TB_TICKS_PER_US == 0u, "a period is not a whole number of microseconds");
 }
 
 /* The read is bracketed by true time, whatever the ISR lag, for random gaps between reads. */
 static void test_read_bracketed(void) {
-    static const unsigned lags[] = {0, 1, 2, 3, 5, 7, 20, 50, 600, 6000, 30000, 59000, 59999};
+    static const unsigned lags[] = {0, 1, 2, 3, 5, 7, 20, 50, 600, 3000, 5000, 5900, 5999};
     unsigned li, i;
     for (li = 0; li < sizeof lags / sizeof lags[0]; li++) {
         uint32_t prev = 0;

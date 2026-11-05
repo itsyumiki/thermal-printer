@@ -103,6 +103,10 @@ typedef struct {
     /* Free-running microsecond clock (Sprint 2). Wraps every 2^32 us (71.6 min): always subtract, never compare.
      * Optional; pb_micros() falls back to millis * 1000 when a HAL has none. */
     uint32_t (*micros)(void *);
+    /* Optional heater trace (plain-text HL log in app.c). kind 1 = pulse start (a = requested us, b = slice number,
+     * c = slices, d = row burn us); kind 2 = pulse end, called before PB11 is dropped (a = requested us,
+     * b = us measured by the pulse loop, c = jiffy ms, d = bit0 over deadline, bit1 abort). Must not block. */
+    void (*heater_trace)(void *, unsigned kind, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
 } pb_hal;
 typedef struct {
     uint8_t id, op, len, queued_status_sent;
@@ -1244,6 +1248,7 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
                         start_us = pb_micros(c);
                         start_ms = pb_now(c);
                         c->heater_pulse_starts++;
+                        if (c->h.heater_trace) c->h.heater_trace(c->h.ctx, 1u, on, c->tbp_exec_slice, slices, (uint32_t)burn);
                         while (!c->emergency_abort_requested && elapsed < on) {
                             uint32_t now_us = pb_micros(c);
                             elapsed = (uint32_t)(now_us - start_us);
@@ -1256,6 +1261,9 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
                         }
                         if (elapsed > on + 1000u) over_deadline = 1u;
                         if (over_deadline) c->heater_over_deadline++;
+                        if (c->h.heater_trace)
+                            c->h.heater_trace(c->h.ctx, 2u, on, elapsed, (uint32_t)(pb_now(c) - start_ms),
+                                              (over_deadline ? 1u : 0u) | (c->emergency_abort_requested ? 2u : 0u));
                         pb_heater_off(c);
                         if (c->emergency_abort_requested) return;
                     }

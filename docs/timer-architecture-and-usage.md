@@ -8,8 +8,8 @@ Scope: consolidated engineering notes from the Pinbridge firmware, the older sto
 
 There are several different mechanisms that have been called “timers” in this project, but they do different jobs:
 
-- **SDK high-priority software timer / TIMER1-backed scheduler:** currently paces Pinbridge stepper callbacks. The API is asked for 1 ms, but the measured callback cadence is about 2 ms. TIMER1 must not be claimed directly while this SDK timer is in use.
-- **Pinbridge hardware TIMER3:** currently terminates a heater pulse by lowering PB11 in an interrupt. It is configured as a divided crystal-clock timer and is not currently the stepper clock.
+- **SDK high-priority software timer / TIMER1-backed scheduler:** paced the Pinbridge stepper until 2026-11-05 (fixed 2.000 ms tick, measured). The stepper now runs from the TIMER3 wrap ISR (section 2.2); this timer is only used by the `TIMETEST` STEP row. TIMER1 must still not be claimed directly.
+- **Pinbridge hardware TIMER3:** the free-running microsecond timebase (/4, PRD 6000, one wrap ISR per 1 ms since 2026-11-05, 10 ms before). The wrap ISR also runs the stepper tick and the independent heater deadman.
 - **SDK jiffies:** a coarse system tick used for elapsed-time bookkeeping, timeouts, ADC settling and watchdog-style logic. Measurements support 10 ms per jiffy.
 - **Software busy delays:** calibrated instruction/NOP loops used for short waits. They are not independent clocks and are affected by instruction timing and interrupt execution.
 - **Stock firmware TIMER2:** the analyzed stock image uses a hardware TIMER2 interrupt for the printhead heat strobe. The stock stepper pacing is instead driven by a 2 ms SDK timer callback that posts print/feed events.
@@ -21,7 +21,17 @@ A proposed alternative was discussed: move stepper pacing onto TIMER3 and replac
 
 ## 2. Timer ownership and use in Pinbridge
 
-### 2.1 SDK high-priority timer: stepper pacing (TIMER1-backed)
+### 2.2 Stepper tick on TIMER3 (2026-11-05, current)
+
+The stepper no longer registers an SDK timer. `pb_timebase_isr` (TIMER3 wrap, every 1 ms exactly: PRD 6000 at 6 ticks per us) calls `pb_step_tick(&core)` while `core.step_active` and the timer is not borrowed by `TIMETEST`; an ESTOP request drops the motion there as before. So one core tick is a true 1 ms, `PB_TUNE_STEPPER_MIN_PERIOD_US = 1000` and the host's 31.25 mm/s ceiling are now real (they were half of that on the 2 ms SDK tick). Consequences and risks, none yet measured on hardware:
+
+- ISR rate is 10x higher (about 1 % CPU, estimate). Interrupts must not stay masked for 1 ms or more: one late wrap is covered by the pending flag, two are lost and the microsecond clock steps back by 1 ms. The worst ISR lateness is tracked in `tb_max_lag` (1/6 us ticks, 6000 = a full period) and printed as `lag=` in the HL trace.
+- The heater deadman now cuts PB11 within about 1 ms (plus the 100 us margin) of its deadline instead of 10 ms.
+- The first step after a motion starts can come up to 1 ms early or late relative to the commanded dwell, because the tick is free-running instead of started with the motion.
+- Whether the motor tolerates 1 000 half-steps/s from standstill (no ramp) is unknown. Defaults (`PB_TUNE_STEPPER_DEFAULT_PERIOD_US`, the boot wiggle) are 1000 us, which is now twice as fast as what actually ran before.
+- `TIMETEST` STEP still measures the SDK `sys_hi_timer` (2.000 ms). It is kept as the reference for the old tick and no longer measures the stepper.
+
+### 2.1 SDK high-priority timer: stepper pacing (TIMER1-backed, until Sprint 3)
 
 In `firmware/apps/pinbridge/src/app.c`, Pinbridge registers the step callback with:
 
@@ -327,11 +337,11 @@ A timer-driven stepper and a hardware-timed heater pulse are not mutually exclus
 
 | Resource | Current Pinbridge role / known SDK role | Guidance |
 |---|---|---|
-| SDK high-priority timer (`sys_hi_timer_add`) | Stepper callback; implementation uses TIMER1 | Keep using the SDK API or replace it intentionally; do not directly claim TIMER1 underneath it |
+| SDK high-priority timer (`sys_hi_timer_add`) | Not used by the stepper since 2026-11-05 (only the `TIMETEST` STEP row); implementation uses TIMER1 | Do not directly claim TIMER1 underneath it |
 | TIMER0 | SDK short blocking delay support | Treat as occupied unless exact SDK build proves otherwise |
 | TIMER1 | Underlying SDK high-priority timer resource | Do not configure directly while SDK timer is active |
 | TIMER2 | SDK handshake use in this Pinbridge environment; stock firmware uses TIMER2 for heater strobe | Do not assume it is free in Pinbridge; stock allocation is a different firmware image |
-| TIMER3 | Pinbridge free-running microsecond timebase (/4, 10 ms wrap ISR); SDK IR-filter/key-driver use in general SDK, absent from this app | App-reserved since Sprint 2; the heater no longer has its own one-shot |
+| TIMER3 | Pinbridge free-running microsecond timebase (/4, 1 ms wrap ISR) that also drives the stepper tick and the heater deadman; SDK IR-filter/key-driver use in general SDK, absent from this app | App-reserved since Sprint 2; stepper added 2026-11-05 |
 | Jiffies | 10 ms coarse system timebase | Use for millisecond-scale bookkeeping, not precise pulse edges |
 | NOP busy loop | Short software waits and fallback delay | Use only where timing tolerance is understood; never treat as a certified hardware deadline |
 
