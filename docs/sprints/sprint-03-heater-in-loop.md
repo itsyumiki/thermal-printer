@@ -39,7 +39,7 @@ Include scope captures, deadman margin, and the counters' meaning. Next: Sprint 
 
 ## Implementation status (2026-11-05; not yet hardware-accepted)
 
-Implemented locally, not committed or flashed:
+Implemented and pushed in commit `fb4e707` (2026-11-05); CI run [42006282931](https://github.com/itsyumiki/thermal-printer/actions/runs/42006282931) passed both the host checks and firmware build. Not flashed:
 
 - Removed `heater_pulse_start/active/cancel` and the executor's asynchronous-pulse pending state. The executor now asserts PB11 and polls the shared `micros()` clock until the requested slice duration, checking the emergency-abort flag and a coarse jiffy fallback while PB11 is high.
 - Added `heater_deadman_arm/disarm` as the minimal HAL contract for the independent shutoff. The TIMER3 wrap ISR compares the current microsecond time with the armed deadline and directly clears PB11 if the executor has not done so. Disarm atomically clears PB11 before clearing the armed flag.
@@ -50,7 +50,7 @@ Implemented locally, not committed or flashed:
 ### Local verification
 
 - C transcripts against the real pin table: 40/40 pass.
-- `pb_race_test`: 2005 cases pass, including pulse-width accounting and abort cases.
+- `pb_race_test`: 2059 cases pass, including simulated 1 ms / 2 ms / 3 ms pulse-width accounting and abort cases.
 - `pb_led_test`: pass.
 - `pb_timebase_test`: pass, including deadman expiry and u32-wrap cases.
 - Bun `run check`: 90 tests pass; Prettier passes.
@@ -58,7 +58,7 @@ Implemented locally, not committed or flashed:
 
 ### Still required before closing Sprint 3
 
-- CI firmware build; no local JieLi toolchain is available.
+- CI firmware build passed on `fb4e707` (run 42006282931); no local JieLi toolchain is available.
 - Owner-run scope captures at three pulse widths, verifying PB11 width within 5% and immediate low on e-stop.
-- Owner-run forced-loop-wedge test confirming the independent ISR cutoff within the documented one-wrap margin.
+- Owner-run forced-loop-wedge test confirming the independent ISR cutoff within the documented ~10.1 ms maximum after the requested deadline.
 - Hardware evidence and final review of the counters. No hardware has been touched.

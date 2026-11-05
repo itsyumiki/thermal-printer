@@ -26,8 +26,8 @@ One cooperative loop owns all printer timing. TIMER3 becomes a free-running time
 
 ## Current verification snapshot (2026-11-05)
 
-- Current branch: `pinbridge`, head `a3270e1`. CI (GitHub Actions) succeeded on `a3270e1` and on `ac07f95`. The workflow builds firmware; it does not run the Bun suite.
-- Local tests: `bun test` passed 90 tests on the last run (after the web UI timer panel was added). The C harness is the other suite of record. The Python suite under `host/pinbridge` is dropped (see constraints below) and was not run for this snapshot. No local firmware build was attempted.
+- Latest firmware implementation commit: `fb4e707` on `pinbridge`. CI (GitHub Actions) passed both host checks and the firmware build on run [42006282931](https://github.com/itsyumiki/thermal-printer/actions/runs/42006282931). Earlier baseline builds succeeded on `a3270e1` and `ac07f95`.
+- Local tests on the Sprint 3 implementation: Bun 90/90; C transcripts 40/40 against the real pin table; `pb_race_test` 2059 cases; `pb_led_test` and `pb_timebase_test` pass. The Python suite is dropped (see constraints below). No local firmware build was attempted.
 - Hardware (owner, 2026-11-05, build `a3270e1c`): all eight `TIMETEST` sources were run five times each from the web UI. The four TIMER3 rows pass the 2 % gate with `isr == n`. The STEP, JIFFY, DELAY and DELAY2 rows are baselines, not gated; the table is in `docs/timer-architecture-and-usage.md` section 3 (full baseline).
 - No printer hardware was flashed or measured by the agent. There is still no PB11 or motor-phase scope capture.
 
