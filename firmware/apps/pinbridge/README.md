@@ -52,7 +52,7 @@ By default the server binds to localhost only. Do not expose it to an untrusted 
 
 The same header holds the heater, temperature, battery and coil-hold limits with their provenance (STOCK / OWNER / PROVISIONAL tags).
 
-Heating is **enabled** behind the gates described in `docs/sprints/sprint-03-safety-telemetry.md`: valid temperature/battery/paper readings, start cutoff 70 degC (abort 75, resume 50), per-pulse max 2500 us, ROW burn max 10000 us, 30 % duty budget. The limits are owner decisions derived from stock evidence and are **not bench-validated**; `MOD PB11 hi` / `SET PB11=1` stay blocked because they bypass every gate.
+Heating is **enabled** behind the gates described in `src/pb_tuning.h` (the old Sprint 3 write-up is in git history: `git show 9e22ffc:docs/sprints/sprint-03-safety-telemetry.md`): valid temperature/battery/paper readings, start cutoff 70 degC (abort 75, resume 50), per-pulse max 2500 us, ROW burn max 10000 us, 30 % duty budget. The limits are owner decisions derived from stock evidence and are **not bench-validated**; `MOD PB11 hi` / `SET PB11=1` stay blocked because they bypass every gate.
 
 ## Limits and status
 

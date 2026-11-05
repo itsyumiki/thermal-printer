@@ -456,8 +456,14 @@ static int hal_time_test(void *ctx, unsigned src, unsigned ms) {
     j0 = jiffies;
     last_j = j0;
     if (t3) {
-        /* The heater ISR stays enabled, so the run also shows whether the compare interrupt fires: if it
-         * does, it stops the timer and bumps heater_isr_count; count that as a period and restart. */
+        /* The heater ISR stays enabled, and it is the ONLY thing counted: one compare = one ISR = one period.
+         * The ISR stops the timer and clears the pending flag, bumping heater_isr_count; the loop sees the
+         * bump, counts it once and restarts the timer from zero. Do NOT also count the pending flag
+         * (CON bit 15): a compare can be seen there before the ISR runs, and the ISR then still runs
+         * and counts the same compare again (the 2026-11-05 /4 /16 /64 rows were wrong for this reason).
+         * Bias: every restart adds the ISR entry plus loop latency to its period, so n periods read a
+         * little long (not measured; the 2 % gate allows 200 us per 10 ms period at /4). If the compare
+         * IRQ never fires the run ends with "err timeout" instead of a wrong count. */
         u32 isr0 = core.heater_isr_count, k;
         PB_HEATER_TIMER->CON = BIT(14);
         PB_HEATER_TIMER->CNT = 0;
@@ -474,14 +480,11 @@ static int hal_time_test(void *ctx, unsigned src, unsigned ms) {
                 PB_HEATER_TIMER->CON = con_run;
                 last_j = jiffies;
                 wdt_clear();
-            } else if (PB_HEATER_TIMER->CON & BIT(15)) {
-                PB_HEATER_TIMER->CON = con_run; /* BIT(14) clears the pending flag, the timer keeps running */
-                n++;
-                last_j = jiffies;
-                wdt_clear();
             } else if ((unsigned long)(jiffies - last_j) > guard) {
                 timed_out = 1;
                 break;
+            } else {
+                wdt_clear(); /* a dead compare IRQ must end in "err timeout", not in a watchdog reset */
             }
         }
         dj = (u32)(jiffies - j0);

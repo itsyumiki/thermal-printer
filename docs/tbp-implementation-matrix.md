@@ -44,7 +44,7 @@ Legend: **Implemented (partial)** means a path exists but does not meet the full
 - `host/pinbridge/bun/tbp.test.ts` and `server.test.ts`: CRC/framing vectors, malformed frame rejection, signed MOVE payload, INFO decoding, lost ACK/STATUS retries, retry exhaustion, sequence resync, serialized commands, disconnect cleanup and HELLO ID reset.
 - `firmware/apps/pinbridge/tests/transcripts/`: shared C golden transcripts cover HELLO, sequence/future-ID recovery, wrap, duplicate ROW/MOVE/COILS side effects, history eviction, malformed hex, embedded CR, max-length and overlong-line resynchronization.
 - These tests establish Sprint 1 protocol reliability only; they are **not** evidence of full TBP v1 conformance or hardware behavior.
-- See [`sprint-00-report.md`](sprints/sprint-00-report.md) for exact baseline commands and results.
+- The Sprint 0 baseline report was removed from the tree on 2026-11-05; see it with `git show 9e22ffc:docs/sprints/sprint-00-report.md`.
 
 ## 2026-11-03 control-plane and watchdog follow-up
 

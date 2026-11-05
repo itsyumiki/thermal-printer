@@ -642,6 +642,28 @@ describe("timer self-test (PTIME)", () => {
     expect(j.msPerJiffy).toBeUndefined();
   });
 
+  test("a compare counted through both the ISR and the pending flag does not inflate the implied clock", () => {
+    // Pre-fix firmware at /16: 25 counted, only 16 real compares (16 x 40 ms = 640 ms, a true 24 MHz clock).
+    const old = summarizeTimeRuns("T3D16", [
+      { wallMs: 640, n: 25, wantUs: 1_000_000, dj: 64, ticks: 1_500_000, div: 16, isr: 16 },
+    ]);
+    expect(old.impliedOscMHz).toBeCloseTo(24, 6); // 37.5 MHz if n were trusted
+    expect(old.isrMatchesN).toBe(false);
+    // Fixed firmware: one compare, one ISR, one count.
+    const fixed = summarizeTimeRuns("T3D16", [
+      { wallMs: 1000, n: 25, wantUs: 1_000_000, dj: 100, ticks: 1_500_000, div: 16, isr: 25 },
+      { wallMs: 1001, n: 25, wantUs: 1_000_000, dj: 100, ticks: 1_500_000, div: 16, isr: 25 },
+    ]);
+    expect(fixed.isrMatchesN).toBe(true);
+    expect(fixed.isrPerRun).toBe(25);
+    expect(fixed.impliedOscMHz).toBeCloseTo(24, 1);
+    // Sources without an ISR count report no match flag.
+    const j = summarizeTimeRuns("JIFFY", [
+      { wallMs: 1000, n: 100, wantUs: 1_000_000, dj: 100, ticks: null, div: null, isr: null },
+    ]);
+    expect(j.isrMatchesN).toBeUndefined();
+  });
+
   test("a firmware refusal rejects with its reply and sends nothing else", async () => {
     const { link, count } = fakeLink((_w, _n, l) =>
       queueMicrotask(() => l.onLine("err bsy PTIME")),

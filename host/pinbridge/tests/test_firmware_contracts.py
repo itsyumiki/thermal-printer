@@ -28,7 +28,7 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         # usr_timer (sys_hi_timer_add) runs on TIMER1; claiming it stopped the stepper tick
         # (bench PDIAG 2026-11-03: timer registered, ticks=0, no boot wiggle).
         source = APP.read_text(encoding="utf-8")
-        code = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        code = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
         self.assertNotIn("JL_TIMER1", code)
         self.assertNotIn("IRQ_TIME1_IDX", code)
         self.assertIn("#define PB_HEATER_TIMER JL_TIMER3", source)
@@ -39,24 +39,38 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertIn("(0b10u << 2) | (0b0010u << 4) | BIT(0) | BIT(14)", source)
         self.assertNotIn("BIT(1) | BIT(0)", source)
         self.assertNotIn("(6u << 10)", source)
-        self.assertIn("ticks = (usec * 3u + 1u) / 2u;", source)  # /16 prescale: 1.5 ticks/us; PRD is 16 bits
+        self.assertIn(
+            "ticks = (usec * 3u + 1u) / 2u;", source
+        )  # /16 prescale: 1.5 ticks/us; PRD is 16 bits
         self.assertNotIn("(24000000u / 4u) * usec", source)
 
     def test_heater_pulse_cannot_outlive_a_dead_timer_interrupt(self):
         # Bench 2026-11-03 (build 0663d703): ROWs failed FAILED 1F/01 after ~0.9 s because the
         # TIMER3 IRQ never ended the pulse, leaving PB11 high until the executor stall watchdog.
         source = APP.read_text(encoding="utf-8")
-        start = source[source.index("static int hal_heater_pulse_start"):source.index("static int hal_heater_pulse_active")]
+        start = source[
+            source.index("static int hal_heater_pulse_start") : source.index(
+                "static int hal_heater_pulse_active"
+            )
+        ]
         self.assertIn("PB_HEATER_PULSE_MARGIN_US", start)
-        self.assertIn("PB_HEATER_TIMER->CON & BIT(15)", start)  # pending flag works without an IRQ
-        self.assertIn("ports[1]->OUT &= ~(1u << 11)", start)  # forced low on the software bound
+        self.assertIn(
+            "PB_HEATER_TIMER->CON & BIT(15)", start
+        )  # pending flag works without an IRQ
+        self.assertIn(
+            "ports[1]->OUT &= ~(1u << 11)", start
+        )  # forced low on the software bound
         self.assertIn("core.heater_overruns++", start)
         self.assertIn("return -1;", start)
         self.assertIn("core.heater_isr_count++", source)
 
     def test_heater_diagnostics_command(self):
-        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
-        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
+        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(
+            encoding="utf-8"
+        )
+        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(
+            encoding="utf-8"
+        )
         self.assertIn('pb_eq(v[0], "PHDIAG")', core)
         for field in ("starts=", "isr=", "poll=", "over=", "cnt=", "con="):
             self.assertIn(field, printer)
@@ -65,41 +79,111 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         # PTIME busy-waits in the command task, which tx_task (lower priority) cannot preempt, so the
         # begin/end lines must go straight to USB or the host timestamps would not bracket the count.
         source = APP.read_text(encoding="utf-8")
-        start = source[source.index("static int hal_time_test"):source.index("static void pb_step_timer")]
-        self.assertIn("cdc_write_data(PB_USB", source[source.index("static int pt_out"):source.index("static void pt_kv")])
+        start = source[
+            source.index("static int hal_time_test") : source.index(
+                "static void pb_step_timer"
+            )
+        ]
+        self.assertIn(
+            "cdc_write_data(PB_USB",
+            source[
+                source.index("static int pt_out") : source.index("static void pt_kv")
+            ],
+        )
         self.assertIn('"ptime begin "', start)
         self.assertIn('"ok ptime "', start)
         self.assertIn("wdt_clear();", start)  # 4 s watchdog, runs last up to 3 s
         self.assertIn(".time_test = hal_time_test", source)
         self.assertNotIn("tx_write", start)  # never via the ring
         self.assertNotIn("PB11", start)  # never touches the heater pin
-        self.assertNotIn("irq_disable", start)  # the run should also show whether the compare IRQ fires
+        self.assertNotIn(
+            "irq_disable", start
+        )  # the run should also show whether the compare IRQ fires
+
+    def test_ptime_timer3_loop_counts_each_compare_once(self):
+        # 2026-11-05: the loop counted a compare through heater_isr_count AND through the pending flag
+        # (CON bit 15). A compare seen in the flag before its ISR ran was then counted again by the ISR,
+        # so /4 /16 /64 reported impossible oscillator rates. Count the ISR only; never read bit 15 here.
+        source = APP.read_text(encoding="utf-8")
+        start = source[
+            source.index("static int hal_time_test") : source.index(
+                "static void pb_step_timer"
+            )
+        ]
+        loop_start = start.index("u32 isr0 = core.heater_isr_count")
+        loop = start[loop_start : start.index("} else if (src == PT_STEP)", loop_start)]
+        code = re.sub(r"/\*.*?\*/", "", loop, flags=re.DOTALL)
+        self.assertIn("k = core.heater_isr_count - isr0;", code)
+        self.assertIn("isr_n += k;", code)
+        self.assertEqual(re.findall(r"(?<!\w)n \+= k;", code), ["n += k;"])
+        self.assertNotIn(
+            "BIT(15)", code
+        )  # the pending flag is never a second count path
+        self.assertNotIn("n++", code)  # n only ever grows by the ISR delta
+        self.assertEqual(len(re.findall(r"(?<!\w)n \+= ", code)), 1)  # the only way n grows
+        self.assertIn(
+            "timed_out = 1;", code
+        )  # a dead compare IRQ ends in err timeout, not a wrong count
+        self.assertIn(
+            "wdt_clear();",
+            code[code.index("else if ((unsigned long)(jiffies - last_j) > guard)") :],
+        )
+        self.assertIn(
+            'pt_kv(b, sizeof b, &z, "isr", isr_n);', start
+        )  # the isr= field stays in the end line
 
     def test_motor_phase_callback_uses_irq_safe_port_writer(self):
-        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
-        phase = printer[printer.index("static void pb_drive_motor_phase"):printer.index("/* A head port") if "/* A head port" in printer else printer.index("/* Shift one fully validated")]
+        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(
+            encoding="utf-8"
+        )
+        phase = printer[
+            printer.index("static void pb_drive_motor_phase") : printer.index(
+                "/* A head port"
+            )
+            if "/* A head port" in printer
+            else printer.index("/* Shift one fully validated")
+        ]
         self.assertIn("c->h.write_port_fast", phase)
         self.assertIn("pb_printer_pin_i(c, k, level)", phase)
         self.assertIn("unconditionally disables then enables IRQs", phase)
 
     def test_stepper_runtime_diagnostics_expose_timer_progress_and_wiggle_gates(self):
         app = APP.read_text(encoding="utf-8")
-        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
-        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(encoding="utf-8")
+        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(
+            encoding="utf-8"
+        )
+        printer = (ROOT / "firmware/apps/pinbridge/src/pb_printer.h").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("core.step_timer_callbacks++", app)
         self.assertIn("core.step_timer_reg_failures++", app)
         self.assertIn('pb_eq(v[0], "PDIAG")', core)
-        for field in ("step=", "phase=", "done=", "rem=", "timer=", "ticks=", "regfail=", "wiggle=", "request=", "rowpaper=", "power=", "abort="):
+        for field in (
+            "step=",
+            "phase=",
+            "done=",
+            "rem=",
+            "timer=",
+            "ticks=",
+            "regfail=",
+            "wiggle=",
+            "request=",
+            "rowpaper=",
+            "power=",
+            "abort=",
+        ):
             self.assertIn(field, printer)
 
     def test_websocket_startup_does_not_wait_for_remote_font_import(self):
         css = (ROOT / "host/pinbridge/bun/public/style.css").read_text(encoding="utf-8")
         html = WEB_HTML.read_text(encoding="utf-8")
-        self.assertNotIn("@import url(\"https://fonts.googleapis.com", css)
+        self.assertNotIn('@import url("https://fonts.googleapis.com', css)
         self.assertIn('<script type="module" src="/app.js"></script>', html)
 
     def test_ci_embeds_source_sha_in_hello_build_id(self):
-        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
+        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(
+            encoding="utf-8"
+        )
         script = BUILD_SCRIPT.read_text(encoding="utf-8")
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("info[1] = (uint8_t)(PB_BUILD_ID >> 24)", core)
@@ -117,7 +201,11 @@ class FirmwareAdapterContractTests(unittest.TestCase):
 
     def test_rx_overflow_resynchronizes_at_the_next_newline(self):
         app = APP.read_text(encoding="utf-8")
-        overflow = app[app.index("if (rx_overflow)"):app.index("while ((n = rx_ring_pop", app.index("if (rx_overflow)"))]
+        overflow = app[
+            app.index("if (rx_overflow)") : app.index(
+                "while ((n = rx_ring_pop", app.index("if (rx_overflow)")
+            )
+        ]
         self.assertIn("core.discard = 1", overflow)
         self.assertIn("fast_line_discard = 1", overflow)
 
@@ -131,7 +219,9 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         self.assertEqual(int(firmware_match.group(1)), int(host_match.group(1)))
 
     def test_row_shift_finishes_in_one_executor_poll(self):
-        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(encoding="utf-8")
+        core = (ROOT / "firmware/apps/pinbridge/src/pb_core.h").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("for (i = 0; i < 384u && c->tbp_exec_bit < 384u; i++)", core)
         self.assertIn("if (c->tbp_exec_bit < 384u) return;", core)
 
@@ -141,8 +231,12 @@ class FirmwareAdapterContractTests(unittest.TestCase):
         tuning = TUNING.read_text(encoding="utf-8")
         tbp = TBP.read_text(encoding="utf-8")
         app = WEB_APP.read_text(encoding="utf-8")
-        self.assertIsNotNone(re.search(r"#define PB_TUNE_HEATER_SLICE_MAX_US \d+u", tuning))
-        self.assertIsNotNone(re.search(r"#define PB_TUNE_HEATER_BURN_MAX_US \d+u", tuning))
+        self.assertIsNotNone(
+            re.search(r"#define PB_TUNE_HEATER_SLICE_MAX_US \d+u", tuning)
+        )
+        self.assertIsNotNone(
+            re.search(r"#define PB_TUNE_HEATER_BURN_MAX_US \d+u", tuning)
+        )
         self.assertNotIn("MAX_HEATER_SLICE_US", tbp)
         self.assertNotIn("MAX_HEATER_SLICE_US", app)
         self.assertNotIn('$("burnUs").max', app)
@@ -153,9 +247,9 @@ class FirmwareAdapterContractTests(unittest.TestCase):
 
     def test_webui_shows_celsius_raw_tooltip_and_safety_limits(self):
         script = WEB_APP.read_text(encoding="utf-8")
-        self.assertIn('Raw ADC: ${t.headTempRaw}', script)
-        self.assertIn('°C', script)
-        self.assertIn('Cutoff 70 °C · abort 75 °C · resume 50 °C', script)
+        self.assertIn("Raw ADC: ${t.headTempRaw}", script)
+        self.assertIn("°C", script)
+        self.assertIn("Cutoff 70 °C · abort 75 °C · resume 50 °C", script)
 
     def test_webui_javascript_only_references_existing_dom_ids(self):
         script = WEB_APP.read_text(encoding="utf-8")
@@ -170,7 +264,7 @@ class FirmwareAdapterContractTests(unittest.TestCase):
     def test_webui_shows_tick_quantized_effective_speed(self):
         script = WEB_APP.read_text(encoding="utf-8")
         page = WEB_HTML.read_text(encoding="utf-8")
-        self.assertIn('Math.ceil(periodUs / 1000) * 1000', script)
+        self.assertIn("Math.ceil(periodUs / 1000) * 1000", script)
         self.assertNotIn('id="rowSpeedEffective"', page)
         self.assertNotIn('id="rowMm"', page)
         self.assertNotIn('id="rowSpeed"', page)

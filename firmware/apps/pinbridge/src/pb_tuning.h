@@ -22,8 +22,14 @@
 #define PB_TUNE_HEAD_TIMING_MAX_US 1000u
 
 /* ---- Heater limits ------------------------------------------------------------------
- * Stock drives PB11 for 25..75 timer ticks of ~30 us per print event (0.72..2.22 ms,
- * quality bytes 0x31..0x35) with a hard 200-tick (6 ms) cutoff, four events per row.   */
+ * Stock drives PB11 for (T-1) timer ticks per print event, T = 25..75 for quality bytes
+ * 0x31..0x35 (0.72..2.22 ms, DERIVED), normal-mode maximum T = 175 (5.22 ms), hard cutoff at
+ * 199 ticks (5.97 ms), four events per row. Tick = 30 us: TIMER2 CON 0x29 (24 MHz crystal, /16),
+ * PRD 45. The clock source measured 23.98 MHz on TIMER3 (PTIME), so the tick is probably right,
+ * but it is still DERIVED until PB11 is scoped on stock (+2.2 % if the counter period is PRD+1).
+ * Stock reshifts and relatches before every pulse; stock does not gate heat on motor edges.
+ * Evidence and scope plan: docs/bugs/2026-11-04-heater-blank-prints-timing.md section 8.   */
+
 #define PB_TUNE_HEATER_SLICE_MAX_US 30000u  /* TEST-ONLY (2026-11-04): was 2500. Bench: the old checker firmware printed with far longer pulses than stock-derived 2.2 ms. TIMER3 at /16 tops out at 43.7 ms. Restore to ~2500 after the heat experiment. */
 #define PB_TUNE_HEATER_NOMINAL_PULSE_US 1500u /* PROVISIONAL; old demo default */
 #define PB_TUNE_HEATER_REQUEST_MAX_US PB_TUNE_HEATER_SLICE_MAX_US /* legacy PHEAT/PEVENT input */

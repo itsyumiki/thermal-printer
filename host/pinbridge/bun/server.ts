@@ -76,14 +76,22 @@ export function summarizeTimeRuns(src: string, runs: TimeRun[]) {
   };
   out.msPerUnit = perRun((r) => (r.n > 0 ? r.wallMs / r.n : null));
   if (src.startsWith("T3D"))
-    // ticks counted at the post-divider rate; the oscillator is ticks * div per elapsed time.
-    out.impliedOscMHz = perRun((r) =>
-      r.ticks && r.div ? (r.ticks * r.div) / (r.wallMs * 1000) : null,
-    );
+    // ticks counted at the post-divider rate; the oscillator is ticks * div per elapsed time. One compare
+    // is one ISR, so when the firmware reports its ISR count the ticks are rescaled to it: n may also
+    // hold compares seen through the pending flag (old firmware), which would count a compare twice.
+    out.impliedOscMHz = perRun((r) => {
+      if (!r.ticks || !r.div) return null;
+      const ticks = r.isr && r.n > 0 ? (r.ticks * r.isr) / r.n : r.ticks; // isr 0: the IRQ never fired
+      return (ticks * r.div) / (r.wallMs * 1000);
+    });
   if (src !== "JIFFY")
     out.msPerJiffy = perRun((r) => (r.dj ? r.wallMs / r.dj : null));
   const isr = perRun((r) => r.isr);
-  if (isr !== null) out.isrPerRun = isr;
+  if (isr !== null) {
+    out.isrPerRun = isr;
+    // False means n and the ISR count disagree: the run counted some compare twice (old firmware).
+    out.isrMatchesN = runs.every((r) => r.isr === null || r.isr === r.n);
+  }
   return out;
 }
 const debugFrames =
