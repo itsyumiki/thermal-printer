@@ -40,7 +40,7 @@ The source comments and prior experiment establish a critical resource constrain
 
 ### 2.2 Hardware TIMER3: the timebase (Sprint 2, 2026-11-05)
 
-> Status: **code and simulation only.** Built in CI and tested against a simulated timer; not yet run on hardware. The sections below that describe the old one-shot pulse path are historical (it was removed in Sprint 2).
+> Status: **hardware-confirmed 2026-11-05** (owner run, web UI, 5 runs per source, build assumed `c2b08e2f`; table in section 3, "Sprint 2 hardware table"). The timebase counts real time within 0.1 %. `hal_delay_us` has a per-call floor of about 9-13 us on hardware, much larger than the simulation predicted. The sections below that describe the old one-shot pulse path are historical (it was removed in Sprint 2).
 
 TIMER3 is now a free-running microsecond clock (`pb_tb_us()`, exposed to the core as the `micros` HAL hook and `pb_micros()`).
 
@@ -62,7 +62,7 @@ Read algorithm (`src/pb_timebase.h`, shared by firmware and the C harness): read
 
 **TIMETEST and the timebase.** The four TIMER3 rows borrow the timer: the wrap ISR is told to stop the timer on each compare (as the old heater ISR did), the run proceeds exactly as in Sprint 1, and the timebase is restarted from its saved wrap count afterwards. `micros()` therefore loses the length of such a run. New source 8 (`TIMEBASE`) busy-waits until `micros()` has advanced `ms * 1000` us and reports the elapsed count as `n`; the host gates it at 1 %.
 
-Open assumption, to be confirmed by the TIMEBASE row on hardware: the counter reloads by itself at PRD in plain timer mode. If it does not, the wrap count would not advance and the TIMEBASE run would show it.
+Former open assumption, now confirmed on hardware: the counter reloads by itself at PRD in plain timer mode (TIMEBASE row: 1,000,001 us counted over 1000.6 ms of wall time, ratio 1.001).
 
 ### 2.2a Historical: the one-shot heater pulse path (removed)
 
@@ -214,6 +214,31 @@ Reading:
 - **The host prints "OUT OF GATE" for STEP, DELAY and DELAY2.** That is a label problem: the 2 % gate was defined for the TIMER3 sources only, but `summarizeTimeTest` applies it to all eight. Treat these three as baselines.
 - **`hal_delay_us` is not a stable clock.** Fitting `t = a + b x loops` to the two delay rows (loops = 1100 and 2) gives about 3.5 us fixed per call and about 0.85 us per loop iteration (two-point fit, approximate). The code assumes 0.91 us per iteration. The loop source has not changed since 2026-11-02, yet the old PTIME build measured 881.4 us and 4.965 us per call, which fits about 3.4 us fixed and 0.80 us per iteration. The same loop therefore ran about 6.7 % differently between two builds, so it cannot be calibrated once and trusted. `delay(2 us)` is also bimodal across runs (runs at 2.51 s and 2.67 s, about 0.32 us per call apart); the cause is unknown (cache or flash alignment and ISR load are guesses).
 - **Safety-relevant consequence.** The heater pulse fallback loop in `app.c` counts `spent += 2u` per `hal_delay_us(NULL, 2u)` call, but a call costs at least 5.2 us. Its `usec + 2000 us` bound is therefore at least 2.6x longer in real time than intended (a 30 ms pulse: about 83 ms instead of 32 ms if TIMER3 were dead). DERIVED from this baseline, not measured. The normal path (TIMER3 ISR) is not affected. The path is being replaced in Sprints 2-3; see the Sprint 3 note.
+
+### Sprint 2 hardware table (2026-11-05, owner run, web UI, 5 runs each, 1,000 ms target)
+
+Build id is not printed by the host; this is the Sprint 2 build `c2b08e2f` (published as `pinbridge-sprint2-timebase-c2b08e2f.bin`), assumed.
+
+| Source | Wall (mean +- sd, min..max) | Ratio | Per unit |
+|---|---:|---:|---|
+| TIMEBASE (`micros()`) | 1000.6 +- 0.2 ms (1000.4..1000.8) | 1.001 | counted 1,000,001 us; jiffy cross-check 9.99 ms |
+| TIMER3 /16 | 1000.8 +- 0.2 ms | 1.001 | 23.98 MHz, `isr` 25 == 25 |
+| TIMER3 /4 | 1001.8 +- 0.8 ms | 1.002 | 23.96 MHz, `isr` 100 == 100 |
+| TIMER3 /64 | 1000.4 +- 1.0 ms | 1.000 | 23.99 MHz, `isr` 10 == 10 |
+| TIMER3 /256 | 1000.7 +- 0.2 ms | 1.001 | 23.98 MHz, `isr` 2 == 2 |
+| Step tick | 1999.8 +- 1.3 ms | 2.000 | 2.000 ms per tick (unchanged; stepper untouched in Sprint 2) |
+| Jiffies | 1000.4 +- 0.3 ms | 1.000 | 10.00 ms per jiffy |
+| `delay(1000 us)` | 1013.1 +- 1.1 ms | 1.013 | 1013.1 us per call (was 940.2) |
+| `delay(2 us)` | 5684.6 +- 32.7 ms | 5.685 | 11.369 us per call (was 5.216) |
+
+Reading:
+
+- **Timebase gate met.** 0.1 % against wall time, against a 1 % gate; the counter does reload at PRD, and the TIMER3 rows still pass with `isr == n` (the borrow-and-restore logic works).
+- **`delay(1000)` is within the 2 % gate** (+1.3 %), and went from 6 % short to 1.3 % long.
+- **`delay(2)` has a floor of about 9.4 us per call**, so it takes 11.4 us for a 2 us request. That is worse than the old loop (5.2 us), and the simulation (at most 3.33 us over) did not predict it. `delay(1000)` overshoots by about 13 us. The overhead is therefore roughly 9-13 us per call (DERIVED from two points, not isolated). The most likely cause is the cost of `pb_tb_us()` on real hardware (several peripheral register reads, each a bus access, plus the retry-on-wrap check, plus call overhead), but that was not measured.
+- **Consequence:** `hal_delay_us` is honest for waits of about 50 us and up (error at most about 10 us), and is not usable for waits of a few us. Anything that needs few-us edges (the shift register in Sprint 6, bit-banged clocks) must not call it. Use `pb_tb_us()` deadlines for waits of tens of us, or a short NOP loop for edge spacing below that, and check the measured floor first.
+- **Not measured:** the cost of one `pb_tb_us()` call, the cost and jitter of the 10 ms wrap ISR (task 5), and the bimodal behavior seen before (this run's `delay(2)` sd is 0.6 %, so no bimodality shows in 5 runs).
+- **Host verdict labels:** STEP and DELAY2 still print "SLOW"; STEP is informational (not a timer under test). DELAY2 "SLOW 5.68x" is correct about the floor but is not a gate failure under the Sprint 2 criterion (2 % plus a documented floor).
 
 ## 4. Stock thermal-printer firmware: different allocation and timing model
 

@@ -1,6 +1,6 @@
 # Pinbridge timing and executor rework — sprints
 
-Status: active, 2026-11-05. The timing rework supersedes the earlier TBP protocol sprint plan. Sprint 0 has a documented static/derived analysis and scope plan, but no scope capture. Sprint 1 is closed: binary TBP `TIMETEST` passes on hardware for the four TIMER3 sources, CI is green on `a3270e1`, and the STEP, JIFFY, DELAY and DELAY2 sources have a recorded baseline (2026-11-05, build `a3270e1c`); the web UI has the timer self-test buttons again. Sprint 2 is code complete (timebase, `micros()`, timebase-based `hal_delay_us`, `TIMEBASE` self-test) and waits for CI and the owner's hardware run. The earlier protocol sprint plan remains in git history (`git show 9e22ffc:docs/sprints/README.md`).
+Status: active, 2026-11-05. The timing rework supersedes the earlier TBP protocol sprint plan. Sprint 0 has a documented static/derived analysis and scope plan, but no scope capture. Sprint 1 is closed: binary TBP `TIMETEST` passes on hardware for the four TIMER3 sources, CI is green on `a3270e1`, and the STEP, JIFFY, DELAY and DELAY2 sources have a recorded baseline (2026-11-05, build `a3270e1c`); the web UI has the timer self-test buttons again. Sprint 2 is closed (timebase, `micros()`, timebase-based `hal_delay_us`, `TIMEBASE` self-test; hardware run 2026-11-05: timebase within 0.1 % of wall time, `delay(2)` costs 11.4 us because of a per-call floor of about 9-13 us). The earlier protocol sprint plan remains in git history (`git show 9e22ffc:docs/sprints/README.md`).
 
 ## Why this exists
 
@@ -37,7 +37,7 @@ One cooperative loop owns all printer timing. TIMER3 becomes a free-running time
 |---|---|---|---|
 | 0 | Pin down the stock heater and step timing | Static/derived timing table and scope plan documented; actual stock PB11 scope capture still pending | [Sprint 0](sprint-00-stock-timing.md) |
 | 1 | Make the timer self-test trustworthy | Binary `TIMETEST` passes CI and all four TIMER3 rows are within 2 % on hardware with `isr == n`. **Met 2026-11-05** (CI green on `a3270e1`; baseline for the other four sources recorded) | [Sprint 1](sprint-01-ptime-fix.md) |
-| 2 | Free-running timebase and accurate delays | `micros()` HAL call, `hal_delay_us` within 2 %, deadman design proven. **Code complete 2026-11-05; hardware gate pending** | [Sprint 2](sprint-02-timebase.md) |
+| 2 | Free-running timebase and accurate delays | `micros()` HAL call, `hal_delay_us` within 2 %, deadman design proven. **Closed 2026-11-05: timebase 1.001, `delay(1000)` +1.3 %; `delay(2)` floor about 9-13 us per call** | [Sprint 2](sprint-02-timebase.md) |
 | 3 | Heater pulse in the executor, on the timebase | Scope-measured PB11 width within 5 % of request, deadman verified | [Sprint 3](sprint-03-heater-in-loop.md) |
 | 4 | Main loop that polls while busy | Row throughput and e-stop latency measured, no TX starvation, no watchdog resets | [Sprint 4](sprint-04-main-loop.md) |
 | 5 | Stepper in the loop, SDK step timer removed | `sys_hi_timer`, `step_lock`, race hooks gone; step period measured | [Sprint 5](sprint-05-stepper-in-loop.md) |
