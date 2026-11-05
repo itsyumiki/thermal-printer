@@ -151,6 +151,8 @@ function commandTimeoutMs(cmd: Command): number {
 }
 /** How long a raw hex send waits for the printer's reply before giving up. */
 const RAW_REPLY_WAIT_MS = 1500;
+// Keep two slots free in the 32-command queue; refill one credit per terminal response.
+const PRINT_QUEUE_TARGET = 30;
 type Client = { send: (s: string) => void };
 type Pending = {
   id: number;
@@ -323,8 +325,8 @@ export class PrinterLink {
         version: 1,
         buildId: "MOCK-DEV",
         dots: 384,
-        queueDepth: 4,
-        maxWindow: 4,
+        queueDepth: 32,
+        maxWindow: 32,
         minPeriodUs: 1000,
         stepTickUs: 1000,
         burnTickUs: 0,
@@ -341,7 +343,7 @@ export class PrinterLink {
       this.status = {
         state: 0,
         queueUsed: 0,
-        queueDepth: 4,
+        queueDepth: 32,
         runningId: 0,
         lastTerminalId: 0,
         headTempRaw: 65535,
@@ -481,10 +483,17 @@ export class PrinterLink {
       this.drop("UART closed");
     }
   }
+  private dataCommandLimit() {
+    const queueDepth = Math.max(1, Number(this.info?.queueDepth ?? 1));
+    const maxWindow = Math.max(1, Number(this.info?.maxWindow ?? 1));
+    // Keep one protocol-window credit available for control commands and never
+    // fill the firmware queue completely. At 30, a terminal response frees one slot.
+    return Math.max(1, Math.min(PRINT_QUEUE_TARGET, queueDepth, maxWindow - 1));
+  }
   private async waitForCredit(op: number) {
-    const depth = Math.max(1, Number(this.info?.maxWindow ?? 1));
+    const maxWindow = Math.max(1, Number(this.info?.maxWindow ?? 1));
     const control = op === OP.STAT || op === OP.ESTOP;
-    const limit = control ? depth : Math.max(1, depth - 1);
+    const limit = control ? maxWindow : this.dataCommandLimit();
     while (this.pending.size + this.creditReservations >= limit) {
       await new Promise<void>((resolve) => this.creditWaiters.push(resolve));
     }
@@ -873,7 +882,7 @@ export class PrinterLink {
       if (op !== OP.HELLO && op !== OP.ESTOP)
         this.nextId = id >= 255 ? 1 : id + 1;
       if (op === OP.STAT) {
-        const body = Uint8Array.of(3, 0, 4, 0, 0, 1, 54, 2, 0, 14, 216, 1, 0);
+        const body = Uint8Array.of(3, 0, 32, 0, 0, 1, 54, 2, 0, 14, 216, 1, 0);
         return {
           id,
           op: KIND.STATUS,
@@ -1322,34 +1331,32 @@ export class PrinterLink {
           throw new Error("print-job needs 1..2000 rows");
         this.stopRequested = false;
         let sent = 0;
-        const depth = Math.max(
-          1,
-          Math.min(4, Number(this.info?.queueDepth ?? 4)),
-        );
-        for (let base = 0; base < rows.length; base += depth) {
-          if (this.stopRequested) break;
-          const batch = rows.slice(base, base + depth);
-          await Promise.all(
-            batch.map(async (item: any) => {
-              if (this.stopRequested) return;
-              const mask = Uint8Array.from({ length: 48 }, (_, i) => {
-                const hex = String(item.maskHex ?? "");
-                if (!/^[0-9a-f]{96}$/i.test(hex))
-                  throw new Error(
-                    "Each print-job mask must be 96 hex characters",
-                  );
-                return Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-              });
-              const burn = Number(item.burnUs ?? 0);
-              const { steps, periodUs: period } = motionFromMessage(item, {
-                steps: 0,
-                periodUs: 0,
-              });
-              this.requireHeatReady(burn);
-              const timeout = Math.min(
-                30000,
-                Math.ceil((Math.abs(steps) * period) / 1000) + 5000,
-              );
+        let nextRow = 0;
+        const worker = async () => {
+          while (!this.stopRequested) {
+            const rowIndex = nextRow++;
+            if (rowIndex >= rows.length) return;
+            const item = rows[rowIndex];
+            if (this.stopRequested) return;
+            const mask = Uint8Array.from({ length: 48 }, (_, i) => {
+              const hex = String(item.maskHex ?? "");
+              if (!/^[0-9a-f]{96}$/i.test(hex))
+                throw new Error(
+                  "Each print-job mask must be 96 hex characters",
+                );
+              return Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+            });
+            const burn = Number(item.burnUs ?? 0);
+            const { steps, periodUs: period } = motionFromMessage(item, {
+              steps: 0,
+              periodUs: 0,
+            });
+            this.requireHeatReady(burn);
+            const timeout = Math.min(
+              30000,
+              Math.ceil((Math.abs(steps) * period) / 1000) + 5000,
+            );
+            try {
               await this.transact(
                 OP.ROW,
                 row(
@@ -1367,11 +1374,16 @@ export class PrinterLink {
                 true,
                 timeout,
               );
-              sent++;
-              this.emit("print-progress", { done: sent, total: rows.length });
-            }),
-          );
-        }
+            } catch (error) {
+              this.stopRequested = true;
+              throw error;
+            }
+            sent++;
+            this.emit("print-progress", { done: sent, total: rows.length });
+          }
+        };
+        const workerCount = Math.min(this.dataCommandLimit(), rows.length);
+        await Promise.all(Array.from({ length: workerCount }, () => worker()));
         return { done: sent, total: rows.length, stopped: this.stopRequested };
       }
       case "print-solid": {
@@ -1384,10 +1396,7 @@ export class PrinterLink {
         this.stopRequested = false;
         let nextRow = 0;
         let completedRows = 0;
-        const workerCount = Math.max(
-          1,
-          Math.min(3, Number(this.info?.maxWindow ?? 4) - 1),
-        );
+        const workerCount = Math.min(this.dataCommandLimit(), rows);
         // One ROW per logical image row: one shift/latch and four heater slices
         // synchronized to feed edges. Keep a small compatible window in flight so
         // the firmware can extend the continuous feed train across row boundaries.

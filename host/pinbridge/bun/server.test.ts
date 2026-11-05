@@ -127,7 +127,9 @@ describe("firmware heater trace lines", () => {
     });
     link.onLine("HL 3 t=7500 pulse_end req_us=2500 loop_us=2512 flags=0\r");
     expect(lines.length).toBe(1);
-    expect(lines[0]).toMatch(/^\d\d:\d\d:\d\d\.\d{3} HL    3 t=7500 pulse_end /);
+    expect(lines[0]).toMatch(
+      /^\d\d:\d\d:\d\d\.\d{3} HL    3 t=7500 pulse_end /,
+    );
     expect(lines[0].endsWith("flags=0")).toBe(true);
     expect(uiLogs).toEqual([]);
   });
@@ -297,6 +299,38 @@ describe("TBP fake-transport retry behavior", () => {
     ack(link, 5);
     done(link, 5);
     await waitingMove;
+    expect(link.pending.size).toBe(0);
+  });
+
+  test("caps data commands at 30 and releases one credit on terminal status", async () => {
+    const { link } = fakeLink(() => {});
+    link.info = { maxWindow: 32, queueDepth: 32 };
+    expect((link as any).dataCommandLimit()).toBe(30);
+
+    const moveData = Uint8Array.of(0, 0, 0, 1, 3, 232);
+    const requests = Array.from({ length: 31 }, () =>
+      link.transact(OP.MOVE, moveData, true, 1000),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(link.pending.size).toBe(30);
+    expect(link.creditWaiters.length).toBe(1);
+
+    // The sender serializes wire frames: ACK each to send the next. A terminal
+    // response frees one of the 30 data credits, allowing request 31 to register.
+    for (let id = 1; id <= 30; id++) {
+      ack(link, id);
+      if (id === 1) done(link, id);
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    expect(link.pending.size).toBe(30);
+    expect(link.pending.has(31)).toBe(true);
+    for (let id = 2; id <= 31; id++) {
+      done(link, id);
+      await Promise.resolve();
+    }
+    await Promise.all(requests);
     expect(link.pending.size).toBe(0);
   });
 

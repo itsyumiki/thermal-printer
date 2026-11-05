@@ -33,7 +33,7 @@ typedef struct {
     uint8_t mode, level;
 } pb_pin_state;
 #define PB_MAX_PINS 16u
-#define PB_TBP_QUEUE_DEPTH 4u
+#define PB_TBP_QUEUE_DEPTH 32u
 #ifndef PB_BUILD_ID
 #define PB_BUILD_ID 0u /* CI overrides with the first 32 bits of the source commit SHA. */
 #endif
