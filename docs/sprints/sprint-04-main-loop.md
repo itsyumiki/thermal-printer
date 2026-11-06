@@ -32,3 +32,7 @@ Moving the stepper, speeding up the shift.
 ## Handoff on completion
 
 Include before/after timings and the chosen priority scheme. Next: Sprint 5.
+
+## Status note (2026-11-06): feed look-ahead
+
+The stepper-never-waits rule was implemented ahead of this sprint as `pb_tbp_prefeed_next` (see the 2026-11-06 journal entry and `firmware/apps/pinbridge/tests/c/pb_prefeed_test.c`). Mock evidence only; the busy-loop work below is still open. When measuring row time in task 1, check the `COLD_START` flag count on a multi-row print: after the look-ahead only the first row of a train should report it. Open question for the owner: should look-ahead go deeper than one row, given that the start gate and duty charge are taken when a row is fed?

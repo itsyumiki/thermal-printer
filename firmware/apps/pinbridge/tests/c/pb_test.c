@@ -302,8 +302,13 @@ int main(int argc, char **argv) {
                 if (sscanf(s, "@scheduler phase=%u active=%u completed=%u remaining=%u pending=%u",
                            &phase, &active, &completed, &remaining, &pending) == 5) {
                     if (c.step_phase != phase || c.step_active != active || c.step_completed != completed ||
-                        c.step_remaining != remaining || c.tbp_comp_count != pending)
+                        c.step_remaining != remaining || c.tbp_comp_count != pending) {
+                        fprintf(stderr, "scheduler: want phase=%u active=%u completed=%u remaining=%u pending=%u, got phase=%u active=%u completed=%u remaining=%u pending=%u\n",
+                                phase, active, completed, remaining, pending, (unsigned)c.step_phase,
+                                (unsigned)c.step_active, (unsigned)c.step_completed, (unsigned)c.step_remaining,
+                                (unsigned)c.tbp_comp_count);
                         fail(ln, "scheduler state mismatch");
+                    }
                     continue;
                 }
             }

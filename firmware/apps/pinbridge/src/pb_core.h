@@ -111,6 +111,13 @@ typedef struct {
 typedef struct {
     uint8_t id, op, len, queued_status_sent;
     uint32_t enqueued_at, last_queued_status_at;
+    /* Feed look-ahead (pb_tbp_prefeed_next): set while this queued ROW already has its steps on the live phase
+     * train. fed_target is the cumulative step count at the end of this row's feed. gated means the start gate
+     * passed and the duty budget was charged at look-ahead time, with the readings in snap. prefeed_tried means
+     * look-ahead looked at this row and decided to leave it to the normal path. */
+    uint8_t fed, gated, prefeed_tried;
+    uint32_t fed_target;
+    pb_sensor_snapshot snap;
     uint8_t data[PB_TBP_DATA_MAX];
 } pb_tbp_command;
 typedef struct {
@@ -733,6 +740,8 @@ static int pb_tbp_enqueue(pb_core *c, uint8_t id, uint8_t op, const uint8_t *dat
     q->enqueued_at = pb_now(c);
     q->last_queued_status_at = q->enqueued_at;
     q->queued_status_sent = 0;
+    q->fed = q->gated = q->prefeed_tried = 0;
+    q->fed_target = 0;
     if (len) memcpy(q->data, data, len);
     c->tbp_qcount++;
     pb_tbp_accept(c, id);
@@ -896,6 +905,53 @@ static int pb_tbp_next_feed_compatible(const pb_core *c) {
     tail = ((unsigned)c->step_seg_head + c->step_seg_count - 1u) % PB_TBP_QUEUE_DEPTH;
     last = &c->step_segments[tail];
     return last->reverse == (uint8_t)reverse && last->period_ms == period_ms;
+}
+
+/* Feed look-ahead: the stepper must never wait for the heater. The executor appends a row's feed only when it
+ * starts that row, and it starts the next row only after this row's last pulse. A pulse that overruns the final
+ * step dwell therefore let the phase train run dry and the motor stopped and restarted on every row. Called while
+ * a ROW whose own feed is already on the train is executing: it appends the next queued ROW's feed right away,
+ * so the train is always one row ahead of the executor. The heater side is unchanged: each slice still waits for
+ * its own step edge (counted from tbp_row_step_start), and a slice that is late just fires late. The row's
+ * start gate (sensors, temperature, paper, battery) and the duty charge move here with the feed, because once
+ * the paper is moving the row cannot be held back. If the row would have to wait (hot head, duty budget) or
+ * fail the gate, it is left alone (prefeed_tried) and runs the normal path: it waits with the motor idle, then
+ * feeds, so the print stays position-correct. */
+static void pb_tbp_prefeed_next(pb_core *c, uint32_t now) {
+    pb_tbp_command *q;
+    pb_sensor_snapshot snap;
+    uint8_t code, arg;
+    uint16_t burn, period;
+    uint32_t count, target = 0;
+    int steps, heat = 0;
+    unsigned i;
+    if (c->emergency_abort_requested || !pb_tbp_next_feed_compatible(c)) return;
+    q = &c->tbp_queue[c->tbp_qhead];
+    if (q->op != 0x10u || q->fed || q->prefeed_tried) return;
+    for (i = 0; i < 48; i++) if (q->data[i]) { heat = 1; break; }
+    burn = (uint16_t)(((uint16_t)q->data[48] << 8) | q->data[49]);
+    steps = (int8_t)q->data[50];
+    period = (uint16_t)(((uint16_t)q->data[51] << 8) | q->data[52]);
+    count = (uint32_t)(steps < 0 ? -steps : steps);
+    heat = heat && burn;
+    q->prefeed_tried = 1; /* one look per row: any early return below hands the row to the normal path */
+    if (heat) {
+        pb_sensors_sample(c, &snap);
+        if (pb_heat_gate(&snap, PB_TUNE_TEMP_CUTOFF_C, 0, &code, &arg) != PB_GATE_OK) return;
+        if (pb_tbp_heat_window_expired(now, c->tbp_heat_window_start)) {
+            c->tbp_heat_window_start = now;
+            c->tbp_heat_used_us = 0;
+        }
+        if (burn > PB_TBP_DUTY_MAX_US || c->tbp_heat_used_us > PB_TBP_DUTY_MAX_US - burn) return;
+    }
+    if (!pb_step_feed_schedule(c, steps < 0, count, period, &target)) return;
+    q->fed = 1;
+    q->fed_target = target;
+    if (heat) {
+        c->tbp_heat_used_us += burn;
+        q->snap = snap;
+        q->gated = 1;
+    }
 }
 
 static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
@@ -1081,7 +1137,11 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
                 return;
             }
         }
-        if (!c->tbp_exec_stage && any && burn) {
+        if (!c->tbp_exec_stage && cmd->gated) { /* look-ahead already passed the gate and charged the duty budget */
+            c->tbp_row_snap = cmd->snap;
+            c->tbp_row_snap_valid = 1;
+        }
+        if (!c->tbp_exec_stage && any && burn && !cmd->gated) {
             pb_sensor_snapshot snap;
             uint8_t code, arg;
             pb_gate g;
@@ -1124,6 +1184,11 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
             if (steps) {
                 uint32_t target = c->step_completed;
                 uint32_t count = (uint32_t)(steps < 0 ? -steps : steps);
+                if (cmd->fed) {
+                    /* Feed look-ahead already put this row's steps on the train; the motor may even be done. */
+                    c->tbp_feed_target = cmd->fed_target;
+                    c->tbp_row_step_start = cmd->fed_target - count;
+                } else {
                 if (!pb_all_outputs(c, mp, 4)) pb_motor_outputs_init(c);
                 if (!pb_all_outputs(c, mp, 4)) {
                     uint8_t err[2] = {9, 0}; pb_tbp_terminal(c, 4u, err, sizeof err); return;
@@ -1137,6 +1202,7 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
                      * Stage 9 retries without charging the duty budget a second time. */
                     if (c->step_active) { c->tbp_exec_stage = 9u; return; }
                     { uint8_t err[2] = {9, 0}; pb_tbp_terminal(c, 4u, err, sizeof err); return; }
+                }
                 }
             } else {
                 c->tbp_feed_target = c->step_completed;
@@ -1161,6 +1227,8 @@ static void pb_tbp_exec_poll(pb_core *c, uint32_t now) {
               if (any && burn) duration += (burn + PB_TBP_SHIFT_US + (uint32_t)slices * PB_TBP_GUARD_US + 999u) / 1000u + 40u;
               if (duration >= 250u) { pb_tbp_status(c, cmd->id, 2u, 0, 0); pb_tbp_record_state(c, cmd->id, 2u); } }
         }
+        if (c->tbp_exec_stage == 1u || c->tbp_exec_stage == 3u || c->tbp_exec_stage == 4u || c->tbp_exec_stage == 5u)
+            pb_tbp_prefeed_next(c, now); /* this row's feed is on the train: keep the motor one row ahead */
         if (c->tbp_exec_stage == 1u && (!any || !burn)) c->tbp_exec_stage = 4u;
         if (c->tbp_exec_stage == 1u) {
             int pin_data, pin_clk;
